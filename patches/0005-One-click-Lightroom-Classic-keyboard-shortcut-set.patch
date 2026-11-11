@@ -1,0 +1,2256 @@
+From 0f304451b8cf65098ba1eccdd920d4da108777d3 Mon Sep 17 00:00:00 2001
+From: LightCraft additional extensions <noreply@example.invalid>
+Date: Wed, 11 Nov 2026 20:26:23 +0000
+Subject: [PATCH 5/7] One-click Lightroom Classic keyboard shortcut set
+
+Help > Keyboard Shortcuts (and Settings > General > Keyboard) gain
+"Shortcut set: Lightroom (default) | Lightroom Classic"; app.keyProfile
+{profile: "lightroom"|"classic"} switches it from the control channel.
+The choice is saved as settings.keyProfile in ui.json (read leniently:
+older or unknown values are Lightroom). The user's own keymap entries
+still win over either set.
+
+Classic gives the commands Lightroom Classic's keys where LightCraft has
+them (E Loupe, D Develop, C Compare, R Crop, Q Remove, K Brush, M / Shift+M
+gradients, Shift+W Masking, L Lights Out, I info overlay, H tool overlay,
+Shift+T Guided Upright, Cmd+U Auto, Cmd+Shift+S Sync, Cmd+N version /
+album by context, Cmd+Shift+E Export, Cmd+E other editor, Cmd+Alt+E
+PhotoCraft, Shift+P pick and advance, Ctrl+Y redo) and moves every key
+that would clash. Adapted from upstream PR #2338, ported to v0.20.0 and
+the module bar commands. Mapping in docs/classic-keymap.md.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EzwanTUC5ztbqABwMnjziB
+---
+ crates/ui-egui/locales/zh-hans.json           |   9 +-
+ crates/ui-egui/locales/zh-hant.json           |   9 +-
+ crates/ui-egui/src/control.rs                 |   4 +-
+ crates/ui-egui/src/dialogs.rs                 |   2 +-
+ crates/ui-egui/src/dialogs/keymap.rs          |  42 +-
+ .../ui-egui/src/dialogs/settings/general.rs   |   9 +
+ crates/ui-egui/src/keymap_profiles.rs         | 127 +++++
+ crates/ui-egui/src/lib.rs                     |   1 +
+ crates/ui-egui/src/menus.rs                   |   4 +-
+ crates/ui-egui/src/menus/menubar.rs           |  19 +-
+ crates/ui-egui/src/menus/menubar/tests.rs     |  22 +-
+ crates/ui-egui/src/menus/run.rs               |   1 +
+ crates/ui-egui/src/menus/ui_commands.rs       |   1 +
+ crates/ui-egui/src/panels/edit.rs             |   2 +-
+ crates/ui-egui/src/panels/edit/histogram.rs   |   8 +-
+ crates/ui-egui/src/panels/edit/sliders.rs     |   4 +-
+ crates/ui-egui/src/panels/empty_library.rs    |  10 +-
+ crates/ui-egui/src/panels/grid.rs             |   6 +-
+ crates/ui-egui/src/panels/masking.rs          |   2 +-
+ crates/ui-egui/src/panels/modules.rs          |   2 +-
+ crates/ui-egui/src/panels/topbar.rs           |   2 +-
+ crates/ui-egui/src/shortcuts.rs               | 189 +++++--
+ crates/ui-egui/src/shortcuts/tests.rs         |  56 +-
+ .../src/shortcuts/tests_clear_label.rs        |   6 +-
+ .../src/shortcuts/tests_enable_filters.rs     |   2 +-
+ .../src/shortcuts/tests_filter_bar_key.rs     |   6 +-
+ .../ui-egui/src/shortcuts/tests_flag_cycle.rs |   4 +-
+ .../src/shortcuts/tests_relative_ratings.rs   |  12 +-
+ crates/ui-egui/src/state/settings.rs          |   6 +
+ crates/ui-egui/src/tests.rs                   |   1 +
+ crates/ui-egui/src/tests/classic_keymap.rs    | 479 ++++++++++++++++++
+ crates/ui-egui/src/tests/empty_library.rs     |  27 +-
+ crates/ui-egui/src/tests/grid.rs              |  12 +-
+ crates/ui-egui/src/tests/keymap.rs            |  33 +-
+ crates/ui-egui/src/tests/space_hand.rs        |   2 +-
+ crates/ui-egui/src/tests/tool_overlay.rs      |   5 +-
+ crates/ui-egui/tests/it/accessibility.rs      |   7 +-
+ docs/classic-keymap.md                        | 140 +++++
+ 38 files changed, 1093 insertions(+), 180 deletions(-)
+ create mode 100644 crates/ui-egui/src/keymap_profiles.rs
+ create mode 100644 crates/ui-egui/src/tests/classic_keymap.rs
+ create mode 100644 docs/classic-keymap.md
+
+diff --git a/crates/ui-egui/locales/zh-hans.json b/crates/ui-egui/locales/zh-hans.json
+index a441089e5..3f29793c4 100644
+--- a/crates/ui-egui/locales/zh-hans.json
++++ b/crates/ui-egui/locales/zh-hans.json
+@@ -2528,5 +2528,12 @@
+   "Paint to darken · ⌥ erases": "涂抹以加深 · 按住 ⌥ 擦除",
+   "Paint to desaturate · ⌥ erases": "涂抹以去色 · 按住 ⌥ 擦除",
+   "Paint to saturate · ⌥ erases": "涂抹以加色 · 按住 ⌥ 擦除",
+-  "Paint over what to select · ⌥ erases": "涂抹要选择的区域 · 按住 ⌥ 擦除"
++  "Paint over what to select · ⌥ erases": "涂抹要选择的区域 · 按住 ⌥ 擦除",
++  "Shortcut set": "快捷键方案",
++  "Lightroom (default)": "Lightroom（默认）",
++  "Lightroom Classic": "Lightroom Classic",
++  "Your own shortcuts stay as they are in either set.": "您自己设置的快捷键在两种方案下都保持不变。",
++  "Keyboard": "键盘",
++  "Lightroom Classic gives the commands its keys (E Loupe, D Develop, R Crop…). Your own shortcuts stay as they are.": "Lightroom Classic 方案使用 Lightroom Classic 的按键（E 放大视图、D 修改照片、R 裁剪……）。您自己设置的快捷键保持不变。",
++  "Keyboard Shortcut Set": "键盘快捷键方案"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant.json b/crates/ui-egui/locales/zh-hant.json
+index 9f18e81a5..95995a759 100644
+--- a/crates/ui-egui/locales/zh-hant.json
++++ b/crates/ui-egui/locales/zh-hant.json
+@@ -2489,5 +2489,12 @@
+   "Paint to darken · ⌥ erases": "塗抹以加深 · 按住 ⌥ 擦除",
+   "Paint to desaturate · ⌥ erases": "塗抹以降低飽和度 · 按住 ⌥ 擦除",
+   "Paint to saturate · ⌥ erases": "塗抹以提高飽和度 · 按住 ⌥ 擦除",
+-  "Paint over what to select · ⌥ erases": "塗抹要選取的區域 · 按住 ⌥ 擦除"
++  "Paint over what to select · ⌥ erases": "塗抹要選取的區域 · 按住 ⌥ 擦除",
++  "Shortcut set": "快速鍵方案",
++  "Lightroom (default)": "Lightroom（預設）",
++  "Lightroom Classic": "Lightroom Classic",
++  "Your own shortcuts stay as they are in either set.": "您自己設定的快速鍵在兩種方案下都保持不變。",
++  "Keyboard": "鍵盤",
++  "Lightroom Classic gives the commands its keys (E Loupe, D Develop, R Crop…). Your own shortcuts stay as they are.": "Lightroom Classic 方案使用 Lightroom Classic 的按鍵（E 放大檢視、D 修改相片、R 裁切……）。您自己設定的快速鍵保持不變。",
++  "Keyboard Shortcut Set": "鍵盤快速鍵方案"
+ }
+diff --git a/crates/ui-egui/src/control.rs b/crates/ui-egui/src/control.rs
+index acabe84d1..da1b97f55 100644
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -104,13 +104,13 @@ pub fn all_commands(app: &LightcraftApp) -> Value {
+         .map(|c| {
+             let mut v = serde_json::to_value(&c).unwrap_or_default();
+             if let Some(o) = v.as_object_mut() {
+-                o.insert("shortcut".into(), json!(crate::shortcuts::shortcut_of(keymap, c.id)));
++                o.insert("shortcut".into(), json!(crate::shortcuts::shortcut_of(app.ui.settings.key_profile, keymap, c.id)));
+             }
+             v
+         })
+         .collect();
+     for (id, label, sc, menu) in crate::menus::ui_commands() {
+-        let sc = crate::shortcuts::binding(keymap, id, *sc);
++        let sc = crate::shortcuts::binding(app.ui.settings.key_profile, keymap, id, *sc);
+         v.push(json!({"id": id, "label": label, "shortcut": sc, "menu": [menu], "enabled": crate::menus::ui_enabled(app, id), "ui": true}));
+     }
+     Value::Array(v)
+diff --git a/crates/ui-egui/src/dialogs.rs b/crates/ui-egui/src/dialogs.rs
+index af8edb8ab..a9b36396c 100644
+--- a/crates/ui-egui/src/dialogs.rs
++++ b/crates/ui-egui/src/dialogs.rs
+@@ -158,7 +158,7 @@ fn welcome_body(app: &LightcraftApp, ui: &mut egui::Ui, t: &Tokens, page: &mut u
+     // a hard-coded key. A command whose binding was removed shows the menu path alone.
+     let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+     let keys = welcome_page_command(*page)
+-        .and_then(|id| crate::shortcuts::shortcut_of(&app.ui.settings.keymap, id))
++        .and_then(|id| crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, id))
+         .map(|sc| crate::menus::menubar::shortcut_text(sc, mac));
+     let opening = welcome_opening(*page, opening, keys.as_deref(), cfg!(target_arch = "wasm32"));
+     ui.label(egui::RichText::new(opening).color(t.text_dim));
+diff --git a/crates/ui-egui/src/dialogs/keymap.rs b/crates/ui-egui/src/dialogs/keymap.rs
+index 5f4fb9506..3857d7ef7 100644
+--- a/crates/ui-egui/src/dialogs/keymap.rs
++++ b/crates/ui-egui/src/dialogs/keymap.rs
+@@ -1,13 +1,15 @@
+ //! Help ▸ Keyboard Shortcuts (⌘/): every command's shortcut, editable.
+ //!
+-//! Click a shortcut, then press the new keys (Esc cancels); × removes it, ↺ restores the declared
+-//! one. A key another command had moves to the new command. Changes go through
++//! Click a shortcut, then press the new keys (Esc cancels); × removes it, ↺ restores the shortcut
++//! set's one. A key another command had moves to the new command. Changes go through
+ //! [`crate::shortcuts::assign`] into [`crate::state::AppSettings::keymap`] (saved in `ui.json`),
+-//! the same path as the `app.setShortcut` command.
++//! the same path as the `app.setShortcut` command. The Shortcut set at the top switches the
++//! defaults under them between Lightroom and Lightroom Classic (`app.keyProfile`).
+ 
+ use egui::RichText;
+ 
+ use crate::LightcraftApp;
++use crate::keymap_profiles::{KeyProfile, profile_default};
+ use crate::shortcuts::{self, Bindable};
+ use crate::theme::Tokens;
+ use crate::widgets::register;
+@@ -43,13 +45,14 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
+         d.insert_temp(search_id, search.clone());
+         d.insert_temp(all_id, show_all);
+     });
++    profile_picker(app, ui, t);
+     ui.label(RichText::new(crate::i18n::tr("Click a shortcut, then press the new keys (Esc cancels).")).size(11.0).color(t.text_dim));
+     ui.add_space(4.0);
+ 
+     let needle = search.trim().to_lowercase();
+     let mut rows: Vec<(&'static Bindable, Option<String>)> = shortcuts::bindable()
+         .iter()
+-        .map(|b| (b, shortcuts::binding(&app.ui.settings.keymap, b.id, b.default).map(str::to_string)))
++        .map(|b| (b, shortcuts::binding(app.ui.settings.key_profile, &app.ui.settings.keymap, b.id, b.default).map(str::to_string)))
+         .filter(|(b, sc)| show_all || sc.is_some() || app.recording_shortcut.as_deref() == Some(b.id))
+         .filter(|(b, sc)| {
+             needle.is_empty()
+@@ -77,6 +80,25 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
+     });
+ }
+ 
++/// Shortcut set: Lightroom (default) | Lightroom Classic (`button:keyProfile-lightroom`,
++/// `button:keyProfile-classic`). Your own shortcuts stay as they are over either.
++fn profile_picker(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
++    ui.add_space(2.0);
++    ui.horizontal(|ui| {
++        ui.label(RichText::new(crate::i18n::tr("Shortcut set")).color(t.text_label));
++        let items: Vec<(&str, &str)> = KeyProfile::ALL.iter().map(|p| (p.label(), p.id())).collect();
++        let active = KeyProfile::ALL.iter().position(|p| *p == app.ui.settings.key_profile);
++        ui.allocate_ui(egui::vec2(320.0, 24.0), |ui| {
++            if let Some(i) = crate::widgets::segmented(ui, "keyProfile", &items, active, items.len())
++                && let Some(p) = KeyProfile::ALL.get(i)
++            {
++                let _ = app.run("app.keyProfile", serde_json::json!({"profile": p.id()}));
++            }
++        });
++    });
++    ui.label(RichText::new(crate::i18n::tr("Your own shortcuts stay as they are in either set.")).size(11.0).color(t.text_dim));
++}
++
+ /// `Cmd+Shift+Z` as menus show it (`⇧⌘Z` on macOS).
+ fn menu_text(sc: &str, mac: bool) -> String {
+     crate::menubar::shortcut_text(sc, mac)
+@@ -84,15 +106,17 @@ fn menu_text(sc: &str, mac: bool) -> String {
+ 
+ /// One editable command row: its label and id, a click-to-record shortcut button, and buttons
+ /// that clear or restore it. The restore button is enabled when a saved binding exists or the
+-/// declared default is currently yielded to another command.
++/// shortcut set's key is currently yielded to another command.
+ /// A command's name as the list shows it: the module bar's names for the `module.*` commands.
+ fn label(b: &Bindable) -> &'static str {
+     crate::panels::modules::Module::from_command(b.id).map_or_else(|| crate::i18n::tr(b.label), crate::panels::modules::Module::name)
+ }
+ 
+ fn row(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, b: &Bindable, sc: Option<&str>, mac: bool) {
+-    // a declared key that yields to another command's saved key counts as changed: ↺ takes it back
+-    let changed = app.ui.settings.keymap.contains_key(b.id) || (sc.is_none() && b.default.is_some());
++    // the shortcut set's key for the command (the declared one, or Lightroom Classic's)
++    let restore = profile_default(app.ui.settings.key_profile, b.id, b.default);
++    // a set's key that yields to another command's saved key counts as changed: ↺ takes it back
++    let changed = app.ui.settings.keymap.contains_key(b.id) || (sc.is_none() && restore.is_some());
+     let mut name = RichText::new(label(b)).color(t.text);
+     if changed {
+         name = name.strong();
+@@ -125,7 +149,7 @@ fn row(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, b: &Bindable, sc:
+         if r.clicked() {
+             apply(app, ui.ctx(), serde_json::json!({"id": b.id, "shortcut": null}));
+         }
+-        let r = ui.add_enabled(changed, egui::Button::new("↺").small()).on_hover_text(match b.default {
++        let r = ui.add_enabled(changed, egui::Button::new("↺").small()).on_hover_text(match restore {
+             Some(d) => crate::i18n::tr_format!("Restore {}", menu_text(d, mac)),
+             None => crate::i18n::tr("Restore (no shortcut)").to_string(),
+         });
+@@ -142,7 +166,7 @@ fn row(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, b: &Bindable, sc:
+ /// One the user gave to a command shows struck through.
+ fn fixed_keys(app: &LightcraftApp, ui: &mut egui::Ui, t: &Tokens, mac: bool, needle: &str) {
+     let mut fixed: Vec<(String, &str)> = Vec::new();
+-    for (sc, id, _) in shortcuts::ALIASES {
++    for (sc, id, _) in crate::keymap_profiles::aliases(app.ui.settings.key_profile) {
+         let label = shortcuts::find_bindable(id).map_or(*id, |b| b.label);
+         fixed.push((sc.to_string(), label));
+     }
+diff --git a/crates/ui-egui/src/dialogs/settings/general.rs b/crates/ui-egui/src/dialogs/settings/general.rs
+index 1231e9d3b..7086390dd 100644
+--- a/crates/ui-egui/src/dialogs/settings/general.rs
++++ b/crates/ui-egui/src/dialogs/settings/general.rs
+@@ -73,6 +73,15 @@ pub(super) fn general_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens
+     check(ui, "settings.autoAdvance", &mut app.ui.auto_advance, "Auto Advance: move to the next photo after rating or flagging");
+     check(ui, "settings.confirmDelete", &mut app.ui.settings.confirm_delete, "Confirm before moving photos to Recently Deleted");
+     check(ui, "settings.askBeforeMove", &mut app.ui.settings.ask_before_move, "Confirm before moving photos to another folder on disk");
++    heading(ui, t, crate::i18n::tr("Keyboard"));
++    row(ui, t, crate::i18n::tr("Shortcut set"), |ui| {
++        let sets: Vec<_> = crate::keymap_profiles::KeyProfile::ALL.iter().map(|p| (*p, p.label())).collect();
++        let mut profile = app.ui.settings.key_profile;
++        if choices(ui, "settingsKeyProfile", &sets, &mut profile) {
++            let _ = app.run("app.keyProfile", json!({"profile": profile.id()}));
++        }
++    });
++    hint(ui, t, crate::i18n::tr("Lightroom Classic gives the commands its keys (E Loupe, D Develop, R Crop…). Your own shortcuts stay as they are."));
+     heading(ui, t, crate::i18n::tr("Dialogs"));
+     check(ui, "settings.closeDialogsOutside", &mut app.ui.settings.close_dialogs_outside, "Close a dialog by clicking outside it");
+     heading(ui, t, crate::i18n::tr("External Editing"));
+diff --git a/crates/ui-egui/src/keymap_profiles.rs b/crates/ui-egui/src/keymap_profiles.rs
+new file mode 100644
+index 000000000..27cfb21bf
+--- /dev/null
++++ b/crates/ui-egui/src/keymap_profiles.rs
+@@ -0,0 +1,127 @@
++//! Shortcut sets (LightCraft additional extensions, adapted from upstream PR #2338): which set of
++//! default shortcuts the commands use.
++//!
++//! `Lightroom` (the default) is the keymap LightCraft has always shipped: the Lightroom-desktop
++//! keys with Classic additions. `Classic` gives the same commands Lightroom Classic's defaults
++//! where LightCraft has the command (E Loupe, D Develop, C Compare, R Crop, Q Spot Removal,
++//! K Brush, M / ⇧M gradients, ⌘⇧E Export…), so Classic muscle memory works in one click: Help ▸
++//! Keyboard Shortcuts ▸ Shortcut set, Settings ▸ General ▸ Keyboard, or `app.keyProfile`. The
++//! user's own bindings (`AppSettings::keymap`) sit above whichever set is active. The full
++//! mapping, and the Classic keys LightCraft has no command for, are in `docs/classic-keymap.md`.
++
++use serde::{Deserialize, Serialize};
++
++/// A set of default shortcuts. Saved in `ui.json` as `settings.keyProfile`; a file without it (or
++/// with a value this build doesn't know) reads as [`KeyProfile::Lightroom`].
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub enum KeyProfile {
++    /// The shipped keymap (Lightroom-desktop keys with Classic additions).
++    #[default]
++    Lightroom,
++    /// Lightroom Classic's defaults.
++    Classic,
++}
++
++impl KeyProfile {
++    pub const ALL: [KeyProfile; 2] = [KeyProfile::Lightroom, KeyProfile::Classic];
++
++    /// The id `app.keyProfile` takes and returns, and the one `ui.json` saves.
++    pub const fn id(self) -> &'static str {
++        match self {
++            KeyProfile::Lightroom => "lightroom",
++            KeyProfile::Classic => "classic",
++        }
++    }
++
++    /// The set an id names (`app.keyProfile {profile}`); `None` for an unknown one.
++    pub fn from_id(id: &str) -> Option<KeyProfile> {
++        KeyProfile::ALL.into_iter().find(|p| p.id() == id)
++    }
++
++    /// The English name the selectors show, the key of its translation.
++    pub const fn label(self) -> &'static str {
++        match self {
++            KeyProfile::Lightroom => "Lightroom (default)",
++            KeyProfile::Classic => "Lightroom Classic",
++        }
++    }
++}
++
++/// The Classic set's defaults: `(command id, shortcut)`; `""` removes the declared one. Every key
++/// another command declares moves too, so the set has no clashes (see the `classic_keymap` tests).
++pub const CLASSIC_OVERRIDES: &[(&str, &str)] = &[
++    // Library views: E Loupe, D Develop, C Compare, L Lights Out, I info overlay (G grid and N
++    // Survey are already Classic's). The Edit panel's E goes to the Loupe; D is the module.
++    ("view.detail", "E"),
++    ("panel.edit", ""),
++    ("module.develop", "D"),
++    ("view.compare", "C"),
++    ("view.lightsOut", "L"),
++    ("view.infoOverlay", "I"),
++    ("panel.info", ""),
++    // Develop tools: R Crop, Q Spot Removal, K Brush, M Linear, ⇧M Radial, ⇧W Masking,
++    // ⇧T Guided Upright, H shows / hides the pins (the tool overlay)
++    ("panel.crop", "R"),
++    ("panel.remove", "Q"),
++    ("tool.brush", "K"),
++    ("panel.keywords", ""),
++    ("tool.linear", "M"),
++    ("tool.radial", "Shift+M"),
++    ("panel.masking", "Shift+W"),
++    ("tool.guidedUpright", "Shift+T"),
++    ("view.toolOverlay", "H"),
++    ("view.maskOverlayMode", "Alt+O"),
++    // ⇧P flags Pick and advances (a Classic alias below), so Presets has no key
++    ("panel.presets", ""),
++    // Develop settings: ⌘U Auto, ⌘⇧S Sync Settings, ⌘⌥⇧M Match Total Exposures
++    ("develop.auto", "Cmd+U"),
++    ("develop.sync", "Cmd+Shift+S"),
++    ("develop.matchExposure", "Cmd+Alt+Shift+M"),
++    // ⌘N: a new snapshot (version) while editing, a new album (collection) in the Library;
++    // ⌘⇧N likewise a new preset or a new folder (`shortcuts::CONTEXTUAL`)
++    ("version.create", "Cmd+N"),
++    ("dialog.createPreset", "Cmd+Shift+N"),
++    // ⌘⇧E Export…, ⌘E Edit in the other editor (Photoshop), ⌘⌥E Edit in PhotoCraft
++    // (⌘⌥⇧E Export with Previous is already Classic's)
++    ("dialog.export", "Cmd+Shift+E"),
++    ("photo.editInExternal", "Cmd+E"),
++    ("photo.editInPhotoCraft", "Cmd+Alt+E"),
++];
++
++/// Secondary keys only the Classic set adds: `(shortcut, command id, params)`.
++pub const CLASSIC_ALIASES: &[(&str, &str, &str)] = &[
++    // ⇧P flags Pick and advances everywhere, not only in the grids
++    ("Shift+P", "photo.flag", r#"{"flag": "pick", "advance": true}"#),
++    // I cycles the info overlay; ⌘I (Ctrl+I on Windows) too
++    ("Cmd+I", "view.infoOverlay", "{}"),
++    // Develop is D, and stays on the module key ⌘⌥2 (Ctrl+Alt+2 on Windows)
++    ("Cmd+Alt+2", "module.develop", "{}"),
++    // Windows' second Redo key
++    ("Ctrl+Y", "edit.redo", "{}"),
++];
++
++/// The shipped secondary keys ([`crate::shortcuts::ALIASES`]) the Classic set drops, because one
++/// of its own defaults has the key: ⌘E (Export with Previous, which keeps ⌘⌥⇧E) is Edit in the
++/// other editor and ⇧M (Create Version, now ⌘N) the Radial Gradient.
++pub const CLASSIC_DROPPED_ALIASES: &[&str] = &["Cmd+E", "Shift+M"];
++
++/// The shortcut command `id` has under `profile` when the user hasn't changed it: the Classic
++/// table first (`""` in it means none), else the declared default.
++pub fn profile_default(profile: KeyProfile, id: &str, declared: Option<&'static str>) -> Option<&'static str> {
++    if profile == KeyProfile::Classic
++        && let Some((_, sc)) = CLASSIC_OVERRIDES.iter().find(|(o, _)| *o == id)
++    {
++        return if sc.is_empty() { None } else { Some(sc) };
++    }
++    declared
++}
++
++/// The secondary keys active under `profile`: `(shortcut, command id, params)`.
++pub fn aliases(profile: KeyProfile) -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
++    let classic = profile == KeyProfile::Classic;
++    crate::shortcuts::ALIASES
++        .iter()
++        .filter(move |(sc, _, _)| !(classic && CLASSIC_DROPPED_ALIASES.contains(sc)))
++        .chain(CLASSIC_ALIASES.iter().filter(move |_| classic))
++}
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index b64840d42..bc17a4ceb 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -30,6 +30,7 @@ mod frame_rate;
+ pub mod headless;
+ pub mod i18n;
+ pub mod icons;
++pub mod keymap_profiles;
+ pub mod lens_db;
+ pub mod lightroom_import;
+ pub mod links;
+diff --git a/crates/ui-egui/src/menus.rs b/crates/ui-egui/src/menus.rs
+index 05d479ccd..edf91966b 100644
+--- a/crates/ui-egui/src/menus.rs
++++ b/crates/ui-egui/src/menus.rs
+@@ -143,7 +143,7 @@ pub fn menu_entries(app: &LightcraftApp) -> Vec<MenuEntry> {
+             id: id.to_string(),
+             label: label.to_string(),
+             menu: m.split('>').map(str::to_string).collect(),
+-            shortcut: crate::shortcuts::binding(&app.ui.settings.keymap, id, *sc).map(str::to_string),
++            shortcut: crate::shortcuts::binding(app.ui.settings.key_profile, &app.ui.settings.keymap, id, *sc).map(str::to_string),
+             enabled: ui_enabled(app, id),
+         })
+         .collect();
+@@ -153,7 +153,7 @@ pub fn menu_entries(app: &LightcraftApp) -> Vec<MenuEntry> {
+                 id: c.id.into(),
+                 label: c.label.into(),
+                 menu: c.menu.iter().map(|s| s.to_string()).collect(),
+-                shortcut: crate::shortcuts::shortcut_of(&app.ui.settings.keymap, c.id).map(str::to_string),
++                shortcut: crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, c.id).map(str::to_string),
+                 enabled: c.enabled,
+             });
+         }
+diff --git a/crates/ui-egui/src/menus/menubar.rs b/crates/ui-egui/src/menus/menubar.rs
+index 54b49e3f3..1034400ba 100644
+--- a/crates/ui-egui/src/menus/menubar.rs
++++ b/crates/ui-egui/src/menus/menubar.rs
+@@ -78,7 +78,10 @@ pub fn native_item_presentation<'a>(
+     shortcut: Option<&'a str>,
+ ) -> (String, Option<&'a str>) {
+     let label = display_item_label(id, params, label);
+-    let borrowed = matches!(id, "view.photoGrid" | "view.squareGrid") && shortcut != crate::shortcuts::shortcut_of(keymap, id);
++    // the grid rows' own keys are the same in every shortcut set (Lightroom Classic's changes
++    // neither), so the shipped set answers for all of them
++    let own = crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, keymap, id);
++    let borrowed = matches!(id, "view.photoGrid" | "view.squareGrid") && shortcut != own;
+     match shortcut.filter(|sc| borrowed && native_menu_delivers(sc)) {
+         Some(sc) => (format!("{label} ({})", shortcut_text(sc, true)), None),
+         None => (label.to_string(), shortcut),
+@@ -575,7 +578,7 @@ pub(crate) fn expanded(app: &LightcraftApp, name: &str) -> Option<Vec<MenuNode>>
+                 })
+                 .collect();
+             v.push(MenuNode::Separator);
+-            let clear_key = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "photo.clearLabel");
++            let clear_key = crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, "photo.clearLabel");
+             v.push(item("photo.clearLabel", Value::Null, "None", clear_key, has, Some(active.as_ref().is_some_and(|p| p.label.is_none()))));
+             v.push(MenuNode::Separator);
+             // label sets: each a checkable item; Edit… names them
+@@ -642,7 +645,7 @@ pub(crate) fn expanded(app: &LightcraftApp, name: &str) -> Option<Vec<MenuNode>>
+                     "view.layoutImage",
+                     Value::Null,
+                     "Layout Image",
+-                    crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "view.layoutImage"),
++                    crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, "view.layoutImage"),
+                     chosen,
+                     Some(li.show && chosen),
+                 ),
+@@ -669,7 +672,7 @@ pub(crate) fn expanded(app: &LightcraftApp, name: &str) -> Option<Vec<MenuNode>>
+                 .map(|m| item("view.toolOverlay", json!({"mode": m.name()}), m.label(), None, true, Some(app.ui.tool_overlay == m)))
+                 .collect();
+             v.push(MenuNode::Separator);
+-            let shortcut = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "view.toolOverlay");
++            let shortcut = crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, "view.toolOverlay");
+             v.push(item("view.toolOverlay", Value::Null, "Cycle Tool Overlay", shortcut, true, None));
+             v
+         }
+@@ -842,10 +845,14 @@ pub(crate) fn expanded(app: &LightcraftApp, name: &str) -> Option<Vec<MenuNode>>
+ fn node(app: &LightcraftApp, e: &MenuEntry) -> MenuNode {
+     // Shift+P picks and advances in Library; don't advertise it on Presets in those views.
+     let shortcut = if e.id == "panel.presets" && crate::shortcuts::library_grid(app) { None } else { e.shortcut.as_deref() };
++    // a key two commands share by context (Lightroom Classic's ⌘N) shows on the one it runs here
++    let shortcut = if crate::shortcuts::contextual_yields(app, &e.id) { None } else { shortcut };
+     // in an album the Delete key removes from the album (issue #1805): the menu says so
+-    let delete_key = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "photo.delete");
++    let delete_key = crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, "photo.delete");
+     let shortcut = match e.id.as_str() {
+-        "view.photoGrid" | "view.squareGrid" => shortcut.or_else(|| crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "view.gridToggle")),
++        "view.photoGrid" | "view.squareGrid" => {
++            shortcut.or_else(|| crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, "view.gridToggle"))
++        }
+         "album.removePhotos" => delete_key,
+         "photo.delete" if matches!(app.session.source, lightcraft_engine::LibrarySource::Album(_)) => None,
+         _ => shortcut,
+diff --git a/crates/ui-egui/src/menus/menubar/tests.rs b/crates/ui-egui/src/menus/menubar/tests.rs
+index cc3c5c4b0..25dddb61e 100644
+--- a/crates/ui-egui/src/menus/menubar/tests.rs
++++ b/crates/ui-egui/src/menus/menubar/tests.rs
+@@ -16,13 +16,13 @@ fn find<'a>(nodes: &'a [MenuNode], id: &str) -> Option<&'a MenuNode> {
+ #[test]
+ fn grid_menu_shortcut_hints_preserve_direct_bindings_and_clicks() {
+     let mut a = app();
+-    crate::shortcuts::assign(&mut a.ui.settings.keymap, "view.photoGrid", Some("Cmd+Shift+1")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut a.ui.settings.keymap, "view.photoGrid", Some("Cmd+Shift+1")).unwrap();
+     let bar = menu_bar(&a);
+     let nodes = &bar.iter().find(|(title, _)| title == "View").unwrap().1;
+     assert!(matches!(find(nodes, "view.photoGrid"), Some(MenuNode::Item { shortcut: Some(sc), .. }) if sc == "Cmd+Shift+1"));
+     assert!(matches!(find(nodes, "view.squareGrid"), Some(MenuNode::Item { shortcut: Some(sc), .. }) if sc == "G"));
+     // A hint never assigns the cycle key to another command.
+-    assert_eq!(crate::shortcuts::shortcut_of(&a.ui.settings.keymap, "view.squareGrid"), None);
++    assert_eq!(crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &a.ui.settings.keymap, "view.squareGrid"), None);
+     run_item(&mut a, "view.photoGrid", Value::Null).unwrap();
+     assert_eq!(a.ui.view, ViewMode::PhotoGrid);
+     run_item(&mut a, "view.photoGrid", Value::Null).unwrap();
+@@ -44,13 +44,13 @@ fn grid_menu_shortcut_hints_keep_native_toggle_dispatch() {
+         assert_eq!(accelerator, Some("G"));
+         assert!(!native_menu_delivers(accelerator.unwrap()));
+         for (key, text) in [("Cmd+Shift+G", "⇧⌘G"), ("Ctrl+G", "⌃G"), ("F3", "F3")] {
+-            crate::shortcuts::assign(&mut keymap, "view.gridToggle", Some(key)).unwrap();
++            crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "view.gridToggle", Some(key)).unwrap();
+             let (label, accelerator) = native_item_presentation(&keymap, id, &Value::Null, "Photo Grid", Some(key));
+             assert_eq!(label, format!("Photo Grid ({text})"));
+             assert_eq!(accelerator, None, "egui keeps {key}");
+         }
+     }
+-    crate::shortcuts::assign(&mut keymap, "view.photoGrid", Some("Cmd+Shift+1")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "view.photoGrid", Some("Cmd+Shift+1")).unwrap();
+     let (label, accelerator) = native_item_presentation(&keymap, "view.photoGrid", &Value::Null, "Photo Grid", Some("Cmd+Shift+1"));
+     assert_eq!(label, "Photo Grid");
+     assert_eq!(accelerator, Some("Cmd+Shift+1"), "the row's own shortcut is a real accelerator");
+@@ -74,7 +74,7 @@ fn grid_menu_shortcut_hints_preserve_control_keyboard_dispatch() {
+     assert_eq!(h.app.ui.view, ViewMode::SquareGrid);
+     press(&mut h, json!({"key": "G"}));
+     assert_eq!(h.app.ui.view, ViewMode::PhotoGrid);
+-    crate::shortcuts::assign(&mut h.app.ui.settings.keymap, "view.gridToggle", Some("Cmd+Shift+G")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut h.app.ui.settings.keymap, "view.gridToggle", Some("Cmd+Shift+G")).unwrap();
+     press(&mut h, json!({"key": "G"}));
+     assert_eq!(h.app.ui.view, ViewMode::PhotoGrid);
+     press(&mut h, json!({"key": "G", "cmd": true, "shift": true}));
+@@ -93,12 +93,12 @@ fn grid_menu_shortcut_hints_preserve_control_keyboard_dispatch() {
+ #[test]
+ fn grid_menu_shortcut_hints_invalidate_native_ownership_cache() {
+     let mut a = app();
+-    crate::shortcuts::assign(&mut a.ui.settings.keymap, "view.gridToggle", None).unwrap();
+-    crate::shortcuts::assign(&mut a.ui.settings.keymap, "view.photoGrid", Some("Cmd+Shift+G")).unwrap();
+-    crate::shortcuts::assign(&mut a.ui.settings.keymap, "view.squareGrid", Some("Cmd+Shift+2")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut a.ui.settings.keymap, "view.gridToggle", None).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut a.ui.settings.keymap, "view.photoGrid", Some("Cmd+Shift+G")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut a.ui.settings.keymap, "view.squareGrid", Some("Cmd+Shift+2")).unwrap();
+     let before = menu_bar(&a);
+     let direct = native_menu_structure(&before, &a.ui.settings.keymap);
+-    crate::shortcuts::assign(&mut a.ui.settings.keymap, "view.gridToggle", Some("Cmd+Shift+G")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut a.ui.settings.keymap, "view.gridToggle", Some("Cmd+Shift+G")).unwrap();
+     let after = menu_bar(&a);
+     assert_eq!(before, after, "visible hint text does not expose the ownership change");
+     assert_ne!(direct, native_menu_structure(&after, &a.ui.settings.keymap), "rebuild removes the stale direct-grid accelerator");
+@@ -119,11 +119,11 @@ fn grid_menu_shortcut_hints_follow_the_cycle_key() {
+     for id in ["view.photoGrid", "view.squareGrid"] {
+         assert_eq!(hint(&a, id).as_deref(), Some("G"), "{id}");
+     }
+-    crate::shortcuts::assign(&mut a.ui.settings.keymap, "view.gridToggle", Some("Cmd+Shift+G")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut a.ui.settings.keymap, "view.gridToggle", Some("Cmd+Shift+G")).unwrap();
+     for id in ["view.photoGrid", "view.squareGrid"] {
+         assert_eq!(hint(&a, id).as_deref(), Some("Cmd+Shift+G"), "{id}");
+     }
+-    crate::shortcuts::assign(&mut a.ui.settings.keymap, "view.gridToggle", None).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut a.ui.settings.keymap, "view.gridToggle", None).unwrap();
+     for id in ["view.photoGrid", "view.squareGrid"] {
+         assert_eq!(hint(&a, id), None, "{id}");
+     }
+diff --git a/crates/ui-egui/src/menus/run.rs b/crates/ui-egui/src/menus/run.rs
+index 628dc7ad8..9ae859469 100644
+--- a/crates/ui-egui/src/menus/run.rs
++++ b/crates/ui-egui/src/menus/run.rs
+@@ -1342,6 +1342,7 @@ fn ui_commands_10(app: &mut LightcraftApp, ctx: &egui::Context, id: &str, p: &Va
+             Ok(Value::Null)
+         }
+         "app.setShortcut" => crate::shortcuts::set_shortcut(app, p),
++        "app.keyProfile" => crate::shortcuts::key_profile(app, p),
+         "app.resetShortcuts" => {
+             app.ui.settings.keymap.clear();
+             Ok(Value::Null)
+diff --git a/crates/ui-egui/src/menus/ui_commands.rs b/crates/ui-egui/src/menus/ui_commands.rs
+index fbf896c23..9fe3921d8 100644
+--- a/crates/ui-egui/src/menus/ui_commands.rs
++++ b/crates/ui-egui/src/menus/ui_commands.rs
+@@ -298,6 +298,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
+     ("app.shortcuts", "Keyboard Shortcuts", Some("Cmd+/"), "Help"),
+     ("app.setShortcut", "Set Keyboard Shortcut", None, ""),
+     ("app.resetShortcuts", "Reset All Keyboard Shortcuts", None, ""),
++    ("app.keyProfile", "Keyboard Shortcut Set", None, ""),
+     ("app.export", "Export Now", None, ""),
+     ("app.showInFinder", "Show in Finder", Some("Cmd+R"), "Photo"),
+     ("app.showInFolders", "Show in Folders", None, "Photo"),
+diff --git a/crates/ui-egui/src/panels/edit.rs b/crates/ui-egui/src/panels/edit.rs
+index 195bcb648..c92830c40 100644
+--- a/crates/ui-egui/src/panels/edit.rs
++++ b/crates/ui-egui/src/panels/edit.rs
+@@ -66,7 +66,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+     ui.painter().text(pos2(hr.left() + 24.0, hr.bottom() - 10.0), Align2::LEFT_CENTER, crate::i18n::tr("Edit"), t.semibold(15.0), t.text);
+     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 8, bottom: 14 }).show(ui, |ui| {
+-        let tip = reset_tip(&app.ui.settings.keymap, ui.ctx().os() == egui::os::OperatingSystem::Mac);
++        let tip = reset_tip(app.ui.settings.key_profile, &app.ui.settings.keymap, ui.ctx().os() == egui::os::OperatingSystem::Mac);
+         let clicks = header_buttons(ui, crate::is_bw(&d), d.hdr.enabled, &tip);
+         if clicks.auto {
+             let _ = app.run("develop.auto", json!({}));
+diff --git a/crates/ui-egui/src/panels/edit/histogram.rs b/crates/ui-egui/src/panels/edit/histogram.rs
+index 875053ce8..2d9cfc5b8 100644
+--- a/crates/ui-egui/src/panels/edit/histogram.rs
++++ b/crates/ui-egui/src/panels/edit/histogram.rs
+@@ -363,11 +363,11 @@ mod tests {
+     #[test]
+     fn reset_tooltip_names_the_shortcut_of_this_platform() {
+         let keymap = crate::shortcuts::Keymap::new();
+-        assert_eq!(reset_tip(&keymap, false), "Reset all edits (Ctrl+Shift+R)");
+-        assert_eq!(reset_tip(&keymap, true), "Reset all edits (⇧⌘R)");
++        assert_eq!(reset_tip(crate::shortcuts::KeyProfile::Lightroom, &keymap, false), "Reset all edits (Ctrl+Shift+R)");
++        assert_eq!(reset_tip(crate::shortcuts::KeyProfile::Lightroom, &keymap, true), "Reset all edits (⇧⌘R)");
+         let rebound: crate::shortcuts::Keymap = [("develop.reset".to_string(), "Cmd+Alt+R".to_string())].into();
+-        assert_eq!(reset_tip(&rebound, false), "Reset all edits (Ctrl+Alt+R)");
++        assert_eq!(reset_tip(crate::shortcuts::KeyProfile::Lightroom, &rebound, false), "Reset all edits (Ctrl+Alt+R)");
+         let unbound: crate::shortcuts::Keymap = [("develop.reset".to_string(), String::new())].into();
+-        assert_eq!(reset_tip(&unbound, false), "Reset all edits");
++        assert_eq!(reset_tip(crate::shortcuts::KeyProfile::Lightroom, &unbound, false), "Reset all edits");
+     }
+ }
+diff --git a/crates/ui-egui/src/panels/edit/sliders.rs b/crates/ui-egui/src/panels/edit/sliders.rs
+index 2a6a3a13e..742c5ae43 100644
+--- a/crates/ui-egui/src/panels/edit/sliders.rs
++++ b/crates/ui-egui/src/panels/edit/sliders.rs
+@@ -371,9 +371,9 @@ pub(super) fn header_buttons(ui: &mut egui::Ui, bw: bool, hdr: bool, reset_tip:
+ }
+ 
+ /// The Reset button's tooltip with the reset shortcut as this platform writes it (issue #1751).
+-pub(super) fn reset_tip(keymap: &crate::shortcuts::Keymap, mac: bool) -> String {
++pub(super) fn reset_tip(profile: crate::shortcuts::KeyProfile, keymap: &crate::shortcuts::Keymap, mac: bool) -> String {
+     let base = crate::i18n::tr("Reset all edits");
+-    match crate::shortcuts::shortcut_of(keymap, "develop.reset") {
++    match crate::shortcuts::shortcut_of(profile, keymap, "develop.reset") {
+         Some(sc) => format!("{base} ({})", crate::menubar::shortcut_text(sc, mac)),
+         None => base.to_string(),
+     }
+diff --git a/crates/ui-egui/src/panels/empty_library.rs b/crates/ui-egui/src/panels/empty_library.rs
+index c26c87f41..e10f06451 100644
+--- a/crates/ui-egui/src/panels/empty_library.rs
++++ b/crates/ui-egui/src/panels/empty_library.rs
+@@ -36,14 +36,14 @@ pub fn open_on_empty_library(app: &mut LightcraftApp) {
+ 
+ /// The line under the buttons: dropping works anywhere in the window, and the shortcut is the
+ /// one Import Photos… is bound to now, written as menus write it.
+-pub fn hint(keymap: &Keymap, mac: bool) -> String {
++pub fn hint(profile: crate::shortcuts::KeyProfile, keymap: &Keymap, mac: bool) -> String {
+     // the browser build reads dropped files, not folders
+     let drop = if cfg!(target_arch = "wasm32") {
+         crate::i18n::tr("or drop photos into this window")
+     } else {
+         crate::i18n::tr("or drop photos and folders into this window")
+     };
+-    match crate::shortcuts::shortcut_of(keymap, "file.addPhotos") {
++    match crate::shortcuts::shortcut_of(profile, keymap, "file.addPhotos") {
+         Some(sc) => format!("{drop} · {}", crate::menubar::shortcut_text(sc, mac)),
+         None => drop.to_string(),
+     }
+@@ -52,8 +52,8 @@ pub fn hint(keymap: &Keymap, mac: bool) -> String {
+ /// The grid's second line when a view with no photos is not the empty library (an empty album, say):
+ /// the way in is File → Import Photos…, with the shortcut that command is bound to now, written as
+ /// menus write it. With no shortcut the sentence leaves it out.
+-pub fn no_photos_body(keymap: &Keymap, mac: bool) -> String {
+-    match crate::shortcuts::shortcut_of(keymap, "file.addPhotos") {
++pub fn no_photos_body(profile: crate::shortcuts::KeyProfile, keymap: &Keymap, mac: bool) -> String {
++    match crate::shortcuts::shortcut_of(profile, keymap, "file.addPhotos") {
+         Some(sc) => {
+             crate::i18n::tr_format!("Import photos with File → Import Photos… ({}), or drop them here", crate::menubar::shortcut_text(sc, mac))
+         }
+@@ -71,7 +71,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, rect: Rect) {
+     // the browser build can't read a Lightroom catalog from disk: only offer what works there
+     let actions: &[EmptyAction] = if cfg!(target_arch = "wasm32") { &[IMPORT_PHOTOS] } else { &[IMPORT_PHOTOS, IMPORT_LIGHTROOM] };
+     let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+-    let hint = hint(&app.ui.settings.keymap, mac);
++    let hint = hint(app.ui.settings.key_profile, &app.ui.settings.keymap, mac);
+     let clicked = super::empty_state(
+         ui,
+         rect,
+diff --git a/crates/ui-egui/src/panels/grid.rs b/crates/ui-egui/src/panels/grid.rs
+index 556f809d2..1cb193ff9 100644
+--- a/crates/ui-egui/src/panels/grid.rs
++++ b/crates/ui-egui/src/panels/grid.rs
+@@ -266,9 +266,9 @@ impl GridCache {
+ 
+ /// The empty view's way in: the sentence, and Import Photos' shortcut as this platform writes it
+ /// and as it is bound (the menu bar's own text), `None` when it is unbound.
+-pub(crate) fn import_way_in(keymap: &crate::shortcuts::Keymap, mac: bool) -> (&'static str, Option<String>) {
++pub(crate) fn import_way_in(profile: crate::shortcuts::KeyProfile, keymap: &crate::shortcuts::Keymap, mac: bool) -> (&'static str, Option<String>) {
+     let way = crate::i18n::tr("Import photos with File → Import Photos…, or drop them here");
+-    (way, crate::shortcuts::shortcut_of(keymap, "file.addPhotos").map(|sc| crate::menubar::shortcut_text(sc, mac)))
++    (way, crate::shortcuts::shortcut_of(profile, keymap, "file.addPhotos").map(|sc| crate::menubar::shortcut_text(sc, mac)))
+ }
+ 
+ /// Width / height of a photo's cell: its cropped, oriented shape.
+@@ -335,7 +335,7 @@ fn show_inner(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+         } else {
+             let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+             // wrapped to the grid's width, the shortcut on its own line under it
+-            let (way, key) = import_way_in(&app.ui.settings.keymap, mac);
++            let (way, key) = import_way_in(app.ui.settings.key_profile, &app.ui.settings.keymap, mac);
+             super::empty_state(ui, ui.max_rect(), "No photos", way, &[], key.as_deref());
+         }
+         return;
+diff --git a/crates/ui-egui/src/panels/masking.rs b/crates/ui-egui/src/panels/masking.rs
+index 2c1c19758..ede2b893a 100644
+--- a/crates/ui-egui/src/panels/masking.rs
++++ b/crates/ui-egui/src/panels/masking.rs
+@@ -205,7 +205,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+                 let all = app.ui.mask_overlay_all;
+                 let all_mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+                 let all_base = crate::i18n::tr("Show all overlays");
+-                let all_tip = match crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "view.maskOverlayAll") {
++                let all_tip = match crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, "view.maskOverlayAll") {
+                     Some(sc) => format!("{all_base} ({})", crate::menubar::shortcut_text(sc, all_mac)),
+                     None => all_base.to_string(),
+                 };
+diff --git a/crates/ui-egui/src/panels/modules.rs b/crates/ui-egui/src/panels/modules.rs
+index 69190ffd0..c88b69a49 100644
+--- a/crates/ui-egui/src/panels/modules.rs
++++ b/crates/ui-egui/src/panels/modules.rs
+@@ -208,7 +208,7 @@ fn button_width(ui: &egui::Ui, t: &Tokens, m: Module) -> f32 {
+ /// The tooltip of a module button: its name and the key it is bound to now.
+ fn tip(app: &LightcraftApp, ui: &egui::Ui, m: Module) -> String {
+     let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+-    match crate::shortcuts::shortcut_of(&app.ui.settings.keymap, m.command()) {
++    match crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, m.command()) {
+         Some(sc) => format!("{} ({})", m.name(), crate::menubar::shortcut_text(sc, mac)),
+         None => m.name().to_string(),
+     }
+diff --git a/crates/ui-egui/src/panels/topbar.rs b/crates/ui-egui/src/panels/topbar.rs
+index d918c4edb..2ea3ec0e4 100644
+--- a/crates/ui-egui/src/panels/topbar.rs
++++ b/crates/ui-egui/src/panels/topbar.rs
+@@ -192,7 +192,7 @@ fn right_icons(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, full: Rec
+     let cloud_tip = unsaved.as_deref().unwrap_or_default();
+     // Import Photos… beside Export, always one click away, with the key it is bound to now
+     let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+-    let import_tip = match crate::shortcuts::shortcut_of(&app.ui.settings.keymap, "file.addPhotos") {
++    let import_tip = match crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, "file.addPhotos") {
+         Some(sc) => format!("{} ({})", crate::i18n::tr("Import Photos…"), crate::menubar::shortcut_text(sc, mac)),
+         None => crate::i18n::tr("Import Photos…").to_string(),
+     };
+diff --git a/crates/ui-egui/src/shortcuts.rs b/crates/ui-egui/src/shortcuts.rs
+index 496229400..ccad35505 100644
+--- a/crates/ui-egui/src/shortcuts.rs
++++ b/crates/ui-egui/src/shortcuts.rs
+@@ -8,9 +8,12 @@ use egui::{Key, Modifiers};
+ use serde_json::{Value, json};
+ 
+ use crate::LightcraftApp;
++pub use crate::keymap_profiles::KeyProfile;
++use crate::keymap_profiles::profile_default;
+ 
+ /// The user's changes to the keymap: command id → shortcut (`""` = no shortcut). Saved with the
+-/// app settings (`ui.json`); commands not listed keep their declared shortcut.
++/// app settings (`ui.json`); commands not listed keep the active shortcut set's key
++/// ([`KeyProfile`]: the declared shortcut, or Lightroom Classic's).
+ pub type Keymap = BTreeMap<String, String>;
+ 
+ /// Shortcuts the app menu owns (Settings…, Quit), which no command can take.
+@@ -52,15 +55,16 @@ pub fn find_bindable(id: &str) -> Option<&'static Bindable> {
+     bindable().iter().find(|b| b.id == id)
+ }
+ 
+-/// The shortcut `id` has now: the user's choice (`""` = none), else the declared one. An entry
+-/// that doesn't parse (a hand-edited `ui.json`, a modifier-only key saved by an older build) is
+-/// ignored. The declared shortcut yields to a saved entry that gives its key to another known
+-/// command other than its contextual partner.
+-pub fn binding<'a>(keymap: &'a Keymap, id: &str, default: Option<&'a str>) -> Option<&'a str> {
++/// The shortcut `id` has now under the shortcut set `profile`: the user's choice (`""` = none),
++/// else the set's key for it ([`profile_default`] of the declared `default`). An entry that doesn't
++/// parse (a hand-edited `ui.json`, a modifier-only key saved by an older build) is ignored. The
++/// set's key yields to a saved entry that gives it to another known command other than its
++/// contextual partner.
++pub fn binding<'a>(profile: KeyProfile, keymap: &'a Keymap, id: &str, default: Option<&'static str>) -> Option<&'a str> {
+     match keymap.get(id) {
+         Some(sc) if sc.is_empty() => None,
+         Some(sc) if parse(sc).is_some() => Some(sc.as_str()),
+-        _ => default.filter(|sc| !assigned_elsewhere(keymap, id, sc)),
++        _ => profile_default(profile, id, default).filter(|sc| !assigned_elsewhere(keymap, id, sc)),
+     }
+ }
+ 
+@@ -78,30 +82,38 @@ pub(crate) fn saved_keys(keymap: &Keymap) -> impl Iterator<Item = (&str, (Modifi
+     keymap.iter().filter(|(id, _)| find_bindable(id).is_some()).filter_map(|(id, sc)| Some((id.as_str(), parse(sc)?)))
+ }
+ 
+-/// The effective shortcut of command `id` (`None` for unknown commands).
+-pub fn shortcut_of<'a>(keymap: &'a Keymap, id: &str) -> Option<&'a str> {
+-    find_bindable(id).and_then(|b| binding(keymap, id, b.default))
++/// The effective shortcut of command `id` under `profile` (`None` for unknown commands).
++pub fn shortcut_of<'a>(profile: KeyProfile, keymap: &'a Keymap, id: &str) -> Option<&'a str> {
++    find_bindable(id).and_then(|b| binding(profile, keymap, id, b.default))
+ }
+ 
+-/// Engine commands that intentionally share a key and are disambiguated by context in [`handle`]:
+-/// the X pair by the Crop panel, A by whether it is open (Visualize Spots everywhere, the aspect
+-/// lock under the Crop panel).
+-pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect"), ("view.visualizeSpots", "crop.lockAspect")];
++/// Commands that intentionally share a key and are disambiguated by context in [`handle`]: the X
++/// pair by the Crop panel, A by whether it is open (Visualize Spots everywhere, the aspect lock
++/// under the Crop panel), and Lightroom Classic's ⌘N / ⌘⇧N by whether a photo is being edited
++/// (a new version / preset while editing, a new album / folder in the Library, see
++/// [`contextual_yields`]).
++pub const CONTEXTUAL: &[(&str, &str)] = &[
++    ("photo.reject", "crop.rotateAspect"),
++    ("view.visualizeSpots", "crop.lockAspect"),
++    ("dialog.newAlbum", "version.create"),
++    ("dialog.newFolder", "dialog.createPreset"),
++];
+ 
+-/// Commands other than `id` whose shortcut is the key `sc` (contextual partners excepted).
+-pub fn conflicts(keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
++/// Commands other than `id` whose shortcut is the key `sc` under `profile` (contextual partners
++/// excepted).
++pub fn conflicts(profile: KeyProfile, keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
+     let Some(key) = parse(sc) else { return vec![] };
+     bindable()
+         .iter()
+         .filter(|b| b.id != id && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == b.id) || (*y == id && *x == b.id)))
+-        .filter(|b| binding(keymap, b.id, b.default).and_then(parse) == Some(key))
++        .filter(|b| binding(profile, keymap, b.id, b.default).and_then(parse) == Some(key))
+         .map(|b| b.id)
+         .collect()
+ }
+ 
+-/// Give `id` the shortcut `sc` (`None` = no shortcut), taking it away from commands that had the
+-/// same key. Returns the commands that lost it.
+-pub fn assign(keymap: &mut Keymap, id: &str, sc: Option<&str>) -> Result<Vec<&'static str>, String> {
++/// Give `id` the shortcut `sc` under `profile` (`None` = no shortcut), taking it away from
++/// commands that had the same key. Returns the commands that lost it.
++pub fn assign(profile: KeyProfile, keymap: &mut Keymap, id: &str, sc: Option<&str>) -> Result<Vec<&'static str>, String> {
+     let b = find_bindable(id).ok_or_else(|| format!("unknown command: {id}"))?;
+     let sc = match sc.map(str::trim).filter(|s| !s.is_empty()) {
+         None => None,
+@@ -115,17 +127,17 @@ pub fn assign(keymap: &mut Keymap, id: &str, sc: Option<&str>) -> Result<Vec<&'s
+             Some(canonical)
+         }
+     };
+-    let lost = sc.as_deref().map(|s| conflicts(keymap, id, s)).unwrap_or_default();
++    let lost = sc.as_deref().map(|s| conflicts(profile, keymap, id, s)).unwrap_or_default();
+     for other in &lost {
+-        set(keymap, other, None);
++        set(profile, keymap, other, None);
+     }
+-    set(keymap, b.id, sc.as_deref());
++    set(profile, keymap, b.id, sc.as_deref());
+     Ok(lost)
+ }
+ 
+-/// Store `sc` for `id`, dropping the entry when it equals the declared shortcut.
+-fn set(keymap: &mut Keymap, id: &str, sc: Option<&str>) {
+-    let default = find_bindable(id).and_then(|b| b.default);
++/// Store `sc` for `id`, dropping the entry when it equals the active set's shortcut.
++fn set(profile: KeyProfile, keymap: &mut Keymap, id: &str, sc: Option<&str>) {
++    let default = profile_default(profile, id, find_bindable(id).and_then(|b| b.default));
+     let same = match (sc, default) {
+         (None, None) => true,
+         (Some(a), Some(b)) => parse(a) == parse(b),
+@@ -138,27 +150,46 @@ fn set(keymap: &mut Keymap, id: &str, sc: Option<&str>) {
+     }
+ }
+ 
+-/// Restore the declared shortcut of `id`, taking it away from a command the user gave it to.
+-pub fn reset(keymap: &mut Keymap, id: &str) -> Result<Vec<&'static str>, String> {
++/// Restore the active set's shortcut of `id`, taking it away from a command the user gave it to.
++pub fn reset(profile: KeyProfile, keymap: &mut Keymap, id: &str) -> Result<Vec<&'static str>, String> {
+     let b = find_bindable(id).ok_or_else(|| format!("unknown command: {id}"))?;
+-    assign(keymap, id, b.default)
++    assign(profile, keymap, id, profile_default(profile, id, b.default))
+ }
+ 
+ /// `app.setShortcut {id, shortcut?, reset?}`: `shortcut` null or `""` removes it.
+ pub fn set_shortcut(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
+     let id = p.get("id").and_then(Value::as_str).ok_or("missing id")?;
++    let profile = app.ui.settings.key_profile;
+     let keymap = &mut app.ui.settings.keymap;
+     let lost = if p.get("reset").and_then(Value::as_bool).unwrap_or(false) {
+-        reset(keymap, id)?
++        reset(profile, keymap, id)?
+     } else {
+         match p.get("shortcut") {
+             None => return Err("missing shortcut (null removes it)".into()),
+-            Some(Value::Null) => assign(keymap, id, None)?,
+-            Some(Value::String(s)) => assign(keymap, id, Some(s))?,
++            Some(Value::Null) => assign(profile, keymap, id, None)?,
++            Some(Value::String(s)) => assign(profile, keymap, id, Some(s))?,
+             Some(_) => return Err("shortcut must be a string or null".into()),
+         }
+     };
+-    Ok(json!({"id": id, "shortcut": shortcut_of(&app.ui.settings.keymap, id), "removedFrom": lost}))
++    Ok(json!({"id": id, "shortcut": shortcut_of(profile, &app.ui.settings.keymap, id), "removedFrom": lost}))
++}
++
++/// `app.keyProfile {profile?: "lightroom" | "classic"}`: switch the set of default shortcuts (the
++/// user's own bindings stay on top of either); without `profile` it only says which is active.
++pub fn key_profile(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
++    match p.get("profile") {
++        None | Some(Value::Null) => {}
++        Some(v) => {
++            let name = v.as_str().ok_or("profile must be \"lightroom\" or \"classic\"")?;
++            let profile = KeyProfile::from_id(name).ok_or_else(|| format!("unknown shortcut set: {name} (lightroom|classic)"))?;
++            if profile != app.ui.settings.key_profile {
++                app.ui.settings.key_profile = profile;
++                // a key being recorded belongs to the row the old set showed
++                app.recording_shortcut = None;
++            }
++        }
++    }
++    Ok(json!({"profile": app.ui.settings.key_profile.id()}))
+ }
+ 
+ /// ⌘ / ⇧ / ⌥ / ⌃ themselves: they modify a shortcut's key, they can't be it.
+@@ -393,16 +424,20 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context) {
+         fire_alias(app, ctx, id, params);
+     }
+     // while the Masking panel is open, an unmodified H that no assignment has claimed toggles the
+-    // mask pins (the View ▸ Show Mask Pins switch) instead of opening Remove; the full-screen
+-    // preview shows no panels and a minimized window hides the panel, so there H keeps its own
+-    // binding
++    // mask pins (the View ▸ Show Mask Pins switch) instead of what the shortcut set gives H
++    // (Remove, or Lightroom Classic's tool overlay); the full-screen preview shows no panels and a
++    // minimized window hides the panel, so there H keeps its own binding
+     if h_press
+         && app.ui.right == crate::state::RightPanel::Masking
+         && !app.ui.fullscreen
+         && crate::docking::exposed(app, crate::docking::Panel::Tools)
+     {
+         let _ = app.run("view.maskPins", json!({}));
+-        fire.retain(|f| f != "panel.remove");
++        let profile = app.ui.settings.key_profile;
++        let keymap = &app.ui.settings.keymap;
++        fire.retain(|f| {
++            find_bindable(f).is_none_or(|b| binding(profile, keymap, b.id, b.default).and_then(parse) != Some((Modifiers::NONE, Key::H)))
++        });
+     }
+     let rotate_fires = fire.iter().any(|f| f == "crop.rotateAspect");
+     for f in fire {
+@@ -420,12 +455,18 @@ fn pressed_commands(app: &LightcraftApp, ctx: &egui::Context) -> (Vec<String>, V
+     let mut aliased: Vec<(&'static str, serde_json::Value)> = Vec::new();
+     let mut h_press = false;
+     let keymap = &app.ui.settings.keymap;
++    let profile = app.ui.settings.key_profile;
+     let grid = library_grid(app);
+     // The grid navigation keys act on the photos in view, so they wait while the full-screen preview
+     // covers the grid: a key must not move the selection onto photos nobody can see.
+     let grid_navigation = grid && !app.ui.fullscreen;
+-    // keys the user gave to a known command: the fixed bindings below (aliases, ratings) yield to them
+-    let taken: Vec<(Modifiers, Key)> = saved_keys(keymap).map(|(_, k)| k).collect();
++    // keys the user gave to a known command: they own Enter's grid fallback and the Masking
++    // panel's H (a declared key never silenced those)
++    let user_keys: Vec<(Modifiers, Key)> = saved_keys(keymap).map(|(_, k)| k).collect();
++    // keys a binding owns, the user's and the shortcut set's: the fixed bindings below (aliases,
++    // ratings, the grids' B) yield to them
++    let taken: Vec<(Modifiers, Key)> =
++        user_keys.iter().copied().chain(bindable().iter().filter_map(|b| binding(profile, keymap, b.id, b.default).and_then(parse))).collect();
+     // an open popup (a menu, a date picker's calendar) closes on Esc itself: Esc's command (Back,
+     // which also closes dialogs) waits until nothing is open
+     let popup_open = egui::Popup::is_any_open(ctx);
+@@ -437,7 +478,7 @@ fn pressed_commands(app: &LightcraftApp, ctx: &egui::Context) -> (Vec<String>, V
+             && app.session.active().is_some()
+             && !popup_open
+             && !native("Enter")
+-            && !taken.contains(&(Modifiers::NONE, Key::Enter))
++            && !user_keys.contains(&(Modifiers::NONE, Key::Enter))
+             && matches(i, Modifiers::NONE, Key::Enter)
+         {
+             fire.push("view.detail".to_string());
+@@ -445,7 +486,7 @@ fn pressed_commands(app: &LightcraftApp, ctx: &egui::Context) -> (Vec<String>, V
+         // a held Space repeats: it toggles the zoom (or takes the hand) once per press
+         let space_repeat = !i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, .. }));
+         for b in bindable() {
+-            if let Some(sc) = binding(keymap, b.id, b.default)
++            if let Some(sc) = binding(profile, keymap, b.id, b.default)
+                 && let Some((m, k)) = parse(sc)
+                 && !native(sc)
+                 && !(k == Key::Escape && popup_open)
+@@ -463,7 +504,7 @@ fn pressed_commands(app: &LightcraftApp, ctx: &egui::Context) -> (Vec<String>, V
+                 }
+             }
+         }
+-        for (sc, id, params) in ALIASES {
++        for (sc, id, params) in crate::keymap_profiles::aliases(profile) {
+             if let Some((m, k)) = parse(sc).filter(|_| !native(sc))
+                 && !(k == Key::Escape && popup_open)
+                 && !(k == Key::Space && space_repeat)
+@@ -473,15 +514,22 @@ fn pressed_commands(app: &LightcraftApp, ctx: &egui::Context) -> (Vec<String>, V
+                 aliased.push((id, serde_json::from_str(params).unwrap_or_default()));
+             }
+         }
+-        fixed_photo_keys(i, &native, &taken, grid_navigation, &mut fire);
+-        h_press = matches(i, Modifiers::NONE, Key::H) && !native("H") && !taken.contains(&(Modifiers::NONE, Key::H));
++        fixed_photo_keys(i, &native, &taken, grid, grid_navigation, &mut fire);
++        h_press = matches(i, Modifiers::NONE, Key::H) && !native("H") && !user_keys.contains(&(Modifiers::NONE, Key::H));
+     });
+     (fire, aliased, h_press)
+ }
+ 
+-/// The fixed photo keys pressed: ratings 0-5, colour labels 6-9 (with Shift: and advance), and in a grid the
+-/// navigation keys. Keys the user gave to a command (`taken`) and the native menu's (`native`) are left alone.
+-fn fixed_photo_keys(i: &egui::InputState, native: &dyn Fn(&str) -> bool, taken: &[(Modifiers, Key)], grid_navigation: bool, fire: &mut Vec<String>) {
++/// The fixed photo keys pressed: ratings 0-5, colour labels 6-9 (with Shift: and advance), in a grid B (the Quick
++/// Collection) and the navigation keys. Keys a binding owns (`taken`) and the native menu's (`native`) are left alone.
++fn fixed_photo_keys(
++    i: &egui::InputState,
++    native: &dyn Fn(&str) -> bool,
++    taken: &[(Modifiers, Key)],
++    grid: bool,
++    grid_navigation: bool,
++    fire: &mut Vec<String>,
++) {
+     // rating 0-5, colour labels 6-9 (with Shift: and advance)
+     for (n, key) in [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5].iter().enumerate() {
+         if matches(i, Modifiers::NONE, *key) && !native(&n.to_string()) && !taken.contains(&(Modifiers::NONE, *key)) {
+@@ -496,6 +544,11 @@ fn fixed_photo_keys(i: &egui::InputState, native: &dyn Fn(&str) -> bool, taken:
+             fire.push(format!("label:{label}"));
+         }
+     }
++    // B: the Quick Collection in the grids when no binding has the key (Lightroom Classic's
++    // brush is K; the shipped brush on B carries the same action in a grid, see `brush_key`)
++    if grid && matches(i, Modifiers::NONE, Key::B) && !native("B") && !taken.contains(&(Modifiers::NONE, Key::B)) {
++        fire.push("album.toggleTarget".to_string());
++    }
+     if !grid_navigation {
+         return;
+     }
+@@ -600,7 +653,11 @@ fn fire_command(app: &mut LightcraftApp, ctx: &egui::Context, f: &str, rotate_fi
+         let _ = app.run("view.infoOverlay", json!({}));
+         return;
+     }
+-    if (f == "photo.delete" && delete_key(app, ctx)) || (f == "tool.brush" && brush_key(app, ctx)) || context_key_skipped(app, f, rotate_fires) {
++    if (f == "photo.delete" && delete_key(app, ctx))
++        || (f == "album.toggleTarget" && album_key(app, ctx))
++        || (f == "tool.brush" && brush_key(app, ctx))
++        || context_key_skipped(app, f, rotate_fires)
++    {
+         return;
+     }
+     if matches!(f, "library.up" | "library.down") {
+@@ -755,11 +812,19 @@ fn delete_selected_guide(app: &mut LightcraftApp) {
+     app.ui.selected_guide = None;
+ }
+ 
+-/// B: the brush while editing; in the grids, add to the target album (Quick Collection). Whether the key was used up.
++/// B: the brush while editing; in the grids, add to the target album (Quick Collection). Lightroom
++/// Classic's brush key (K) is only the brush: its B is the album key alone (`fixed_photo_keys`).
++/// Whether the key was used up.
+ fn brush_key(app: &mut LightcraftApp, ctx: &egui::Context) -> bool {
+-    if !library_grid(app) {
++    let brush = binding(app.ui.settings.key_profile, &app.ui.settings.keymap, "tool.brush", find_bindable("tool.brush").and_then(|b| b.default));
++    if !library_grid(app) || brush.and_then(parse) != Some((Modifiers::NONE, Key::B)) {
+         return false;
+     }
++    album_key(app, ctx)
++}
++
++/// Add the selection to the target album (Quick Collection), and say so. Whether the key was used up.
++fn album_key(app: &mut LightcraftApp, ctx: &egui::Context) -> bool {
+     // `added` is null when nothing was left to toggle (the selected photos are gone): nothing to say
+     if let Some(r) = app.run("album.toggleTarget", json!({})).ok().filter(|r| r["added"].is_boolean()) {
+         let n = r["toggled"].as_u64().unwrap_or(0);
+@@ -814,8 +879,28 @@ fn context_key_skipped(app: &mut LightcraftApp, f: &str, rotate_fires: bool) ->
+             let _ = app.run("view.cropOverlayOrientation", json!({}));
+             true
+         }
+-        _ => false,
+-    }
++        _ => contextual_yields(app, f),
++    }
++}
++
++/// Whether `id` gives way to its contextual partner on the key they share right now (Lightroom
++/// Classic's ⌘N and ⌘⇧N): while a photo is being edited (an edit tool's panel beside the photo)
++/// they make a new version / preset, elsewhere a new album / folder. A pair the user split onto
++/// two keys yields nothing: each key keeps its command everywhere. The menus hide the yielding
++/// side's key, so the menu bar shows (and on macOS delivers) the one that acts.
++pub(crate) fn contextual_yields(app: &LightcraftApp, id: &str) -> bool {
++    let editing = app.ui.right.is_edit_tool() && !library_grid(app);
++    let (partner, yields) = match id {
++        "dialog.newAlbum" => ("version.create", editing),
++        "dialog.newFolder" => ("dialog.createPreset", editing),
++        "version.create" => ("dialog.newAlbum", !editing),
++        "dialog.createPreset" => ("dialog.newFolder", !editing),
++        _ => return false,
++    };
++    let profile = app.ui.settings.key_profile;
++    let keymap = &app.ui.settings.keymap;
++    let key = |id: &str| find_bindable(id).and_then(|b| binding(profile, keymap, id, b.default)).and_then(parse);
++    yields && key(id).is_some() && key(id) == key(partner)
+ }
+ 
+ /// Up / Down in the grids go to the cell above / below (the filmstrip steps one photo).
+diff --git a/crates/ui-egui/src/shortcuts/tests.rs b/crates/ui-egui/src/shortcuts/tests.rs
+index a6fbb1333..2fb941056 100644
+--- a/crates/ui-egui/src/shortcuts/tests.rs
++++ b/crates/ui-egui/src/shortcuts/tests.rs
+@@ -73,13 +73,13 @@ fn select_only_active_follows_the_keymap() {
+     let mut h = library();
+     let both = vec![PhotoId(1), PhotoId(2)];
+     h.app.session.execute("library.select", &json!({"ids": [1, 2], "active": 2})).unwrap();
+-    assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "library.selectOnlyActive"), Some("Cmd+Shift+D"));
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "library.selectOnlyActive"), Some("Cmd+Shift+D"));
+     // unbound: the default chord does nothing
+-    super::assign(&mut h.app.ui.settings.keymap, "library.selectOnlyActive", None).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut h.app.ui.settings.keymap, "library.selectOnlyActive", None).unwrap();
+     select_only_active_chord(&mut h);
+     assert_eq!(h.app.session.selection.ids, both);
+     // rebound: the new key narrows the selection and the old chord still does not
+-    super::assign(&mut h.app.ui.settings.keymap, "library.selectOnlyActive", Some("F9")).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut h.app.ui.settings.keymap, "library.selectOnlyActive", Some("F9")).unwrap();
+     select_only_active_chord(&mut h);
+     assert_eq!(h.app.session.selection.ids, both);
+     key(&mut h, "F9", false);
+@@ -137,23 +137,23 @@ fn a_saved_key_wins_over_another_commands_declared_key() {
+     use lightcraft_catalog::{Flag, PhotoId};
+     let mut h = library();
+     h.app.ui.settings.keymap.insert("photo.increaseRating".into(), "P".into());
+-    assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), None);
+-    assert_eq!(super::conflicts(&h.app.ui.settings.keymap, "view.survey", "P"), vec!["photo.increaseRating"]);
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.pick"), None);
++    assert_eq!(super::conflicts(super::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.survey", "P"), vec!["photo.increaseRating"]);
+     key(&mut h, "P", false);
+     let photo = h.app.session.catalog.photo(PhotoId(1)).unwrap();
+     assert_eq!(photo.rating, 1, "the saved key raised the rating");
+     assert_eq!(photo.flag, Flag::None, "Flag as Pick's declared key yielded");
+     // with the entry gone, P picks again
+     h.app.ui.settings.keymap.remove("photo.increaseRating");
+-    assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), Some("P"));
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.pick"), Some("P"));
+     key(&mut h, "P", false);
+     assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::Pick);
+     // a contextual partner's saved key does not silence the other side
+     h.app.ui.settings.keymap.insert("crop.rotateAspect".into(), "X".into());
+-    assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.reject"), Some("X"));
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.reject"), Some("X"));
+     // nor does an entry for a command this build doesn't know
+     h.app.ui.settings.keymap.insert("no.suchCommand".into(), "U".into());
+-    assert_eq!(super::shortcut_of(&h.app.ui.settings.keymap, "photo.unflag"), Some("U"));
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.unflag"), Some("U"));
+ }
+ 
+ /// Keymap entries for commands this build doesn't know take no key: an alias, a rating key and
+@@ -458,33 +458,33 @@ fn key_presses_format_to_shortcuts_that_parse_back() {
+ #[test]
+ fn assigning_a_key_moves_it_and_reset_restores_it() {
+     let mut keymap = Keymap::new();
+-    assert_eq!(shortcut_of(&keymap, "view.survey"), Some("N"));
++    assert_eq!(shortcut_of(super::KeyProfile::Lightroom, &keymap, "view.survey"), Some("N"));
+     // D belongs to Detail: Survey takes it, Detail loses it
+-    let lost = assign(&mut keymap, "view.survey", Some("D")).unwrap();
++    let lost = assign(super::KeyProfile::Lightroom, &mut keymap, "view.survey", Some("D")).unwrap();
+     assert_eq!(lost, vec!["view.detail"]);
+-    assert_eq!(shortcut_of(&keymap, "view.survey"), Some("D"));
+-    assert_eq!(shortcut_of(&keymap, "view.detail"), None);
++    assert_eq!(shortcut_of(super::KeyProfile::Lightroom, &keymap, "view.survey"), Some("D"));
++    assert_eq!(shortcut_of(super::KeyProfile::Lightroom, &keymap, "view.detail"), None);
+     // restoring Detail takes D back
+-    let lost = reset(&mut keymap, "view.detail").unwrap();
++    let lost = reset(super::KeyProfile::Lightroom, &mut keymap, "view.detail").unwrap();
+     assert_eq!(lost, vec!["view.survey"]);
+-    assert_eq!(shortcut_of(&keymap, "view.detail"), Some("D"));
+-    reset(&mut keymap, "view.survey").unwrap();
++    assert_eq!(shortcut_of(super::KeyProfile::Lightroom, &keymap, "view.detail"), Some("D"));
++    reset(super::KeyProfile::Lightroom, &mut keymap, "view.survey").unwrap();
+     assert!(keymap.is_empty(), "declared shortcuts aren't stored: {keymap:?}");
+     // a command without a declared shortcut can get one, and lose it again
+-    assign(&mut keymap, "view.photoGrid", Some("cmd+shift+1")).unwrap_err();
+-    assign(&mut keymap, "view.photoGrid", Some("Cmd+Shift+1")).unwrap();
+-    assert_eq!(shortcut_of(&keymap, "view.photoGrid"), Some("Cmd+Shift+1"));
+-    assign(&mut keymap, "view.photoGrid", None).unwrap();
++    assign(super::KeyProfile::Lightroom, &mut keymap, "view.photoGrid", Some("cmd+shift+1")).unwrap_err();
++    assign(super::KeyProfile::Lightroom, &mut keymap, "view.photoGrid", Some("Cmd+Shift+1")).unwrap();
++    assert_eq!(shortcut_of(super::KeyProfile::Lightroom, &keymap, "view.photoGrid"), Some("Cmd+Shift+1"));
++    assign(super::KeyProfile::Lightroom, &mut keymap, "view.photoGrid", None).unwrap();
+     assert!(keymap.is_empty());
+ }
+ 
+ #[test]
+ fn bad_assignments_are_errors() {
+     let mut keymap = Keymap::new();
+-    assert!(assign(&mut keymap, "no.suchCommand", Some("K")).is_err());
+-    assert!(assign(&mut keymap, "view.survey", Some("Cmd+Nonsense")).is_err());
+-    assert!(assign(&mut keymap, "view.survey", Some("Cmd+Q")).is_err());
+-    assert!(assign(&mut keymap, "view.survey", Some("Cmd+,")).is_err());
++    assert!(assign(super::KeyProfile::Lightroom, &mut keymap, "no.suchCommand", Some("K")).is_err());
++    assert!(assign(super::KeyProfile::Lightroom, &mut keymap, "view.survey", Some("Cmd+Nonsense")).is_err());
++    assert!(assign(super::KeyProfile::Lightroom, &mut keymap, "view.survey", Some("Cmd+Q")).is_err());
++    assert!(assign(super::KeyProfile::Lightroom, &mut keymap, "view.survey", Some("Cmd+,")).is_err());
+     assert!(keymap.is_empty());
+ }
+ 
+@@ -495,9 +495,9 @@ fn junk_keymap_entries_mean_no_shortcut() {
+     keymap.insert("view.survey".into(), "Hyper+☃".into());
+     keymap.insert("no.suchCommand".into(), "K".into());
+     keymap.insert("view.detail".into(), "Cmd+SuperLeft".into());
+-    assert_eq!(shortcut_of(&keymap, "view.survey"), Some("N"));
+-    assert_eq!(shortcut_of(&keymap, "view.detail"), Some("D"));
+-    assert!(conflicts(&keymap, "view.compare", "N").contains(&"view.survey"));
++    assert_eq!(shortcut_of(super::KeyProfile::Lightroom, &keymap, "view.survey"), Some("N"));
++    assert_eq!(shortcut_of(super::KeyProfile::Lightroom, &keymap, "view.detail"), Some("D"));
++    assert!(conflicts(super::KeyProfile::Lightroom, &keymap, "view.compare", "N").contains(&"view.survey"));
+     assert_eq!(parse("Hyper+K"), None);
+ }
+ 
+@@ -505,7 +505,7 @@ fn junk_keymap_entries_mean_no_shortcut() {
+ #[test]
+ fn contextual_partners_are_not_conflicts() {
+     let keymap = Keymap::new();
+-    assert!(conflicts(&keymap, "photo.reject", "X").is_empty());
++    assert!(conflicts(super::KeyProfile::Lightroom, &keymap, "photo.reject", "X").is_empty());
+ }
+ 
+ /// No key fires two different actions (a UI command may shadow the engine command it wraps).
+@@ -613,7 +613,7 @@ mod issue1771 {
+             h.app.recording_shortcut = Some("view.survey".into());
+             key(&mut h, "Enter", false);
+             assert_eq!(h.app.ui.view, view, "recording owns Enter");
+-            assert_eq!(super::super::shortcut_of(&h.app.ui.settings.keymap, "view.survey"), Some("Enter"));
++            assert_eq!(super::super::shortcut_of(super::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.survey"), Some("Enter"));
+         }
+     }
+ 
+diff --git a/crates/ui-egui/src/shortcuts/tests_clear_label.rs b/crates/ui-egui/src/shortcuts/tests_clear_label.rs
+index f1ea73eff..d94da9f80 100644
+--- a/crates/ui-egui/src/shortcuts/tests_clear_label.rs
++++ b/crates/ui-egui/src/shortcuts/tests_clear_label.rs
+@@ -27,7 +27,7 @@ fn app() -> lightcraft_engine::Result<LightcraftApp> {
+     s.execute("library.sort", &json!({"key": "fileName", "ascending": true}))?;
+     s.execute("library.select", &json!({"ids": [2]}))?;
+     let mut app = LightcraftApp::new(s, crate::Services { png: None, ..Default::default() });
+-    super::assign(&mut app.ui.settings.keymap, "photo.clearLabel", Some(KEY)).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "photo.clearLabel", Some(KEY)).unwrap();
+     Ok(app)
+ }
+ 
+@@ -57,10 +57,10 @@ fn press(app: &mut LightcraftApp, ctx: &egui::Context) {
+ 
+ #[test]
+ fn clearing_a_label_has_no_key_until_one_is_given() {
+-    assert_eq!(super::shortcut_of(&Default::default(), "photo.clearLabel"), None);
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &Default::default(), "photo.clearLabel"), None);
+     assert!(super::find_bindable("photo.clearLabel").is_some(), "the shortcuts editor lists it");
+     let mut app = app().unwrap();
+-    assert_eq!(super::shortcut_of(&app.ui.settings.keymap, "photo.clearLabel"), Some(KEY));
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &app.ui.settings.keymap, "photo.clearLabel"), Some(KEY));
+     // the number keys keep Lightroom's meaning: 6-9 set a label, nothing is taken from them
+     app.ui.view = ViewMode::PhotoGrid;
+     let ctx = egui::Context::default();
+diff --git a/crates/ui-egui/src/shortcuts/tests_enable_filters.rs b/crates/ui-egui/src/shortcuts/tests_enable_filters.rs
+index 0f42c3eff..17a727685 100644
+--- a/crates/ui-egui/src/shortcuts/tests_enable_filters.rs
++++ b/crates/ui-egui/src/shortcuts/tests_enable_filters.rs
+@@ -39,7 +39,7 @@ fn press(app: &mut LightcraftApp, ctx: &egui::Context) {
+ 
+ #[test]
+ fn the_key_is_cmd_l() {
+-    assert_eq!(super::shortcut_of(&Default::default(), "library.toggleFilters"), Some("Cmd+L"));
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &Default::default(), "library.toggleFilters"), Some("Cmd+L"));
+ }
+ 
+ #[test]
+diff --git a/crates/ui-egui/src/shortcuts/tests_filter_bar_key.rs b/crates/ui-egui/src/shortcuts/tests_filter_bar_key.rs
+index 80a904c0e..1b2f2f0f8 100644
+--- a/crates/ui-egui/src/shortcuts/tests_filter_bar_key.rs
++++ b/crates/ui-egui/src/shortcuts/tests_filter_bar_key.rs
+@@ -95,15 +95,15 @@ fn saved_keymap_wins_over_the_grid_backslash() {
+     app.ui.view = ViewMode::PhotoGrid;
+     let ctx = egui::Context::default();
+     // Show Original moved to F2: F2 keeps that meaning in the grid, \ does nothing
+-    super::assign(&mut app.ui.settings.keymap, "view.showOriginal", Some("F2")).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "view.showOriginal", Some("F2")).unwrap();
+     frame(&mut app, &ctx, Some(Key::F2), None);
+     assert!(!app.ui.filter_bar, "a remapped Show Original key is not the Filter Bar key");
+     assert_eq!(app.ui.before_after, BeforeAfter::Original);
+     frame(&mut app, &ctx, Some(Key::Backslash), None);
+     assert!(!app.ui.filter_bar);
+     // \ given to another command runs that command
+-    super::reset(&mut app.ui.settings.keymap, "view.showOriginal").unwrap();
+-    super::assign(&mut app.ui.settings.keymap, "photo.pick", Some("\\")).unwrap();
++    super::reset(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "view.showOriginal").unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "photo.pick", Some("\\")).unwrap();
+     frame(&mut app, &ctx, Some(Key::Backslash), None);
+     assert_eq!(app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::Pick);
+     assert!(!app.ui.filter_bar);
+diff --git a/crates/ui-egui/src/shortcuts/tests_flag_cycle.rs b/crates/ui-egui/src/shortcuts/tests_flag_cycle.rs
+index 109dca607..b43ef19ee 100644
+--- a/crates/ui-egui/src/shortcuts/tests_flag_cycle.rs
++++ b/crates/ui-egui/src/shortcuts/tests_flag_cycle.rs
+@@ -53,7 +53,7 @@ fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
+ fn backtick_parses_and_formats_as_the_grave_key() {
+     assert_eq!(super::parse("`"), Some((Modifiers::NONE, Key::Backtick)));
+     assert_eq!(super::format(Modifiers::NONE, Key::Backtick).as_deref(), Some("`"));
+-    assert_eq!(super::shortcut_of(&Default::default(), "photo.cycleFlag"), Some("`"));
++    assert_eq!(super::shortcut_of(super::KeyProfile::Lightroom, &Default::default(), "photo.cycleFlag"), Some("`"));
+ }
+ 
+ #[test]
+@@ -124,7 +124,7 @@ fn a_saved_assignment_of_the_key_wins_over_the_default() {
+     let mut app = app().unwrap();
+     app.ui.view = ViewMode::PhotoGrid;
+     let ctx = egui::Context::default();
+-    super::assign(&mut app.ui.settings.keymap, "photo.reject", Some("`")).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "photo.reject", Some("`")).unwrap();
+     tick(&mut app, &ctx);
+     assert_eq!(flags(&app)[1], Flag::Reject);
+ }
+diff --git a/crates/ui-egui/src/shortcuts/tests_relative_ratings.rs b/crates/ui-egui/src/shortcuts/tests_relative_ratings.rs
+index 94ec5098b..ca3818ab8 100644
+--- a/crates/ui-egui/src/shortcuts/tests_relative_ratings.rs
++++ b/crates/ui-egui/src/shortcuts/tests_relative_ratings.rs
+@@ -99,8 +99,8 @@ fn saved_keymap_remapping_unbinding_and_reassignment_win() {
+     let mut app = app().unwrap();
+     app.ui.view = ViewMode::PhotoGrid;
+     let ctx = egui::Context::default();
+-    super::assign(&mut app.ui.settings.keymap, "brush.larger", Some("F2")).unwrap();
+-    super::assign(&mut app.ui.settings.keymap, "brush.smaller", None).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "brush.larger", Some("F2")).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "brush.smaller", None).unwrap();
+     let brush = app.ui.brush_size;
+     frame(&mut app, &ctx, Some(Key::CloseBracket), None);
+     frame(&mut app, &ctx, Some(Key::OpenBracket), None);
+@@ -108,13 +108,13 @@ fn saved_keymap_remapping_unbinding_and_reassignment_win() {
+     assert_eq!(app.ui.brush_size, brush);
+     frame(&mut app, &ctx, Some(Key::F2), None);
+     assert!(app.ui.brush_size > brush, "remapped brush command keeps its meaning");
+-    super::reset(&mut app.ui.settings.keymap, "brush.smaller").unwrap();
+-    super::assign(&mut app.ui.settings.keymap, "photo.pick", Some("[")).unwrap();
++    super::reset(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "brush.smaller").unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "photo.pick", Some("[")).unwrap();
+     frame(&mut app, &ctx, Some(Key::OpenBracket), None);
+     assert_eq!(app.session.catalog.photo(PhotoId(2)).unwrap().flag, Flag::Pick);
+     assert_eq!(ratings(&app).unwrap(), [0, 2, 5]);
+     // Also honor an existing saved override that did not explicitly disable the default.
+-    super::reset(&mut app.ui.settings.keymap, "brush.larger").unwrap();
++    super::reset(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "brush.larger").unwrap();
+     app.ui.settings.keymap.insert("photo.reject".into(), "]".into());
+     frame(&mut app, &ctx, Some(Key::CloseBracket), None);
+     assert_eq!(app.session.catalog.photo(PhotoId(2)).unwrap().flag, Flag::Reject);
+@@ -155,7 +155,7 @@ fn relative_rating_keys_use_auto_advance_and_compare_active_target() {
+     app.ui.auto_advance = false;
+     app.ui.view = ViewMode::Compare;
+     app.session.execute("library.select", &json!({"ids": [1, 2], "active": 2})).unwrap();
+-    super::assign(&mut app.ui.settings.keymap, "photo.increaseRating", Some("F3")).unwrap();
++    super::assign(super::KeyProfile::Lightroom, &mut app.ui.settings.keymap, "photo.increaseRating", Some("F3")).unwrap();
+     frame(&mut app, &ctx, Some(Key::F3), None);
+     assert_eq!(ratings(&app).unwrap(), [1, 3, 5]);
+     assert_eq!(app.session.active(), Some(PhotoId(2)));
+diff --git a/crates/ui-egui/src/state/settings.rs b/crates/ui-egui/src/state/settings.rs
+index 8e3a52220..f81628a3f 100644
+--- a/crates/ui-egui/src/state/settings.rs
++++ b/crates/ui-egui/src/state/settings.rs
+@@ -176,6 +176,11 @@ pub struct AppSettings {
+     pub background_prep: lightcraft_engine::prep::PrepSettings,
+     /// Shortcuts the user changed (Help ▸ Keyboard Shortcuts): command id → shortcut, `""` = none.
+     pub keymap: crate::shortcuts::Keymap,
++    /// The set of default shortcuts the commands use, below the user's `keymap` (Help ▸ Keyboard
++    /// Shortcuts ▸ Shortcut set, `app.keyProfile`). A file from before it existed, or with a set
++    /// this build doesn't know, reads as Lightroom (the shipped keymap).
++    #[serde(deserialize_with = "lenient")]
++    pub key_profile: crate::keymap_profiles::KeyProfile,
+     /// Auto (follow the system), Dark or Light.
+     pub appearance_mode: AppearanceMode,
+     /// The theme of the dark appearance.
+@@ -254,6 +259,7 @@ impl Default for AppSettings {
+             loupe_messages: true,
+             background_prep: Default::default(),
+             keymap: Default::default(),
++            key_profile: Default::default(),
+             appearance_mode: AppearanceMode::Dark,
+             dark_theme: DarkTheme::Charcoal,
+             light_theme: LightTheme::Silver,
+diff --git a/crates/ui-egui/src/tests.rs b/crates/ui-egui/src/tests.rs
+index 43a97c85b..598fe789c 100644
+--- a/crates/ui-egui/src/tests.rs
++++ b/crates/ui-egui/src/tests.rs
+@@ -12,6 +12,7 @@ mod canvas_pan;
+ mod capture_time;
+ mod carried_right_click;
+ mod carried_text_field_menu;
++mod classic_keymap;
+ mod compare;
+ mod copy_paste_dialogs;
+ mod crop_rotate;
+diff --git a/crates/ui-egui/src/tests/classic_keymap.rs b/crates/ui-egui/src/tests/classic_keymap.rs
+new file mode 100644
+index 000000000..4bfee45c3
+--- /dev/null
++++ b/crates/ui-egui/src/tests/classic_keymap.rs
+@@ -0,0 +1,479 @@
++//! The Lightroom Classic shortcut set (LightCraft additional extensions; Help ▸ Keyboard Shortcuts
++//! ▸ Shortcut set, `app.keyProfile`): switching it changes what the keys fire, the user's own
++//! bindings still win, the set has no clashing keys, and the choice is saved in `ui.json`
++//! (a file from before it existed reads as Lightroom).
++
++use std::sync::{Arc, Mutex};
++use std::time::Duration;
++
++use egui::{Key, Modifiers};
++use serde_json::{Value, json};
++
++use crate::headless::Headless;
++use crate::keymap_profiles::{CLASSIC_ALIASES, CLASSIC_DROPPED_ALIASES, CLASSIC_OVERRIDES, KeyProfile, aliases, profile_default};
++use crate::shortcuts::{self, ALIASES, CONTEXTUAL, Keymap, bindable, binding, find_bindable, parse, shortcut_of};
++use crate::state::{AppSettings, Dialog, RightPanel, ViewMode};
++use crate::{LightcraftApp, Services};
++
++const T: Duration = Duration::from_secs(20);
++const SETTLE: Duration = Duration::from_secs(120);
++
++/// The demo library in the Detail view; `editors` records the editor each Edit In asks for (and
++/// refuses it, so nothing is rendered).
++fn demo_with(editors: Arc<Mutex<Vec<String>>>) -> Headless {
++    let services = Services {
++        png: None,
++        open_with: Some(Box::new(|_: &str, _: &str| Ok(()))),
++        check_editor: Some(Box::new(move |app: &str| {
++            if let Ok(mut v) = editors.lock() {
++                v.push(app.to_string());
++            }
++            Err("not in this test".into())
++        })),
++        ..Default::default()
++    };
++    let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), services);
++    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
++    let r = h.request("ui.set", json!({"view": "detail"}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    h.settle(SETTLE);
++    h
++}
++
++fn demo() -> Headless {
++    demo_with(Arc::default())
++}
++
++/// Press `k` with the modifiers named in `mods` (`cmd`, `alt`, `shift`, `ctrl`).
++fn press(h: &mut Headless, k: &str, mods: &[&str]) {
++    let mut p = json!({"key": k});
++    for m in mods {
++        p[*m] = json!(true);
++    }
++    let r = h.request("ui.key", p, T);
++    assert_eq!(r["ok"], true, "{r}");
++    h.step();
++    h.step();
++}
++
++fn run(h: &mut Headless, id: &str, params: Value) -> Value {
++    let r = h.app.run(id, params);
++    h.step();
++    h.step();
++    r.unwrap_or_else(|e| panic!("{id}: {e}"))
++}
++
++fn set_profile(h: &mut Headless, profile: &str) {
++    assert_eq!(run(h, "app.keyProfile", json!({"profile": profile}))["profile"], profile);
++}
++
++/// Back to the Detail view with no panel or tool open.
++fn reset_view(h: &mut Headless) {
++    h.app.ui.dialog = None;
++    h.app.ui.right = RightPanel::None;
++    h.app.ui.tool.clear();
++    h.app.ui.view = ViewMode::Detail;
++    h.step();
++    h.step();
++}
++
++/// The commands the key `sc` belongs to under `profile` with the user's `keymap`.
++fn owners(profile: KeyProfile, keymap: &Keymap, sc: &str) -> Vec<&'static str> {
++    let key = parse(sc);
++    bindable().iter().filter(|b| binding(profile, keymap, b.id, b.default).and_then(parse) == key).map(|b| b.id).collect()
++}
++
++/// A key as Windows and Linux read it: Cmd is the Ctrl key there, so ⌘Y and Ctrl+Y are one press.
++fn windows_key(sc: &str) -> Option<(Modifiers, Key)> {
++    parse(sc).map(|(mut m, k)| {
++        if m.ctrl {
++            m.ctrl = false;
++            m.command = true;
++        }
++        (m, k)
++    })
++}
++
++/// Every pair of keys that would act on one press under `profile` with no saved shortcuts: two
++/// commands (other than contextual partners), an active secondary key and a command, two active
++/// secondary keys. A pair with a key the Classic set gives is also compared the way Windows reads
++/// keys (Cmd = Ctrl), so Classic's Ctrl+Y can't meet a ⌘Y. (The shipped ⌘⇧H Histogram and
++/// Ctrl+⇧H HDR with Last Settings are one press on Windows in either set; Classic leaves both.)
++fn clashes(profile: KeyProfile) -> Vec<String> {
++    let keymap = Keymap::new();
++    let classic_ids: Vec<&str> = CLASSIC_OVERRIDES.iter().map(|(id, _)| *id).collect();
++    // (key, key as Windows reads it, what has it, whether the Classic set gave it)
++    let mut keys: Vec<((Modifiers, Key), (Modifiers, Key), String, bool)> = Vec::new();
++    for b in bindable() {
++        if let Some(sc) = binding(profile, &keymap, b.id, b.default)
++            && let (Some(k), Some(w)) = (parse(sc), windows_key(sc))
++        {
++            keys.push((k, w, b.id.to_string(), profile == KeyProfile::Classic && classic_ids.contains(&b.id)));
++        }
++    }
++    for (sc, id, _) in aliases(profile) {
++        let (Some(k), Some(w)) = (parse(sc), windows_key(sc)) else { panic!("alias {sc}") };
++        let classic = profile == KeyProfile::Classic && CLASSIC_ALIASES.iter().any(|(a, _, _)| a == sc);
++        keys.push((k, w, format!("alias {sc} ({id})"), classic));
++    }
++    let mut out = Vec::new();
++    for (i, (k, w, a, ca)) in keys.iter().enumerate() {
++        for (k2, w2, b, cb) in &keys[i + 1..] {
++            let contextual = CONTEXTUAL.iter().any(|(x, y)| (x == a && y == b) || (x == b && y == a));
++            if (k == k2 || ((*ca || *cb) && w == w2)) && !contextual {
++                out.push(format!("{a} and {b}"));
++            }
++        }
++    }
++    out
++}
++
++/// The shipped set stays the default: a fresh settings value, a `ui.json` from before the setting
++/// existed and one with a set this build doesn't know all read as Lightroom, keeping the rest.
++#[test]
++fn the_default_stays_lightroom() {
++    assert_eq!(AppSettings::default().key_profile, KeyProfile::Lightroom);
++    let old: AppSettings = serde_json::from_value(json!({"filmNames": false, "keymap": {"view.survey": "Shift+K"}})).unwrap();
++    assert_eq!(old.key_profile, KeyProfile::Lightroom);
++    assert!(!old.film_names);
++    let unknown: AppSettings = serde_json::from_value(json!({"filmNames": false, "keyProfile": "capture-one"})).unwrap();
++    assert_eq!(unknown.key_profile, KeyProfile::Lightroom);
++    assert!(!unknown.film_names, "an unknown set costs nothing else");
++    let km = Keymap::new();
++    assert_eq!(shortcut_of(KeyProfile::Lightroom, &km, "view.detail"), Some("D"));
++    assert_eq!(shortcut_of(KeyProfile::Lightroom, &km, "panel.crop"), Some("C"));
++    let h = demo();
++    assert_eq!(h.app.ui.settings.key_profile, KeyProfile::Lightroom);
++}
++
++/// The choice is saved with the UI state (`ui.json` → `settings.keyProfile`) and read back.
++#[test]
++fn the_setting_round_trips_through_ui_json() {
++    let mut h = demo();
++    set_profile(&mut h, "classic");
++    let saved = serde_json::to_string(&h.app.ui).unwrap();
++    assert!(saved.contains(r#""keyProfile":"classic""#), "{saved}");
++    let back = serde_json::from_str::<crate::UiState>(&saved).unwrap();
++    assert_eq!(back.settings.key_profile, KeyProfile::Classic);
++    set_profile(&mut h, "lightroom");
++    let saved = serde_json::to_string(&h.app.ui.settings).unwrap();
++    assert!(saved.contains(r#""keyProfile":"lightroom""#), "{saved}");
++    assert_eq!(serde_json::from_str::<AppSettings>(&saved).unwrap().key_profile, KeyProfile::Lightroom);
++}
++
++/// What the keys resolve to under each set: Lightroom Classic's E / D / C / R / ⌘E / ⌘⇧E.
++#[test]
++fn each_set_resolves_its_own_keys() {
++    let km = Keymap::new();
++    let lr = |sc| owners(KeyProfile::Lightroom, &km, sc);
++    let lrc = |sc| owners(KeyProfile::Classic, &km, sc);
++    assert_eq!(lr("E"), ["panel.edit"]);
++    assert_eq!(lr("D"), ["view.detail"]);
++    assert_eq!(lr("C"), ["panel.crop"]);
++    assert_eq!(lr("R"), ["tool.radial"]);
++    assert_eq!(lr("Cmd+Shift+E"), ["photo.editInPhotoCraft"]);
++    assert!(lr("Cmd+E").is_empty(), "Lightroom's ⌘E is the Export with Previous alias");
++    assert_eq!(lrc("E"), ["view.detail"]);
++    assert_eq!(lrc("D"), ["module.develop"]);
++    assert_eq!(lrc("C"), ["view.compare"]);
++    assert_eq!(lrc("R"), ["panel.crop"]);
++    assert_eq!(lrc("Cmd+E"), ["photo.editInExternal"]);
++    assert_eq!(lrc("Cmd+Shift+E"), ["dialog.export"]);
++    assert_eq!(lrc("Cmd+Alt+E"), ["photo.editInPhotoCraft"]);
++    for (sc, id) in [
++        ("G", "view.gridToggle"),
++        ("N", "view.survey"),
++        ("Q", "panel.remove"),
++        ("K", "tool.brush"),
++        ("M", "tool.linear"),
++        ("Shift+M", "tool.radial"),
++        ("Shift+W", "panel.masking"),
++        ("L", "view.lightsOut"),
++        ("I", "view.infoOverlay"),
++        ("H", "view.toolOverlay"),
++        ("Shift+T", "tool.guidedUpright"),
++        ("Cmd+Shift+S", "develop.sync"),
++        ("Cmd+U", "develop.auto"),
++        ("Cmd+Alt+Shift+E", "app.exportPrevious"),
++        ("Cmd+Alt+1", "module.library"),
++        ("Cmd+Alt+6", "module.print"),
++    ] {
++        assert_eq!(lrc(sc), [id], "{sc}");
++    }
++    // ⌘N: a new album in the Library, a new version (snapshot) while editing
++    assert_eq!(lrc("Cmd+N"), ["dialog.newAlbum", "version.create"]);
++    // the Classic secondary keys, and the shipped ones its own keys replace
++    let active: Vec<&str> = aliases(KeyProfile::Classic).map(|(sc, _, _)| *sc).collect();
++    for sc in ["Shift+P", "Cmd+I", "Cmd+Alt+2", "Ctrl+Y", "Shift+X", "Cmd+D"] {
++        assert!(active.contains(&sc), "{sc}");
++    }
++    assert!(!active.contains(&"Cmd+E") && !active.contains(&"Shift+M"));
++    assert_eq!(aliases(KeyProfile::Lightroom).count(), ALIASES.len(), "the shipped set keeps every secondary key");
++}
++
++/// No two keys act on one press in the Classic set (nor in the shipped one, checked the same way).
++#[test]
++fn the_classic_set_has_no_conflicting_bindings() {
++    assert_eq!(clashes(KeyProfile::Classic), Vec::<String>::new());
++    assert_eq!(clashes(KeyProfile::Lightroom), Vec::<String>::new());
++    // and no Classic key takes a fixed key (ratings, labels, the grids' navigation and B)
++    let fixed: Vec<String> = (0..=9)
++        .flat_map(|n| [n.to_string(), format!("Shift+{n}")])
++        .chain(["Home", "End", "Shift+Left", "Shift+Right", "B", "Enter"].map(String::from))
++        .collect();
++    for (id, sc) in CLASSIC_OVERRIDES {
++        assert!(!fixed.iter().any(|f| parse(f) == parse(sc)), "{id}: {sc} is a fixed key");
++    }
++}
++
++/// The Classic table names real commands with keys that parse, never repeats a shipped key, and
++/// leaves the grid rows' own keys alone (the native menu reads those from the shipped set).
++#[test]
++fn the_classic_table_is_well_formed() {
++    let mut wrong: Vec<String> = Vec::new();
++    for (id, sc) in CLASSIC_OVERRIDES {
++        let Some(b) = find_bindable(id) else {
++            wrong.push(format!("unknown command {id}"));
++            continue;
++        };
++        if !sc.is_empty() && parse(sc).is_none() {
++            wrong.push(format!("{id}: `{sc}` doesn't parse"));
++        }
++        let shipped = profile_default(KeyProfile::Lightroom, id, b.default);
++        if sc.is_empty() && shipped.is_none() {
++            wrong.push(format!("{id}: removes a key it hasn't got"));
++        } else if !sc.is_empty() && shipped.and_then(parse) == parse(sc) {
++            wrong.push(format!("{id}: `{sc}` is already the shipped key"));
++        }
++        if matches!(*id, "view.photoGrid" | "view.squareGrid") {
++            wrong.push(format!("{id}: the native menu reads the grid rows' keys from the shipped set"));
++        }
++    }
++    for (sc, id, params) in CLASSIC_ALIASES {
++        if find_bindable(id).is_none() || parse(sc).is_none() || serde_json::from_str::<Value>(params).is_err() {
++            wrong.push(format!("alias {sc} ({id}) {params}"));
++        }
++    }
++    for sc in CLASSIC_DROPPED_ALIASES {
++        if !ALIASES.iter().any(|(a, _, _)| a == sc) {
++            wrong.push(format!("dropped alias {sc} is not a shipped alias"));
++        }
++    }
++    assert!(wrong.is_empty(), "{}", wrong.join("; "));
++}
++
++/// Switching the set changes what E, D, C and R do.
++#[test]
++fn switching_the_set_changes_what_e_d_c_and_r_fire() {
++    let mut h = demo();
++    // Lightroom: E the Edit panel, D the Detail view, C Crop, R the Radial Gradient
++    reset_view(&mut h);
++    press(&mut h, "E", &[]);
++    assert_eq!(h.app.ui.right, RightPanel::Edit, "Lightroom: E opens Edit");
++    reset_view(&mut h);
++    press(&mut h, "C", &[]);
++    assert_eq!(h.app.ui.right, RightPanel::Crop, "Lightroom: C opens Crop");
++    reset_view(&mut h);
++    press(&mut h, "R", &[]);
++    assert_eq!(h.app.ui.tool, "radial", "Lightroom: R is the Radial Gradient");
++    reset_view(&mut h);
++    h.app.ui.view = ViewMode::PhotoGrid;
++    h.step();
++    press(&mut h, "D", &[]);
++    assert_eq!(h.app.ui.view, ViewMode::Detail, "Lightroom: D is the Detail view");
++    assert_eq!(h.app.ui.right, RightPanel::None);
++
++    let keymap_before = h.app.ui.settings.keymap.clone();
++    set_profile(&mut h, "classic");
++    assert_eq!(h.app.ui.settings.keymap, keymap_before, "the set doesn't rewrite the user's keymap");
++    // Classic: E the Loupe (Detail view), D Develop (Detail + Edit), C Compare, R Crop
++    reset_view(&mut h);
++    h.app.ui.view = ViewMode::PhotoGrid;
++    h.step();
++    press(&mut h, "E", &[]);
++    assert_eq!((h.app.ui.view, h.app.ui.right), (ViewMode::Detail, RightPanel::None), "Classic: E is the Loupe");
++    h.app.ui.view = ViewMode::PhotoGrid;
++    h.step();
++    press(&mut h, "D", &[]);
++    assert_eq!((h.app.ui.view, h.app.ui.right), (ViewMode::Detail, RightPanel::Edit), "Classic: D is Develop");
++    reset_view(&mut h);
++    press(&mut h, "R", &[]);
++    assert_eq!(h.app.ui.right, RightPanel::Crop, "Classic: R opens Crop");
++    assert!(h.app.ui.tool.is_empty(), "and not the Radial Gradient");
++    reset_view(&mut h);
++    let sel = h.app.session.visible_cloned().into_iter().take(2).map(|id| id.0).collect::<Vec<_>>();
++    run(&mut h, "library.select", json!({"ids": sel, "active": sel[0]}));
++    press(&mut h, "C", &[]);
++    assert_eq!(h.app.ui.view, ViewMode::Compare, "Classic: C is Compare");
++    assert_eq!(h.app.ui.right, RightPanel::None, "and not Crop");
++    // ⌘⌥2 stays the Develop module
++    reset_view(&mut h);
++    h.app.ui.view = ViewMode::PhotoGrid;
++    h.step();
++    press(&mut h, "2", &["cmd", "alt"]);
++    assert_eq!((h.app.ui.view, h.app.ui.right), (ViewMode::Detail, RightPanel::Edit), "Classic: ⌘⌥2 is Develop");
++}
++
++/// ⌘⇧E and ⌘E: Edit in PhotoCraft and Export with Previous in Lightroom; Export… and Edit in the
++/// other editor (Photoshop) in Lightroom Classic, whose ⌘⌥E is Edit in PhotoCraft.
++#[test]
++fn switching_the_set_changes_what_cmd_e_and_cmd_shift_e_fire() {
++    let editors: Arc<Mutex<Vec<String>>> = Arc::default();
++    let mut h = demo_with(editors.clone());
++    h.app.ui.settings.external_editor = "Adobe Photoshop".into();
++    let asked = |e: &Arc<Mutex<Vec<String>>>| e.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default();
++    press(&mut h, "E", &["cmd", "shift"]);
++    assert_eq!(asked(&editors), [crate::state::PHOTOCRAFT], "Lightroom: ⌘⇧E is Edit in PhotoCraft");
++    assert!(!matches!(h.app.ui.dialog, Some(Dialog::Export { .. })));
++    press(&mut h, "E", &["cmd"]);
++    assert!(asked(&editors).is_empty(), "Lightroom: ⌘E exports with the previous settings, no editor");
++
++    set_profile(&mut h, "classic");
++    press(&mut h, "E", &["cmd", "shift"]);
++    assert!(matches!(h.app.ui.dialog, Some(Dialog::Export { .. })), "Classic: ⌘⇧E opens Export… ({:?})", h.app.ui.dialog);
++    assert!(asked(&editors).is_empty());
++    h.app.ui.dialog = None;
++    h.step();
++    press(&mut h, "E", &["cmd"]);
++    assert_eq!(asked(&editors), ["Adobe Photoshop"], "Classic: ⌘E is Edit in the other editor");
++    press(&mut h, "E", &["cmd", "alt"]);
++    assert_eq!(asked(&editors), [crate::state::PHOTOCRAFT], "Classic: ⌘⌥E is Edit in PhotoCraft");
++}
++
++/// The user's own bindings sit above either set: a key given to another command wins over the
++/// set's, a removed shortcut stays removed, and ↺ (reset) restores the set's key.
++#[test]
++fn user_bindings_still_win_over_the_set() {
++    let mut h = demo();
++    set_profile(&mut h, "classic");
++    run(&mut h, "app.setShortcut", json!({"id": "view.survey", "shortcut": "E"}));
++    let sel = h.app.session.visible_cloned().into_iter().take(2).map(|id| id.0).collect::<Vec<_>>();
++    run(&mut h, "library.select", json!({"ids": sel, "active": sel[0]}));
++    h.app.ui.view = ViewMode::PhotoGrid;
++    h.step();
++    press(&mut h, "E", &[]);
++    assert_eq!(h.app.ui.view, ViewMode::Survey, "the user's E is Survey, not the Loupe");
++    assert_eq!(shortcut_of(KeyProfile::Classic, &h.app.ui.settings.keymap, "view.detail"), None);
++    // the user's removal of a set's key: R does nothing
++    run(&mut h, "app.setShortcut", json!({"id": "panel.crop", "shortcut": null}));
++    reset_view(&mut h);
++    press(&mut h, "R", &[]);
++    assert_eq!(h.app.ui.right, RightPanel::None, "a removed shortcut stays removed");
++    assert!(h.app.ui.tool.is_empty());
++    // and a user key carries across a switch of sets
++    set_profile(&mut h, "lightroom");
++    assert_eq!(shortcut_of(KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.survey"), Some("E"));
++    assert_eq!(shortcut_of(KeyProfile::Lightroom, &h.app.ui.settings.keymap, "panel.edit"), None, "Lightroom's E yields to it");
++    // reset restores the active set's key, not the declared one
++    let mut km = Keymap::new();
++    shortcuts::assign(KeyProfile::Classic, &mut km, "view.detail", Some("F9")).unwrap();
++    assert_eq!(shortcut_of(KeyProfile::Classic, &km, "view.detail"), Some("F9"));
++    shortcuts::reset(KeyProfile::Classic, &mut km, "view.detail").unwrap();
++    assert_eq!(shortcut_of(KeyProfile::Classic, &km, "view.detail"), Some("E"));
++    assert!(km.is_empty(), "the set's own key is not saved as a change");
++    // a key the set gave another command is taken from it when the user claims it
++    let lost = shortcuts::assign(KeyProfile::Classic, &mut km, "view.survey", Some("R")).unwrap();
++    assert_eq!(lost, ["panel.crop"]);
++}
++
++/// `app.keyProfile` from the control channel: it switches, says which set is active when asked
++/// without one, refuses an unknown name, and the menus follow.
++#[test]
++fn the_key_profile_command_switches_and_refuses_unknown_sets() {
++    let mut h = demo();
++    let entry = |h: &Headless, id: &str| crate::menus::menu_entries(&h.app).into_iter().find(|e| e.id == id).and_then(|e| e.shortcut);
++    assert_eq!(entry(&h, "view.detail").as_deref(), Some("D"));
++    let r = h.request("engine.execute", json!({"command": "app.keyProfile", "params": {}}), T);
++    assert_eq!(r["result"]["profile"], "lightroom", "{r}");
++    let r = h.request("engine.execute", json!({"command": "app.keyProfile", "params": {"profile": "classic"}}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    assert_eq!(h.app.ui.settings.key_profile, KeyProfile::Classic);
++    assert_eq!(entry(&h, "view.detail").as_deref(), Some("E"));
++    assert_eq!(entry(&h, "dialog.export").as_deref(), Some("Cmd+Shift+E"));
++    let r = h.request("engine.execute", json!({"command": "app.keyProfile", "params": {"profile": "capture-one"}}), T);
++    assert_eq!(r["ok"], false, "{r}");
++    assert_eq!(h.app.ui.settings.key_profile, KeyProfile::Classic, "an unknown set changes nothing");
++}
++
++/// Help ▸ Keyboard Shortcuts ▸ Shortcut set switches both ways, and the editor stays open.
++#[test]
++fn the_shortcuts_editor_switches_the_set() {
++    let mut h = demo();
++    run(&mut h, "app.shortcuts", json!({}));
++    for (button, want) in [("button:keyProfile-classic", KeyProfile::Classic), ("button:keyProfile-lightroom", KeyProfile::Lightroom)] {
++        let r = h.request("ui.clickWidget", json!({"id": button}), T);
++        assert_eq!(r["ok"], true, "{r}");
++        h.step();
++        h.step();
++        assert_eq!(h.app.ui.settings.key_profile, want);
++        assert!(matches!(h.app.ui.dialog, Some(Dialog::Shortcuts)), "the editor stays open");
++    }
++}
++
++/// Classic's ⌘N is New Album in the Library and Create Version while editing; the menus show the
++/// key on the one it runs.
++#[test]
++fn classic_cmd_n_follows_the_module() {
++    let mut h = demo();
++    set_profile(&mut h, "classic");
++    let active = h.app.session.active().expect("the demo has an active photo");
++    let versions = |h: &Headless| h.app.session.catalog.photo(active).map_or(0, |p| p.versions.len());
++    let entry = |h: &Headless, id: &str| crate::menus::menubar::menu_bar(&h.app).into_iter().any(|(_, nodes)| has_key(&nodes, id));
++    h.app.ui.view = ViewMode::PhotoGrid;
++    h.step();
++    press(&mut h, "N", &["cmd"]);
++    assert!(matches!(h.app.ui.dialog, Some(Dialog::NewAlbum { .. })), "Library: ⌘N is New Album");
++    assert_eq!(versions(&h), 0);
++    assert!(entry(&h, "dialog.newAlbum") && !entry(&h, "version.create"), "the menu shows ⌘N on New Album");
++    h.app.ui.dialog = None;
++    run(&mut h, "module.develop", json!({}));
++    press(&mut h, "N", &["cmd"]);
++    assert!(h.app.ui.dialog.is_none(), "Develop: no album dialog");
++    assert_eq!(versions(&h), 1, "Develop: ⌘N makes a version (a snapshot)");
++    assert!(!entry(&h, "dialog.newAlbum") && entry(&h, "version.create"), "the menu shows ⌘N on Create Version");
++}
++
++/// Whether a menu row for `id` shows a key.
++fn has_key(nodes: &[crate::menus::menubar::MenuNode], id: &str) -> bool {
++    use crate::menus::menubar::MenuNode;
++    nodes.iter().any(|n| match n {
++        MenuNode::Item { id: i, shortcut, .. } => i == id && shortcut.is_some(),
++        MenuNode::Submenu { children, .. } => has_key(children, id),
++        MenuNode::Separator => false,
++    })
++}
++
++/// The grids keep the Quick Collection on B when Classic moves the brush to K, and K never
++/// toggles the album.
++#[test]
++fn classic_grids_keep_the_quick_collection_on_b() {
++    let mut h = demo();
++    set_profile(&mut h, "classic");
++    h.app.ui.view = ViewMode::PhotoGrid;
++    h.step();
++    assert!(h.app.session.active().is_some(), "the demo has an active photo");
++    press(&mut h, "B", &[]);
++    let q = h.app.session.catalog.quick_collection().expect("Classic: B makes the Quick Collection");
++    let n = h.app.session.catalog.album_count(q);
++    assert!(n > 0, "Classic: B adds to the Quick Collection");
++    press(&mut h, "K", &[]);
++    assert_eq!(h.app.session.catalog.album_count(q), n, "K (the brush) leaves the album alone");
++}
++
++/// In the Masking panel H still shows / hides the mask pins under Classic (whose H elsewhere is
++/// the tool overlay), and only that.
++#[test]
++fn classic_h_hides_the_pins() {
++    let mut h = demo();
++    set_profile(&mut h, "classic");
++    run(&mut h, "panel.masking", json!({}));
++    assert_eq!(h.app.ui.right, RightPanel::Masking);
++    let (pins, overlay) = (h.app.ui.mask_pins, h.app.ui.tool_overlay);
++    press(&mut h, "H", &[]);
++    assert_eq!(h.app.ui.mask_pins, !pins, "H toggles the pins");
++    assert_eq!(h.app.ui.tool_overlay, overlay, "and not the tool overlay as well");
++    reset_view(&mut h);
++    press(&mut h, "H", &[]);
++    assert_ne!(h.app.ui.tool_overlay, overlay, "elsewhere Classic's H cycles the tool overlay");
++    assert_eq!(h.app.ui.right, RightPanel::None, "and doesn't open Remove (Q)");
++}
+diff --git a/crates/ui-egui/src/tests/empty_library.rs b/crates/ui-egui/src/tests/empty_library.rs
+index 16cd52cbb..4a3350a36 100644
+--- a/crates/ui-egui/src/tests/empty_library.rs
++++ b/crates/ui-egui/src/tests/empty_library.rs
+@@ -132,14 +132,17 @@ fn the_top_bar_imports_in_every_library() {
+ #[test]
+ fn the_hint_shows_the_shortcut_as_bound() {
+     let mut keymap = crate::state::AppSettings::default().keymap;
+-    assert_eq!(empty_library::hint(&keymap, true), "or drop photos and folders into this window · ⇧⌘I");
+-    assert_eq!(empty_library::hint(&keymap, false), "or drop photos and folders into this window · Ctrl+Shift+I");
++    assert_eq!(empty_library::hint(crate::shortcuts::KeyProfile::Lightroom, &keymap, true), "or drop photos and folders into this window · ⇧⌘I");
++    assert_eq!(
++        empty_library::hint(crate::shortcuts::KeyProfile::Lightroom, &keymap, false),
++        "or drop photos and folders into this window · Ctrl+Shift+I"
++    );
+     // a remapped shortcut is the one shown
+-    crate::shortcuts::assign(&mut keymap, "file.addPhotos", Some("Cmd+Alt+I")).unwrap();
+-    assert_eq!(empty_library::hint(&keymap, true), "or drop photos and folders into this window · ⌥⌘I");
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "file.addPhotos", Some("Cmd+Alt+I")).unwrap();
++    assert_eq!(empty_library::hint(crate::shortcuts::KeyProfile::Lightroom, &keymap, true), "or drop photos and folders into this window · ⌥⌘I");
+     // and none at all leaves the key out
+-    crate::shortcuts::assign(&mut keymap, "file.addPhotos", None).unwrap();
+-    assert_eq!(empty_library::hint(&keymap, true), "or drop photos and folders into this window");
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "file.addPhotos", None).unwrap();
++    assert_eq!(empty_library::hint(crate::shortcuts::KeyProfile::Lightroom, &keymap, true), "or drop photos and folders into this window");
+ }
+ 
+ /// The grid's line for a view with no photos that is not the empty library names the shortcut as
+@@ -147,15 +150,15 @@ fn the_hint_shows_the_shortcut_as_bound() {
+ #[test]
+ fn the_no_photos_line_lists_modifiers_in_the_menu_order() {
+     let mut keymap = crate::state::AppSettings::default().keymap;
+-    let mac = empty_library::no_photos_body(&keymap, true);
++    let mac = empty_library::no_photos_body(crate::shortcuts::KeyProfile::Lightroom, &keymap, true);
+     assert!(mac.contains("⇧⌘I") && !mac.contains("⌘⇧"), "{mac}");
+-    let other = empty_library::no_photos_body(&keymap, false);
++    let other = empty_library::no_photos_body(crate::shortcuts::KeyProfile::Lightroom, &keymap, false);
+     assert!(other.contains("Ctrl+Shift+I") && !other.contains("Cmd"), "{other}");
+-    crate::shortcuts::assign(&mut keymap, "file.addPhotos", Some("Cmd+Alt+Shift+I")).unwrap();
+-    let rebound = empty_library::no_photos_body(&keymap, true);
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "file.addPhotos", Some("Cmd+Alt+Shift+I")).unwrap();
++    let rebound = empty_library::no_photos_body(crate::shortcuts::KeyProfile::Lightroom, &keymap, true);
+     assert!(rebound.contains("⌥⇧⌘I"), "{rebound}");
+-    crate::shortcuts::assign(&mut keymap, "file.addPhotos", None).unwrap();
+-    let unbound = empty_library::no_photos_body(&keymap, true);
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "file.addPhotos", None).unwrap();
++    let unbound = empty_library::no_photos_body(crate::shortcuts::KeyProfile::Lightroom, &keymap, true);
+     assert!(!unbound.contains('⌘') && !unbound.contains("Cmd") && !unbound.starts_with("or "), "{unbound}");
+ }
+ 
+diff --git a/crates/ui-egui/src/tests/grid.rs b/crates/ui-egui/src/tests/grid.rs
+index 7196b1543..d2f43f9c1 100644
+--- a/crates/ui-egui/src/tests/grid.rs
++++ b/crates/ui-egui/src/tests/grid.rs
+@@ -416,19 +416,19 @@ fn the_empty_view_names_the_import_shortcut_of_this_platform() {
+     use crate::panels::grid::import_way_in;
+     let mut keymap = crate::state::AppSettings::default().keymap;
+     for mac in [true, false] {
+-        let (way, key) = import_way_in(&keymap, mac);
++        let (way, key) = import_way_in(crate::shortcuts::KeyProfile::Lightroom, &keymap, mac);
+         assert_eq!(key, Some(shortcut_text("Cmd+Shift+I", mac)));
+         assert!(!way.contains("Cmd+Shift+I"), "{way}");
+     }
+-    assert_eq!(import_way_in(&keymap, false).1.as_deref(), Some("Ctrl+Shift+I"));
++    assert_eq!(import_way_in(crate::shortcuts::KeyProfile::Lightroom, &keymap, false).1.as_deref(), Some("Ctrl+Shift+I"));
+     // a remapped key is the one shown
+-    crate::shortcuts::assign(&mut keymap, "file.addPhotos", Some("Cmd+Alt+I")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "file.addPhotos", Some("Cmd+Alt+I")).unwrap();
+     for mac in [true, false] {
+-        assert_eq!(import_way_in(&keymap, mac).1, Some(shortcut_text("Cmd+Alt+I", mac)));
++        assert_eq!(import_way_in(crate::shortcuts::KeyProfile::Lightroom, &keymap, mac).1, Some(shortcut_text("Cmd+Alt+I", mac)));
+     }
+     // and none at all names no key
+-    crate::shortcuts::assign(&mut keymap, "file.addPhotos", None).unwrap();
+-    assert_eq!(import_way_in(&keymap, true).1, None);
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut keymap, "file.addPhotos", None).unwrap();
++    assert_eq!(import_way_in(crate::shortcuts::KeyProfile::Lightroom, &keymap, true).1, None);
+ }
+ 
+ /// A narrow grid wraps the empty view's way in (a long translation with its shortcut would run
+diff --git a/crates/ui-egui/src/tests/keymap.rs b/crates/ui-egui/src/tests/keymap.rs
+index 71adfca8b..5ff388973 100644
+--- a/crates/ui-egui/src/tests/keymap.rs
++++ b/crates/ui-egui/src/tests/keymap.rs
+@@ -74,7 +74,7 @@ fn the_editor_records_a_key_and_esc_cancels_without_closing() {
+     assert_eq!(h.app.recording_shortcut.as_deref(), Some("view.compare"));
+     key(&mut h, "J", true);
+     assert_eq!(h.app.recording_shortcut, None);
+-    assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.compare"), Some("Shift+J"));
++    assert_eq!(crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.compare"), Some("Shift+J"));
+     assert_eq!(h.app.ui.view, ViewMode::Detail);
+     assert!(matches!(h.app.ui.dialog, Some(Dialog::Shortcuts)));
+     // Esc while recording cancels; the dialog stays open and nothing changes
+@@ -82,7 +82,7 @@ fn the_editor_records_a_key_and_esc_cancels_without_closing() {
+     key(&mut h, "Escape", false);
+     assert_eq!(h.app.recording_shortcut, None);
+     assert!(matches!(h.app.ui.dialog, Some(Dialog::Shortcuts)));
+-    assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.compare"), Some("Shift+J"));
++    assert_eq!(crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.compare"), Some("Shift+J"));
+     // the next Esc closes it; the new key works
+     key(&mut h, "Escape", false);
+     assert!(h.app.ui.dialog.is_none());
+@@ -90,7 +90,7 @@ fn the_editor_records_a_key_and_esc_cancels_without_closing() {
+     assert_eq!(h.app.ui.view, ViewMode::Compare);
+     // Reset All restores the declared keys
+     h.app.run("app.resetShortcuts", json!({})).unwrap();
+-    assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.compare"), Some("Shift+C"));
++    assert_eq!(crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.compare"), Some("Shift+C"));
+ }
+ 
+ #[test]
+@@ -111,7 +111,7 @@ fn restore_takes_back_a_declared_key_another_command_holds() {
+     use crate::shortcuts::shortcut_of;
+     let mut h = demo();
+     h.app.ui.settings.keymap.insert("photo.increaseRating".into(), "P".into());
+-    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), None);
++    assert_eq!(shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.pick"), None);
+     h.app.run("app.shortcuts", json!({})).unwrap();
+     h.step();
+     h.step();
+@@ -121,8 +121,8 @@ fn restore_takes_back_a_declared_key_another_command_holds() {
+     h.step();
+     h.step();
+     click(&mut h, "button:shortcutReset-photo.pick");
+-    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "photo.pick"), Some("P"));
+-    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "photo.increaseRating"), None);
++    assert_eq!(shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.pick"), Some("P"));
++    assert_eq!(shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.increaseRating"), None);
+     assert!(h.app.ui.settings.keymap.is_empty(), "{:?}", h.app.ui.settings.keymap);
+ }
+ 
+@@ -157,7 +157,7 @@ fn modifiers_wait_for_their_key_and_clipboard_keys_record() {
+     h.step();
+     h.step();
+     assert_eq!(h.app.recording_shortcut, None);
+-    assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.survey"), Some("Cmd+Shift+K"));
++    assert_eq!(crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.survey"), Some("Cmd+Shift+K"));
+     // ⌘⌥C: the windowing layer sends a Copy event with the modifiers held
+     record(&mut h, "survey", "view.survey");
+     let m = egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND };
+@@ -165,7 +165,7 @@ fn modifiers_wait_for_their_key_and_clipboard_keys_record() {
+     h.app.synthetic.push(egui::Event::Copy);
+     h.step();
+     h.step();
+-    assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.survey"), Some("Cmd+Alt+C"));
++    assert_eq!(crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.survey"), Some("Cmd+Alt+C"));
+     // a saved modifier-only shortcut (from the bug) means no shortcut
+     assert_eq!(crate::shortcuts::parse("Cmd+SuperLeft"), None);
+ }
+@@ -261,7 +261,10 @@ fn opening_numeric_release_keeps_keys_in_the_editor() {
+         assert!(h.app.recording_shortcut.is_none() && h.app.ui.name_edit.is_none());
+         assert!(h.app.native_shortcuts.is_empty() && h.app.synthetic.is_empty() && h.events.is_empty());
+         assert!(!h.view.ctx.egui_wants_keyboard_input());
+-        assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "photo.increaseRating"), Some("Enter"));
++        assert_eq!(
++            crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "photo.increaseRating"),
++            Some("Enter")
++        );
+         let active = h.app.session.active().unwrap();
+         let selection = h.app.session.selection.ids.clone();
+         let (view, right, tool) = (h.app.ui.view, h.app.ui.right, h.app.ui.tool.clone());
+@@ -357,9 +360,9 @@ fn open_library_and_visualize_hdr_keys_are_declared() {
+     use crate::shortcuts::{Keymap, parse, shortcut_of};
+ 
+     let keymap = Keymap::new();
+-    assert_eq!(shortcut_of(&keymap, "app.openLibrary"), Some("Cmd+O"));
++    assert_eq!(shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &keymap, "app.openLibrary"), Some("Cmd+O"));
+     assert!(parse("Cmd+O").is_some());
+-    assert_eq!(shortcut_of(&keymap, "view.visualizeHdr"), None);
++    assert_eq!(shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &keymap, "view.visualizeHdr"), None);
+ }
+ 
+ /// Opening a library uses the same folder picker as File > Open Library. Cancelling it
+@@ -530,13 +533,17 @@ fn lock_aspect_ratio_is_a_listed_row_on_a() {
+     let b = bindable().iter().find(|b| b.id == "crop.lockAspect").expect("crop.lockAspect is mappable");
+     assert_eq!(b.label, "Lock Aspect Ratio");
+     assert_eq!(b.default, Some("A"));
+-    assert_eq!(shortcut_of(&Keymap::new(), "crop.lockAspect"), Some("A"));
++    assert_eq!(shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &Keymap::new(), "crop.lockAspect"), Some("A"));
+     assert!(CONTEXTUAL.contains(&("view.visualizeSpots", "crop.lockAspect")), "A is disambiguated by context");
+     // the editor lists it: the row is on screen and records keys for it
+     let mut h = demo();
+     record(&mut h, "lock", "crop.lockAspect");
+     key(&mut h, "Escape", false);
+-    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "crop.lockAspect"), Some("A"), "Esc cancels the recording: A stays");
++    assert_eq!(
++        shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "crop.lockAspect"),
++        Some("A"),
++        "Esc cancels the recording: A stays"
++    );
+     key(&mut h, "Escape", false);
+     assert!(h.app.ui.dialog.is_none());
+ }
+diff --git a/crates/ui-egui/src/tests/space_hand.rs b/crates/ui-egui/src/tests/space_hand.rs
+index 02c90705b..bbb308275 100644
+--- a/crates/ui-egui/src/tests/space_hand.rs
++++ b/crates/ui-egui/src/tests/space_hand.rs
+@@ -111,7 +111,7 @@ fn toggle_zoom_given_space_in_the_keymap_takes_the_hand_and_toggles_once() {
+     // with Space as Toggle Zoom's own shortcut the Space alias yields to it: the binding gets the
+     // same hand over a tool and the same once-per-press
+     let mut h = detail(None);
+-    crate::shortcuts::assign(&mut h.app.ui.settings.keymap, "view.zoomToggle", Some("Space")).unwrap();
++    crate::shortcuts::assign(crate::shortcuts::KeyProfile::Lightroom, &mut h.app.ui.settings.keymap, "view.zoomToggle", Some("Space")).unwrap();
+     space(&mut h, "down");
+     assert_eq!(h.app.ui.zoom, Zoom::Percent(100.0));
+     for _ in 0..3 {
+diff --git a/crates/ui-egui/src/tests/tool_overlay.rs b/crates/ui-egui/src/tests/tool_overlay.rs
+index 35426ac44..f46c8fdda 100644
+--- a/crates/ui-egui/src/tests/tool_overlay.rs
++++ b/crates/ui-egui/src/tests/tool_overlay.rs
+@@ -161,7 +161,10 @@ fn shift_h_and_the_command_cycle_the_tool_overlay() {
+     h.request("ui.key", json!({"key": "h"}), T);
+     assert_eq!(h.app.ui.right, RightPanel::Remove);
+     assert_eq!(h.app.ui.tool_overlay, ToolOverlay::Selected);
+-    assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.toolOverlay"), Some("Shift+H"));
++    assert_eq!(
++        crate::shortcuts::shortcut_of(crate::shortcuts::KeyProfile::Lightroom, &h.app.ui.settings.keymap, "view.toolOverlay"),
++        Some("Shift+H")
++    );
+ }
+ 
+ /// View ▸ Tool Overlay lists the modes (the current one checked) and the cycle item with its key;
+diff --git a/crates/ui-egui/tests/it/accessibility.rs b/crates/ui-egui/tests/it/accessibility.rs
+index 6b0e840af..598e562a1 100644
+--- a/crates/ui-egui/tests/it/accessibility.rs
++++ b/crates/ui-egui/tests/it/accessibility.rs
+@@ -328,7 +328,12 @@ fn tool_strip_and_toolbar_buttons_are_named_by_label_with_the_shortcut_as_descri
+ fn import_button_describes_its_shortcut_as_this_platform_writes_it() {
+     let h = harness(ViewMode::PhotoGrid, RightPanel::Edit);
+     let mac = h.ctx.os() == egui::os::OperatingSystem::Mac;
+-    let sc = lightcraft_ui_egui::shortcuts::shortcut_of(&h.state().ui.settings.keymap, "file.addPhotos").expect("Import Photos… has a shortcut");
++    let sc = lightcraft_ui_egui::shortcuts::shortcut_of(
++        lightcraft_ui_egui::shortcuts::KeyProfile::Lightroom,
++        &h.state().ui.settings.keymap,
++        "file.addPhotos",
++    )
++    .expect("Import Photos… has a shortcut");
+     let help = lightcraft_ui_egui::menubar::shortcut_text(sc, mac);
+     assert!(button_described(&h, "Import Photos…", &help), "a button named \"Import Photos…\" describing {help:?}");
+ }
+diff --git a/docs/classic-keymap.md b/docs/classic-keymap.md
+new file mode 100644
+index 000000000..5bb142c68
+--- /dev/null
++++ b/docs/classic-keymap.md
+@@ -0,0 +1,140 @@
++# Lightroom Classic shortcut set
++
++LightCraft ships a Lightroom-desktop keymap with some Lightroom Classic keys added. The
++**Lightroom Classic** shortcut set gives the same commands Lightroom Classic's default keys,
++where LightCraft has the command, in one click.
++
++- **Help ▸ Keyboard Shortcuts** (`⌘/`): *Shortcut set: Lightroom (default) | Lightroom Classic*
++  at the top of the editor.
++- **Settings ▸ General ▸ Keyboard ▸ Shortcut set**: the same choice.
++- **Control channel / CLI**: `app.keyProfile {"profile": "classic"}` or `{"profile": "lightroom"}`.
++  Without `profile` it returns the active set (`{"profile": "lightroom"}`). An unknown name is
++  refused and nothing changes.
++
++```sh
++lightcraft-cli run --connect --script - <<'EOF'
++{"command": "app.keyProfile", "params": {"profile": "classic"}}
++EOF
++```
++
++The choice is saved in `ui.json` as `settings.keyProfile` (`"lightroom"` or `"classic"`). A
++`ui.json` written before this setting existed, or one with a value this build doesn't know,
++reads as Lightroom.
++
++**Your own shortcuts still win.** The set only changes the defaults *under* `settings.keymap`
++(the keys you changed in the editor or with `app.setShortcut`). A key you gave a command keeps
++it in either set. The set's key that would clash with yours goes quiet. A shortcut you removed
++stays removed. ↺ in the editor (and `app.setShortcut {reset: true}`) restores the **active**
++set's key. Reset All clears your changes and leaves the set as it is.
++
++`⌘` is Ctrl on Windows and Linux; `⌥` is Alt.
++
++## The mapping
++
++Keys that change when you pick Lightroom Classic:
++
++| Key | Lightroom Classic | LightCraft command | Key in the Lightroom set |
++|---|---|---|---|
++| `E` | Loupe | `view.detail` (Detail view) | `D` |
++| `D` | Develop | `module.develop` (Detail view + Edit panel) | `⌘⌥2` |
++| `C` | Compare | `view.compare` | `⇧C` |
++| `R` | Crop overlay | `panel.crop` | `C` |
++| `Q` | Spot Removal | `panel.remove` | `H` |
++| `K` | Brush (Masking) | `tool.brush` | `B` |
++| `M` | Linear Gradient | `tool.linear` | `L` |
++| `⇧M` | Radial Gradient | `tool.radial` | `R` |
++| `⇧W` | Masking panel | `panel.masking` | `M` |
++| `⇧T` | Guided Upright | `tool.guidedUpright` | `⇧G` |
++| `L` | Lights Out (cycle) | `view.lightsOut` | `⇧L` |
++| `I` | Cycle info overlay | `view.infoOverlay` | `⌘I` |
++| `H` | Hide / show pins (tool overlay) | `view.toolOverlay` (in the Masking panel `H` toggles the mask pins, as in both sets) | `⇧H` |
++| `⌥O` | Cycle mask overlay mode | `view.maskOverlayMode` | none |
++| `⌘U` | Auto | `develop.auto` | `⇧A` |
++| `⌘⇧S` | Sync Settings | `develop.sync` (syncs without a dialog, like Classic's `⌘⌥S`) | none |
++| `⌘⌥⇧M` | Match Total Exposures | `develop.matchExposure` | none |
++| `⌘N` | New Snapshot (Develop) / New Collection (Library) | `version.create` while editing / `dialog.newAlbum` in the Library (see below) | `⌘⇧S` / `⌘N` |
++| `⌘⇧N` | New Preset (Develop) / New Folder (Library) | `dialog.createPreset` while editing / `dialog.newFolder` in the Library | `⌘⇧P` / `⌘⇧N` |
++| `⌘⇧E` | Export… | `dialog.export` | `⇧E` (secondary key, kept) |
++| `⌘E` | Edit in Adobe Photoshop | `photo.editInExternal` (Edit in Other Editor: set Settings ▸ General ▸ Other editor to Photoshop) | `⌘⌥E` |
++| `⌘⌥E` | Edit in Other Application | `photo.editInPhotoCraft` (Edit in PhotoCraft) | `⌘⇧E` |
++| `⇧P` | Flag as Pick and advance | `photo.flag {pick, advance}` (secondary key, every view) | Presets panel (pick and advance only in the grids) |
++| `Ctrl+Y` | Redo (Windows) | `edit.redo` (secondary key; `⌘⇧Z` stays) | none |
++| `⌘⌥2` | Develop module | `module.develop` (secondary key) | `module.develop`'s own key |
++| `⌘I` | Show / hide info overlay | `view.infoOverlay` (secondary key, cycles) | `view.infoOverlay`'s own key |
++
++Keys the Lightroom set gives that the Classic set takes away, so nothing clashes:
++
++| Command | Key in the Lightroom set | In the Classic set |
++|---|---|---|
++| `panel.edit` (Edit panel) | `E` | no key (`D` opens Develop with the Edit panel) |
++| `panel.info` (Info panel) | `I` | no key |
++| `panel.keywords` (Keywords panel) | `K` | no key (`⌘K` Add Keywords and `⌘⇧K` Edit Keywords stay) |
++| `panel.presets` (Presets panel) | `⇧P` | no key |
++| `app.exportPrevious` secondary key | `⌘E` | dropped (`⌘⌥⇧E`, Classic's key, stays) |
++| `version.create` secondary key | `⇧M` | dropped (`⌘N` while editing) |
++
++Keys that are already Lightroom Classic's in both sets include:
++`G` grid, `N` Survey, `⇧R` Reference view, `F` full-screen preview, `J` clipping, `V` black &
++white, `W` white balance selector, `Z` / `Space` zoom, `Y` / `⌥Y` / `⇧Y` / `⌥⇧Y` / `\` before /
++after, `O` / `⇧O` mask overlay, `P` / `X` / `U` / `` ` `` flags, `⌘↑` / `⌘↓` flag status, `0`–`5`
++ratings, `6`–`9` labels, `⇧`+number and advance, `[` / `]` ratings in the grids, `B` Quick
++Collection in the grids, `⌘[` / `⌘]` rotate, `⌘'` virtual copy, `⌘G` / `⌘⇧G` / `S` / `⇧S`
++stacks, `⌘⇧C` copy settings, `⌘⌥V` paste from previous, `⌘⌥⇧A` auto sync, `⌘⇧R` reset,
++`⌘⌥R` reset crop, `⌘⇧I` import, `⌘⌥⇧E` Export with Previous, `⌘K` / `⇧K` keywords, `⌘D`
++(secondary key) select none, `⌘J` view options, `⌘L` filters, `⌘F` find, `⌘R` show in
++Finder, `F2` rename, `F6` / `F7` / `F8` panels, `Ctrl+H` / `Ctrl+M` HDR and panorama merge,
++and the module keys `⌘⌥1` Library, `⌘⌥6` Print.
++
++## Keys that share by context
++
++`⌘N` and `⌘⇧N` mean two things in Lightroom Classic, depending on the module. In LightCraft
++the side is chosen by whether a photo is being edited: an edit tool's panel (Edit, Crop,
++Masking, Remove, Red Eye, Profiles) open beside the photo means "Develop".
++
++| Key | Editing a photo | Anywhere else (the grids, the Loupe with no edit panel) |
++|---|---|---|
++| `⌘N` | Create Version (Classic's snapshot) | New Album… (Classic's collection) |
++| `⌘⇧N` | Create Preset… | New Folder… |
++
++The menu bar shows the key on the item it runs at that moment (on macOS the native menu runs
++it). If you move either command of a pair to a key of its own, both keys work everywhere.
++
++`B` stays the Quick Collection in the grids: Lightroom's brush key `B` adds to the Quick
++Collection there, and under Lightroom Classic the brush is `K` and `B` adds to the Quick
++Collection by itself. `K` in a grid never touches the album.
++
++## Not mapped
++
++LightCraft has no command (or no command without parameters) for these Lightroom Classic keys,
++so neither set binds them:
++
++- `Tab` / `⇧Tab` / `T` / `F5`: hide side panels / all panels / toolbar / top panel.
++- `⌘⌥3`–`⌘⌥5`, `⌘⌥7` (Map, Book, Slideshow, Web modules), `⌘⌥↑` previous module.
++- `⌘0`–`⌘9` Develop panel tabs (LightCraft's sections are Lightroom's: `⌘1`–`⌘5`), and `⌘0`
++  histogram (here `⌘⇧H`; `⌘0` is Zoom to Fit).
++- `⌘⇧U` auto white balance, `⇧J` / `⇧Q` / `⇧Z` color / luminance / depth range masks, the
++  targeted adjustment tool keys `⌘⌥⇧T/H/S/L/G`: these need parameters.
++- `⇧A` (crop to the previous aspect), `/` brush A/B, `⌘⌫` delete rejected photos, `⌘B` show the
++  Quick Collection, Caps Lock auto advance (bind `view.autoAdvance` yourself if you want a key).
++- `O` People view: LightCraft's `O` is the mask overlay in both sets.
++- `⌘⇧V` pastes through the Paste Selected Settings dialog in both sets (bind `develop.paste`
++  to it for Classic's direct paste).
++
++## For developers
++
++- The set: `crates/ui-egui/src/keymap_profiles.rs` (`KeyProfile`, `CLASSIC_OVERRIDES`,
++  `CLASSIC_ALIASES`, `CLASSIC_DROPPED_ALIASES`, `profile_default`, `aliases`). The setting is
++  `AppSettings::key_profile`.
++- `crate::shortcuts::binding(profile, keymap, id, default)` resolves a key: the user's entry,
++  else the set's key (`profile_default`), which yields to a key the user gave another command.
++  `shortcut_of`, `conflicts`, `assign` and `reset` take the set too.
++- The `⌘N` / `⌘⇧N` pairs are in `shortcuts::CONTEXTUAL`; `shortcuts::contextual_yields` decides
++  which side acts (the key handler and the menu bar both ask it).
++- Tests: `crates/ui-egui/src/tests/classic_keymap.rs`. Among them,
++  `the_classic_set_has_no_conflicting_bindings` checks every pair of commands and active
++  secondary keys under both sets. Keys the Classic set adds are also checked the way Windows
++  reads them (`⌘` = Ctrl). One clash on Windows is already in the shipped keymap and Classic
++  leaves it as it is: `⌘⇧H` Histogram and `Ctrl+⇧H` HDR with Last Settings.
++
++Adapted from upstream PR #2338 (storytold/lightcraft, MIT/Apache-2.0), ported to v0.20.0. The
++module keys come from this patch set's module bar.
+-- 
+2.43.0
+

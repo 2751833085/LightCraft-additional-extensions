@@ -1,0 +1,1518 @@
+From a5681d4877a9bf286073aa4788a9386382d0b946 Mon Sep 17 00:00:00 2001
+From: LightCraft additional extensions <noreply@example.invalid>
+Date: Wed, 11 Nov 2026 20:26:12 +0000
+Subject: [PATCH 3/7] Export: After export can show the files or open them in
+ an application
+
+The Export dialog gets an After export choice, like Lightroom Classic's
+Post-Processing > After Export: Do nothing, Show in Finder / Explorer / the
+file manager, Open in PhotoCraft, or Open in Other Application... (an app
+name for `open -a` on macOS, a program path elsewhere; typed or picked with
+Choose...). It is an export option (`afterExport`: "nothing" |
+"showInFileManager" | "openInPhotoCraft" | {"openIn": app}), so export
+presets, Export with Previous and `app.export` params carry it; an unknown
+value is refused before anything is written.
+
+The desktop app does it on the UI thread once the export has finished and
+wrote files (export_task poll, or before a foreground `app.export`
+answers), not after a cancel. PhotoCraft is found as Photo > Edit In finds
+it. A failure becomes a note on the export toast, never a panic. Where the
+host has no file manager or launcher (MCP, lightcraft-cli, tests, the web)
+the files are written and the result reports the action as skipped.
+`dialog.exportChooseApp {app?}` sets the application of the open dialog.
+
+Adapted from upstream PR #3649 (closed unmerged) to v0.20.0. Simplified and
+Traditional Chinese translations for the new strings; tests in
+tests/after_export.rs (dialog, Export with Previous, presets, the action
+after export with fake services), engine and MCP tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EzwanTUC5ztbqABwMnjziB
+---
+ apps/lightcraft-cli/src/main.rs             |   5 +
+ apps/lightcraft/src/editors.rs              |  15 +-
+ crates/engine/src/export.rs                 |   6 +-
+ crates/engine/src/export/options.rs         | 115 +++++++
+ crates/engine/src/export/params.rs          |  10 +-
+ crates/engine/src/export/tests.rs           |  75 ++++
+ crates/engine/src/tests/export.rs           |  22 ++
+ crates/mcp/src/headless.rs                  |   7 +-
+ crates/mcp/src/tests.rs                     |  17 +
+ crates/mcp/src/tools.rs                     |  90 ++---
+ crates/ui-egui/locales/zh-hans-formats.json |   4 +-
+ crates/ui-egui/locales/zh-hans.json         |  10 +-
+ crates/ui-egui/locales/zh-hant-formats.json |   4 +-
+ crates/ui-egui/locales/zh-hant.json         |  10 +-
+ crates/ui-egui/src/control.rs               |   3 +
+ crates/ui-egui/src/dialogs.rs               |   5 +-
+ crates/ui-egui/src/dialogs/export.rs        |  54 ++-
+ crates/ui-egui/src/export_task.rs           | 152 ++++++++-
+ crates/ui-egui/src/menus.rs                 |  41 +++
+ crates/ui-egui/src/menus/files.rs           |  15 +-
+ crates/ui-egui/src/menus/run.rs             |   1 +
+ crates/ui-egui/src/menus/ui_commands.rs     |   2 +
+ crates/ui-egui/src/tests.rs                 |   1 +
+ crates/ui-egui/src/tests/after_export.rs    | 357 ++++++++++++++++++++
+ docs/mcp.md                                 |  13 +
+ 25 files changed, 963 insertions(+), 71 deletions(-)
+ create mode 100644 crates/ui-egui/src/tests/after_export.rs
+
+diff --git a/apps/lightcraft-cli/src/main.rs b/apps/lightcraft-cli/src/main.rs
+index d38422955..00538c9cf 100644
+--- a/apps/lightcraft-cli/src/main.rs
++++ b/apps/lightcraft-cli/src/main.rs
+@@ -68,6 +68,8 @@ USAGE:
+                              --opt format=original (copy + XMP sidecar) --opt metadata=none
+                              --opt addToPhotos=true --opt photosAlbum=NAME (macOS: then add
+                              the file to Apple Photos, into that album)
++                             --opt afterExport=showInFileManager (only the desktop app
++                             shows or opens files: skipped here, with a note)
+   lightcraft-cli snapshot [OPTIONS] [FILES/FOLDERS…]
+       Run the full app UI headlessly (no window, no GPU: CPU-rasterized egui) and write PNGs.
+       Options:
+@@ -823,6 +825,9 @@ fn render(args: &[String]) -> Result<(), String> {
+         }
+         eprintln!("lightcraft-cli: added to Apple Photos: {photos}");
+     }
++    if let Some(skipped) = o.after_export.unavailable(&[json!({"path": output})], false) {
++        eprintln!("lightcraft-cli: after export: {skipped}");
++    }
+     Ok(())
+ }
+ 
+diff --git a/apps/lightcraft/src/editors.rs b/apps/lightcraft/src/editors.rs
+index 3ca748f47..76d1c9fe2 100644
+--- a/apps/lightcraft/src/editors.rs
++++ b/apps/lightcraft/src/editors.rs
+@@ -74,7 +74,13 @@ fn open_result(ok: bool, stderr: &str) -> Result<(), String> {
+ /// still starting when it is started once per file. The system default opens them one by one
+ /// (Explorer and `xdg-open` take one file).
+ pub fn open_all_with(paths: &[String], app: &str) -> Result<(), String> {
+-    match all_command(launcher(app)?, paths) {
++    let launcher = launcher(app)?;
++    // `open` is waited for, as for one file, so an application it can't find is an error
++    if let Launcher::MacApp(app) = &launcher {
++        let args: Vec<&str> = ["-a", app.as_str()].into_iter().chain(paths.iter().map(String::as_str)).collect();
++        return run_open(&args);
++    }
++    match all_command(launcher, paths) {
+         Some(mut c) => c.spawn().map(|_| ()).map_err(|e| e.to_string()),
+         None => paths.iter().try_for_each(|p| open_with(p, app)),
+     }
+@@ -379,6 +385,13 @@ mod tests {
+         assert!(open_result(false, "").is_err(), "even when it says nothing");
+     }
+ 
++    #[cfg(target_os = "macos")]
++    #[test]
++    fn several_files_in_an_app_that_is_not_there_is_an_error() {
++        let files = ["/tmp/lc-a.jpg".to_string(), "/tmp/lc-b.jpg".to_string()];
++        assert!(open_all_with(&files, "No Such Application LightCraft").is_err(), "not a silent success");
++    }
++
+     #[test]
+     fn odd_detection_input_does_not_panic() {
+         for text in ["", "Exec=", "Exec=\"", "Exec=\"\"", "\u{0}\u{fffd}", "Exec= %F", "[Desktop Entry]\nExec=\u{e9}\u{301}"] {
+diff --git a/crates/engine/src/export.rs b/crates/engine/src/export.rs
+index 8ba08021f..09d793afe 100644
+--- a/crates/engine/src/export.rs
++++ b/crates/engine/src/export.rs
+@@ -30,8 +30,8 @@ pub use encoding::{
+     output_sharpen_deep, removes_location, srgb8_in,
+ };
+ pub use options::{
+-    Conflict, DestinationMode, ExportFormat, ExportPreset, HdrCurve, MAX_ENLARGED_PIXELS, MetadataPolicy, Resize, ResizeMode, SharpenAmount,
+-    SharpenFor, builtin_presets,
++    AfterAction, Conflict, DestinationMode, ExportFormat, ExportPreset, HdrCurve, MAX_ENLARGED_PIXELS, MetadataPolicy, Resize, ResizeMode,
++    SharpenAmount, SharpenFor, builtin_presets,
+ };
+ pub use params::{
+     OPTION_PARAMS, TARGET_PARAMS, WATERMARK_IMAGE_WIDTH_RANGE, WATERMARK_INSET_RANGE, WATERMARK_PARAMS, WATERMARK_SIZE_RANGE,
+@@ -110,6 +110,8 @@ pub struct ExportOptions {
+     pub add_to_photos: bool,
+     /// The Photos album they go into, made when missing (empty = none).
+     pub photos_album: String,
++    /// Then show the files or open them in an application (`afterExport`; done by the desktop app).
++    pub after_export: AfterAction,
+     /// The curve of an HDR AVIF: PQ (default) or HLG.
+     pub hdr_transfer: HdrCurve,
+ }
+diff --git a/crates/engine/src/export/options.rs b/crates/engine/src/export/options.rs
+index 75884263e..f8006b26e 100644
+--- a/crates/engine/src/export/options.rs
++++ b/crates/engine/src/export/options.rs
+@@ -168,6 +168,121 @@ pub enum DestinationMode {
+     SameAsOriginal,
+ }
+ 
++/// What happens to the files once an export has written them (Lightroom's Post-Processing ▸ After
++/// Export; `afterExport`). The engine can't show a folder or start an application: the desktop app
++/// does it with its file manager and launcher, and other callers report it skipped
++/// ([`AfterAction::unavailable`]). Adding to Apple Photos is a separate setting
++/// ([`super::ExportOptions::add_to_photos`]).
++#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub enum AfterAction {
++    #[default]
++    Nothing,
++    /// Show the first file in Finder / Explorer / the file manager (`"showInFileManager"`).
++    ShowInFileManager,
++    /// Open the files in PhotoCraft, found as Photo ▸ Edit In finds it (`"openInPhotoCraft"`).
++    OpenInPhotoCraft,
++    /// Open the files in this application (`{"openIn": app}`): an application name or bundle path
++    /// on macOS, a program path elsewhere, as Settings ▸ External Editing takes it; "" = each
++    /// file's default application.
++    OpenIn(String),
++}
++
++impl AfterAction {
++    /// The values `afterExport` takes, for errors.
++    pub const VALUES: &str = "nothing|showInFileManager|openInPhotoCraft|{openIn: application}";
++
++    /// Longest application `openIn` takes, in bytes (a path, not a document).
++    pub const MAX_APP_LEN: usize = 4096;
++
++    /// Read an `afterExport` value. An error says what it takes: a stored or typed value this
++    /// version can't do is not quietly "nothing".
++    pub fn from_param(v: &serde_json::Value) -> Result<Self, String> {
++        use serde_json::Value;
++        match v {
++            Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
++                "nothing" => Ok(Self::Nothing),
++                "showinfilemanager" => Ok(Self::ShowInFileManager),
++                "openinphotocraft" => Ok(Self::OpenInPhotoCraft),
++                _ => Err(format!("`afterExport` must be one of {}", Self::VALUES)),
++            },
++            Value::Object(o) if o.len() == 1 => {
++                let Some(app) = o.get("openIn") else { return Err(format!("`afterExport` must be one of {}", Self::VALUES)) };
++                let app = app.as_str().ok_or("`afterExport.openIn` must be the application's name or path (a string)")?;
++                if app.len() > Self::MAX_APP_LEN {
++                    return Err(format!("`afterExport.openIn` is longer than {} bytes", Self::MAX_APP_LEN));
++                }
++                // handed to the system's launcher as one argument: no NUL, no line breaks
++                if app.chars().any(char::is_control) {
++                    return Err("`afterExport.openIn` can't contain control characters".into());
++                }
++                Ok(Self::OpenIn(app.trim().to_string()))
++            }
++            _ => Err(format!("`afterExport` must be one of {}", Self::VALUES)),
++        }
++    }
++
++    /// Its name in results (`action`): `nothing`, `showInFileManager`, `openInPhotoCraft`, `openIn`.
++    pub fn name(&self) -> &'static str {
++        match self {
++            Self::Nothing => "nothing",
++            Self::ShowInFileManager => "showInFileManager",
++            Self::OpenInPhotoCraft => "openInPhotoCraft",
++            Self::OpenIn(_) => "openIn",
++        }
++    }
++
++    /// The start of every outcome: `{action}`, plus `app` for [`AfterAction::OpenIn`].
++    pub fn outcome(&self) -> serde_json::Value {
++        let mut v = serde_json::json!({"action": self.name()});
++        if let Self::OpenIn(app) = self {
++            v["app"] = app.as_str().into();
++        }
++        v
++    }
++
++    /// The outcome when it was not done: `{action, skipped: why}`, with `cancelled: true` for a
++    /// cancelled export.
++    pub fn skipped(&self, why: &str, cancelled: bool) -> serde_json::Value {
++        let mut v = self.outcome();
++        v["skipped"] = why.into();
++        if cancelled {
++            v["cancelled"] = true.into();
++        }
++        v
++    }
++
++    /// The files to act on: those an export wrote (its per-photo results' `path`s, in order); or,
++    /// when there are none to act on, the outcome saying why (cancelled, nothing written, nothing
++    /// to do).
++    pub fn targets(&self, files: &[serde_json::Value], cancelled: bool) -> Result<Vec<String>, serde_json::Value> {
++        if *self == Self::Nothing {
++            return Err(self.skipped("nothing to do", false));
++        }
++        if cancelled {
++            return Err(self.skipped("the export was cancelled", true));
++        }
++        let paths: Vec<String> = files.iter().filter_map(|f| f.get("path").and_then(serde_json::Value::as_str)).map(str::to_string).collect();
++        if paths.is_empty() {
++            return Err(self.skipped("the export wrote no files", false));
++        }
++        Ok(paths)
++    }
++
++    /// The outcome for a caller with no file manager or launcher (MCP, lightcraft-cli, the web):
++    /// `None` for [`AfterAction::Nothing`], else skipped, saying why. The export is not refused
++    /// for it: a preset made in the desktop app still exports here.
++    pub fn unavailable(&self, files: &[serde_json::Value], cancelled: bool) -> Option<serde_json::Value> {
++        if *self == Self::Nothing {
++            return None;
++        }
++        Some(match self.targets(files, cancelled) {
++            Ok(_) => self.skipped("not available here", false),
++            Err(why) => why,
++        })
++    }
++}
++
+ impl DestinationMode {
+     /// `specificFolder` / `sameAsOriginal` (any case).
+     pub fn parse(s: &str) -> Option<Self> {
+diff --git a/crates/engine/src/export/params.rs b/crates/engine/src/export/params.rs
+index 34397fad3..93d6715a7 100644
+--- a/crates/engine/src/export/params.rs
++++ b/crates/engine/src/export/params.rs
+@@ -1,4 +1,4 @@
+-use super::options::{Conflict, DestinationMode, ExportFormat, HdrCurve, MetadataPolicy, Resize, ResizeMode, SharpenAmount, SharpenFor};
++use super::options::{AfterAction, Conflict, DestinationMode, ExportFormat, HdrCurve, MetadataPolicy, Resize, ResizeMode, SharpenAmount, SharpenFor};
+ use super::place::clean_subfolder;
+ use super::prepare::DngCompression;
+ use super::watermark::{Anchor, Watermark};
+@@ -32,6 +32,7 @@ impl Default for ExportOptions {
+             jxl_progressive: false,
+             add_to_photos: false,
+             photos_album: String::new(),
++            after_export: AfterAction::Nothing,
+             hdr_transfer: HdrCurve::Pq,
+         }
+     }
+@@ -76,6 +77,7 @@ pub const OPTION_PARAMS: &[&str] = &[
+     "jxlProgressive",
+     "addToPhotos",
+     "photosAlbum",
++    "afterExport",
+     "hdrTransfer",
+ ];
+ 
+@@ -297,6 +299,9 @@ impl ExportOptions {
+                         return Err(bad(format!("`{k}` can't contain a NUL character")));
+                     }
+                 }
++                "afterExport" => {
++                    AfterAction::from_param(v).map_err(bad)?;
++                }
+                 "naming" | "subfolder" | "path" | "dir" | "preset" => {
+                     string(cmd, k, v)?;
+                 }
+@@ -403,7 +408,7 @@ impl ExportOptions {
+ 
+     /// Read options from command params (`format`, `quality`, `limitKb`, `sharpen`, `sharpenAmount`,
+     /// `naming`, `metadata`, `removeLocation`, `watermark`, `colorSpace`, `bitDepth`, `ppi`,
+-    /// `addToPhotos`, `photosAlbum`) and the
++    /// `addToPhotos`, `photosAlbum`, `afterExport`) and the
+     /// size: one of `longEdge`, `shortEdge`, `width`, `height` (both = fit inside W × H),
+     /// `megapixels`, `percent` (absent or 0 = full size), or a [`Resize`] object as `resize`; plus
+     /// `dontEnlarge` (default true).
+@@ -455,6 +460,7 @@ impl ExportOptions {
+             jxl_progressive: p.get("jxlProgressive").and_then(Value::as_bool).unwrap_or(d.jxl_progressive),
+             add_to_photos: p.get("addToPhotos").and_then(Value::as_bool).unwrap_or(d.add_to_photos),
+             photos_album: s("photosAlbum").map_or(d.photos_album, |a| a.trim().to_string()),
++            after_export: p.get("afterExport").and_then(|v| AfterAction::from_param(v).ok()).unwrap_or(d.after_export),
+             hdr_transfer: s("hdrTransfer").and_then(HdrCurve::parse).unwrap_or(d.hdr_transfer),
+         }
+     }
+diff --git a/crates/engine/src/export/tests.rs b/crates/engine/src/export/tests.rs
+index d1d387b26..90507276c 100644
+--- a/crates/engine/src/export/tests.rs
++++ b/crates/engine/src/export/tests.rs
+@@ -1525,3 +1525,78 @@ fn export_weights_follow_the_source_and_output_sizes() {
+     assert_eq!(render_weight(0, 0, SourceLevel::Full, 0), 0);
+     assert!(render_weight(usize::MAX, 1, SourceLevel::Full, usize::MAX) > 0, "no overflow");
+ }
++
++/// Issue #3440: `afterExport` (Lightroom's Post-Processing ▸ After Export) is one param, read the
++/// same by `app.export`, the CLI, MCP and export presets.
++#[test]
++fn after_export_parses_and_round_trips() {
++    let cases = [
++        (json!("nothing"), AfterAction::Nothing),
++        (json!("showInFileManager"), AfterAction::ShowInFileManager),
++        (json!("openInPhotoCraft"), AfterAction::OpenInPhotoCraft),
++        (json!({"openIn": "/Applications/Preview.app"}), AfterAction::OpenIn("/Applications/Preview.app".into())),
++        // blank: the system's default application for each file, as Settings ▸ External Editing
++        (json!({"openIn": ""}), AfterAction::OpenIn(String::new())),
++    ];
++    for (v, want) in cases {
++        let p = json!({"afterExport": v});
++        let o = ExportOptions::from_params(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
++        assert_eq!(o.after_export, want, "{p}");
++        let back = o.to_json();
++        assert_eq!(back["afterExport"], v, "written back as given");
++        assert_eq!(ExportOptions::from_json(&back).after_export, want, "{back}");
++    }
++    assert_eq!(ExportOptions::default().after_export, AfterAction::Nothing);
++    assert!(OPTION_PARAMS.contains(&"afterExport"));
++}
++
++/// A value `afterExport` doesn't know is an error naming what it takes, never a silent "nothing".
++#[test]
++fn after_export_refuses_what_it_does_not_know() {
++    let long = "a".repeat(5000);
++    for v in [
++        json!("showInFinder!"),
++        json!(true),
++        json!(3),
++        json!({"openIn": 5}),
++        json!({"openIn": "Preview", "also": 1}),
++        json!({"open": "Preview"}),
++        json!({"openIn": "Pre\0view"}),
++        json!({"openIn": "Pre\nview"}),
++        json!({"openIn": long}),
++    ] {
++        let e = ExportOptions::from_params(&json!({"afterExport": v})).unwrap_err().to_string();
++        assert!(e.contains("afterExport"), "{v}: {e}");
++    }
++    // stored settings stay lenient: an unreadable value is "nothing"
++    assert_eq!(ExportOptions::from_json(&json!({"afterExport": "bogus"})).after_export, AfterAction::Nothing);
++}
++
++/// What the action acts on: the files the export wrote, in order; nothing when it was cancelled
++/// or wrote no file (skipped, failed), with the reason to report.
++#[test]
++fn after_export_acts_on_the_files_written() {
++    let files = [json!({"path": "out/a.jpg"}), json!({"skipped": "out/b.jpg"}), json!({"error": "disk full"}), json!({"path": "out/c.jpg"})];
++    assert_eq!(AfterAction::ShowInFileManager.targets(&files, false), Ok(vec!["out/a.jpg".to_string(), "out/c.jpg".to_string()]));
++    let cancelled = AfterAction::ShowInFileManager.targets(&files, true).unwrap_err();
++    assert_eq!(cancelled, json!({"action": "showInFileManager", "skipped": "the export was cancelled", "cancelled": true}));
++    let none = AfterAction::OpenIn("Preview".into()).targets(&files[1..3], false).unwrap_err();
++    assert_eq!(none, json!({"action": "openIn", "app": "Preview", "skipped": "the export wrote no files"}));
++    assert!(AfterAction::Nothing.targets(&files, false).is_err(), "nothing to do");
++}
++
++/// Without a file manager or a way to start an application (MCP, lightcraft-cli, the web), the
++/// export still runs and its result says the action was skipped and why.
++#[test]
++fn after_export_without_a_desktop_is_reported_not_refused() {
++    let files = [json!({"path": "out/a.jpg"})];
++    assert_eq!(AfterAction::Nothing.unavailable(&files, false), None);
++    assert_eq!(
++        AfterAction::ShowInFileManager.unavailable(&files, false),
++        Some(json!({"action": "showInFileManager", "skipped": "not available here"}))
++    );
++    assert_eq!(
++        AfterAction::OpenInPhotoCraft.unavailable(&files, true),
++        Some(json!({"action": "openInPhotoCraft", "skipped": "the export was cancelled", "cancelled": true}))
++    );
++}
+diff --git a/crates/engine/src/tests/export.rs b/crates/engine/src/tests/export.rs
+index 1bddd2c44..6376cb62d 100644
+--- a/crates/engine/src/tests/export.rs
++++ b/crates/engine/src/tests/export.rs
+@@ -1574,3 +1574,25 @@ fn a_user_preset_naming_a_built_in_is_renamed_when_the_library_opens() {
+     assert_eq!((b["format"].as_str(), b["longEdge"].as_u64()), (Some("jpeg"), Some(2048)), "{b}");
+     let _ = std::fs::remove_dir_all(&lib);
+ }
++
++/// Issue #3440: an export preset keeps its After Export choice; one saved before there was a
++/// choice loads as "nothing".
++#[test]
++fn export_presets_keep_their_after_export_choice() {
++    use crate::export::AfterAction;
++    let mut s = Session::with_demo();
++    let params = json!({"format": "jpeg", "afterExport": {"openIn": "Preview"}});
++    s.execute("export.savePreset", &json!({"name": "To Preview", "params": params})).unwrap();
++    let p = s.export_params(&json!({"preset": "To Preview"})).unwrap();
++    assert_eq!(ExportOptions::from_params(&p).unwrap().after_export, AfterAction::OpenIn("Preview".into()));
++    // the call's own choice wins over the preset's
++    let p = s.export_params(&json!({"preset": "To Preview", "afterExport": "showInFileManager"})).unwrap();
++    assert_eq!(ExportOptions::from_params(&p).unwrap().after_export, AfterAction::ShowInFileManager);
++    // a preset from before #3440, as the prefs file holds it
++    s.export_presets.push(crate::export::ExportPreset { name: "Old".into(), params: json!({"format": "png", "longEdge": 64}) });
++    let p = s.export_params(&json!({"preset": "Old"})).unwrap();
++    assert_eq!(ExportOptions::from_params(&p).unwrap().after_export, AfterAction::Nothing);
++    // a typo is refused where it is typed, not when the preset exports
++    let e = s.execute("export.savePreset", &json!({"name": "Bad", "params": {"afterExport": "showInFinderr"}})).unwrap_err();
++    assert!(e.to_string().contains("afterExport"), "{e}");
++}
+diff --git a/crates/mcp/src/headless.rs b/crates/mcp/src/headless.rs
+index 11de91417..909537303 100644
+--- a/crates/mcp/src/headless.rs
++++ b/crates/mcp/src/headless.rs
+@@ -110,6 +110,11 @@ impl Headless {
+         if let Some(photos) = after.run(&files, false) {
+             out["applePhotos"] = photos;
+         }
++        // no file manager or application launcher here: said, not refused (a preset made in the
++        // desktop app still exports)
++        if let Some(skipped) = opts.after_export.unavailable(&files, false) {
++            out["afterExport"] = skipped;
++        }
+         out["files"] = json!(files);
+         Ok(out)
+     }
+@@ -134,7 +139,7 @@ impl Backend for Headless {
+             "engine.commands" => {
+                 let mut v: Vec<Value> = self.session.commands().into_iter().map(|c| serde_json::to_value(c).unwrap_or_default()).collect();
+                 v.push(json!({"id": "app.export", "label": "Export Now", "menu": [], "shortcut": null,
+-                    "params": "{path?: output file (.jpg/.png/.tif/.webp/.avif/.jxl/.psd/.dng) | dir?, ids?, preset?, format?: jpeg|png|tiff|webp|avif|jxl|psd|dng|original, longEdge?|shortEdge?|width?|height?|megapixels?|percent? (default longEdge 3000; longEdge 0 = full size), fit?: dimensions|widthHeight (with width + height: dimensions fits either orientation, widthHeight limits the width to `width` and the height to `height`), dontEnlarge?, ppi?, quality?: 1..100, jxlLossless?, jxlEffort?: fast|normal, jxlProgressive?, limitKb?, colorSpace?: srgb|displayP3|adobeRgb|proPhoto|rec2020, bitDepth?: 8|10|16|32, hdr? (HDR output for HDR edits: gain map JPEG, PQ AVIF / PNG / JPEG XL, float TIFF), sharpen?: none|screen|matte|glossy, sharpenAmount?: low|standard|high, metadata?: all|allExceptCamera|copyright|none, removeLocation?, naming?, startNumber?, destinationMode?: specificFolder|sameAsOriginal (sameAsOriginal = each photo into its original's folder; `dir` unused), subfolder?, conflict?: unique|overwrite|skip, tiffCompression?: none|lzw|zip (default zip; lzw is usually larger and slower than zip, at 16 bit often larger than none: only for software that needs LZW), dngCompression?: lossless|deflate|uncompressed, addToPhotos?: bool (macOS: then add the files written to Apple Photos; outcome in `applePhotos`), photosAlbum?: top-level album name (made when missing), watermark?: text | {text?, vertical? (upright columns, right to left), size? (text height, 0.005..0.5 of the short edge; default 0.035), opacity? (0..1; 0.7), anchor?: topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight, insetX? (margin from the left/right edge, 0..0.4 of the short edge; 0.025), insetY? (from the top/bottom edge; 0.025), inset? (sets both), rotation?: 0|90|180|270 (degrees clockwise; 0), color? [r,g,b] sRGB, shadow?, image? (graphic drawn instead of the text), imageWidth? (0.01..1 of the photo's width; 0.2)}} — an unknown parameter, an out-of-range watermark size or a value of the wrong kind is an error, not a default",
++                    "params": "{path?: output file (.jpg/.png/.tif/.webp/.avif/.jxl/.psd/.dng) | dir?, ids?, preset?, format?: jpeg|png|tiff|webp|avif|jxl|psd|dng|original, longEdge?|shortEdge?|width?|height?|megapixels?|percent? (default longEdge 3000; longEdge 0 = full size), fit?: dimensions|widthHeight (with width + height: dimensions fits either orientation, widthHeight limits the width to `width` and the height to `height`), dontEnlarge?, ppi?, quality?: 1..100, jxlLossless?, jxlEffort?: fast|normal, jxlProgressive?, limitKb?, colorSpace?: srgb|displayP3|adobeRgb|proPhoto|rec2020, bitDepth?: 8|10|16|32, hdr? (HDR output for HDR edits: gain map JPEG, PQ AVIF / PNG / JPEG XL, float TIFF), sharpen?: none|screen|matte|glossy, sharpenAmount?: low|standard|high, metadata?: all|allExceptCamera|copyright|none, removeLocation?, naming?, startNumber?, destinationMode?: specificFolder|sameAsOriginal (sameAsOriginal = each photo into its original's folder; `dir` unused), subfolder?, conflict?: unique|overwrite|skip, tiffCompression?: none|lzw|zip (default zip; lzw is usually larger and slower than zip, at 16 bit often larger than none: only for software that needs LZW), dngCompression?: lossless|deflate|uncompressed, addToPhotos?: bool (macOS: then add the files written to Apple Photos; outcome in `applePhotos`), photosAlbum?: top-level album name (made when missing), afterExport?: nothing|showInFileManager|openInPhotoCraft|{openIn: app} (the desktop app does it; here reported skipped in `afterExport`), watermark?: text | {text?, vertical? (upright columns, right to left), size? (text height, 0.005..0.5 of the short edge; default 0.035), opacity? (0..1; 0.7), anchor?: topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight, insetX? (margin from the left/right edge, 0..0.4 of the short edge; 0.025), insetY? (from the top/bottom edge; 0.025), inset? (sets both), rotation?: 0|90|180|270 (degrees clockwise; 0), color? [r,g,b] sRGB, shadow?, image? (graphic drawn instead of the text), imageWidth? (0.01..1 of the photo's width; 0.2)}} — an unknown parameter, an out-of-range watermark size or a value of the wrong kind is an error, not a default",
+                     "enabled": self.session.active().is_some()}));
+                 Ok(Value::Array(v))
+             }
+diff --git a/crates/mcp/src/tests.rs b/crates/mcp/src/tests.rs
+index 7cc61a318..ed3f6cd17 100644
+--- a/crates/mcp/src/tests.rs
++++ b/crates/mcp/src/tests.rs
+@@ -197,6 +197,23 @@ fn export_tool_forwards_its_advertised_options() {
+     let _ = std::fs::remove_dir_all(&base);
+ }
+ 
++/// Issue #3440: headless there is no file manager or launcher, so `afterExport` is not done; the
++/// files are written and the result says it was skipped (a desktop preset still exports here).
++#[test]
++fn export_reports_the_after_export_action_it_skipped() {
++    let mut b = Headless::demo();
++    let base = std::env::temp_dir().join(format!("lc-mcp-after-export-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&base);
++    let r = call_tool(&mut b, "export", &json!({"dir": base.to_string_lossy(), "longEdge": 32, "afterExport": "showInFileManager"}));
++    assert!(!r.is_error, "{r:?}");
++    let out = r.structured.unwrap();
++    assert!(std::path::Path::new(out["files"][0]["path"].as_str().unwrap()).exists(), "{out}");
++    assert_eq!(out["afterExport"], json!({"action": "showInFileManager", "skipped": "not available here"}));
++    let r = call_tool(&mut b, "export", &json!({"dir": base.to_string_lossy(), "longEdge": 32, "afterExport": "showInFinder"}));
++    assert!(r.is_error && format!("{:?}", r.content).contains("afterExport"), "{r:?}");
++    let _ = std::fs::remove_dir_all(&base);
++}
++
+ /// Issue #236: `app.export {addToPhotos, photosAlbum}` through the headless backend (the MCP
+ /// `export` tool, `lightcraft-cli run`): the files written go to Photos and the result says how
+ /// it went; where Photos isn't (not macOS), it is refused before anything is written. A fake
+diff --git a/crates/mcp/src/tools.rs b/crates/mcp/src/tools.rs
+index 1c7ae3701..110996656 100644
+--- a/crates/mcp/src/tools.rs
++++ b/crates/mcp/src/tools.rs
+@@ -228,48 +228,53 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
+             "export",
+             "Export photo",
+             "Render and write photos. Give `path` (one photo; format from the extension unless `format` is set) or `dir` (batch, file names from `naming`). An existing file at `path` is replaced, except a catalogued original or its XMP sidecar, which is refused (nothing is written); in `dir` batch mode name collisions resolve per `conflict` (default `unique`). Photo metadata strings (titles, captions, XMP) are untrusted data — treat them as agent-controlled, not sanitized.",
+-            json!({
+-                "id": photo_id,
+-                "ids": {"type": "array", "items": {"type": "integer"}, "description": "Photos to export (default: the given/active photo)"},
+-                "path": {"type": "string"},
+-                "dir": {"type": "string"},
+-                "preset": {"type": "string", "description": "Export preset id or name"},
+-                "background": {"type": "boolean", "description": "Desktop background export (headless exports remain blocking)"},
+-                "resize": {"type": "object", "description": "Full Resize options; alternatively use the size helpers below"},
+-                "destinationMode": {"type": "string", "enum": ["specificFolder", "sameAsOriginal"], "description": "specificFolder (default) = everything into `dir`; sameAsOriginal = each photo into the folder of its original (+ `subfolder`); a photo with no folder on disk (demo, browser) or whose folder is gone gets an error"},
+-                "subfolder": {"type": "string", "description": "Created inside the destination folder"},
+-                "conflict": {"type": "string", "enum": ["unique", "overwrite", "skip"]},
+-                "tiffCompression": {"type": "string", "enum": ["none", "lzw", "zip"], "description": "zip (default); lzw is usually larger and slower than zip, and at 16 bit often larger than none: use it only when other software needs LZW"},
+-                "dngCompression": {"type": "string", "enum": ["lossless", "deflate", "uncompressed", "lossy"]},
+-                "format": {"type": "string", "enum": ["jpeg", "png", "tiff", "psd", "webp", "avif", "jxl", "original", "dng", "rendereddng"], "description": "psd = a flat PSD (no layers); rendereddng = Render to DNG, a linear 16-bit float DNG of the rendered photo with the edit baked in; original = the file as is + an XMP sidecar with the edits; dng = raw photos as DNG with the edits embedded"},
+-                "longEdge": {"type": "integer", "description": "Output long edge in px. When no size param is given: 3000; 0 = full size (cropped, native resolution)"},
+-                "shortEdge": {"type": "integer", "description": "Output short edge in px"},
+-                "width": {"type": "integer", "description": "Output width in px (with height: fit inside width × height, either orientation, unless `fit` says otherwise)"},
+-                "height": {"type": "integer", "description": "Output height in px"},
+-                "fit": {"type": "string", "enum": ["dimensions", "widthHeight"], "description": "With width + height: dimensions (default) fits either orientation (the larger number goes to the long edge); widthHeight limits the width to `width` and the height to `height` as the photo stands"},
+-                "megapixels": {"type": "number", "description": "Output size in megapixels"},
+-                "percent": {"type": "number", "description": "Output size as a percentage of full size"},
+-                "dontEnlarge": {"type": "boolean", "description": "Never upscale past the photo's own size (default true)"},
+-                "ppi": {"type": "integer", "description": "Print resolution written into the file (default 240)"},
+-                "quality": {"type": "integer", "description": "JPEG/AVIF/lossy JPEG XL quality 1..100"},
+-                "jxlLossless": {"type": "boolean", "description": "JPEG XL: mathematically lossless (quality unused); default false"},
+-                "jxlEffort": {"type": "string", "enum": ["fast", "normal"], "description": "JPEG XL encoder effort: normal (default) makes files about a quarter smaller than fast, in about twice the time"},
+-                "jxlProgressive": {"type": "boolean", "description": "JPEG XL: progressive file, a coarse image first (default false)"},
+-                "limitKb": {"type": "integer", "description": "JPEG: largest quality that fits this many KB"},
+-                "sharpen": {"type": "string", "enum": ["none", "screen", "matte", "glossy"]},
+-                "sharpenAmount": {"type": "string", "enum": ["low", "standard", "high"]},
+-                "naming": {"type": "string", "description": "File-name template, e.g. {name}-{seq} or {date:%Y-%m-%d}_{title}_{seq:2} (tokens: {name} {num} {seq} {seq:N} {date} {date:%…} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext})"},
+-                "startNumber": {"type": "integer", "description": "First {seq} value (default 1)"},
+-                "metadata": {"type": "string", "enum": ["all", "allExceptCamera", "copyright", "none"]},
+-                "removeLocation": {"type": "boolean"},
+-                "colorSpace": {"type": "string", "enum": ["srgb", "displayP3", "adobeRgb", "proPhoto", "rec2020"], "description": "Output colour space (default sRGB; AVIF is always sRGB; lossy JPEG XL writes adobeRgb/proPhoto as rec2020). adobeRgb = Adobe RGB (1998) compatible; the embedded ICC profile is generated from the published primaries"},
+-                "bitDepth": {"type": "integer", "enum": [8, 10, 16, 32], "description": "Bits per channel: PNG 8|16 (default 8), TIFF 8|16|32 (default 16; 32 = linear float with a linear profile), PSD 8|16 (default 16), AVIF 8|10, JPEG XL 8|16; JPEG/WebP are 8-bit"},
+-                "hdr": {"type": "boolean", "description": "HDR output for photos edited in HDR (develop.hdr): JPEG as an ISO 21496-1 gain map JPEG, AVIF as 10-bit, PNG and JPEG XL as 16-bit Rec. 2020 PQ, 32-bit TIFF with highlights above 1; other formats and SDR edits export as usual"},
+-                "hdrTransfer": {"type": "string", "enum": ["pq", "hlg"], "description": "Transfer curve of HDR AVIF output (default pq): pq = SMPTE ST 2084, hlg = ITU-R BT.2100 hybrid log-gamma"},
+-                "addToPhotos": {"type": "boolean", "description": "macOS: after writing the files, add them to Apple Photos (Apple Events to Photos' import; the first time, macOS asks the user to allow LightCraft to control Photos). The outcome is `applePhotos` in the result, the import job: {job, running, requested, album, imported?, ids?, warning?, error?}; headless waits for Photos, the desktop app returns the running job (outcome: command export.photosImports {job}). The files are written either way. An error before exporting on other platforms, or while another import is reserved or running"},
+-                "photosAlbum": {"type": "string", "description": "With addToPhotos: the album to add them to, a top-level Photos album of exactly this name, made when missing (several of that name: nothing is added); default none"},
+-                "watermark": {"description": "Text, or {text, vertical (boolean; defaults to false: upright columns right to left), size (text height as a fraction of the short edge, 0.005..0.5; default 0.035), opacity (0..1; default 0.7), anchor (topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight), insetX (margin from the left or right edge as a fraction of the short edge, 0..0.4; default 0.025), insetY (margin from the top or bottom edge, same units), inset (sets both), rotation (degrees clockwise: 0|90|180|270; default 0; the watermark is sized before it is turned), color [r,g,b] (sRGB 0..255), shadow (boolean), image (path of a graphic drawn instead of the text), imageWidth (fraction of the photo's width, 0.01..1; default 0.2)}. Unknown keys and out-of-range sizes are errors"}
+-            }),
++            {
++                // two steps: one literal this long passes serde_json's macro recursion limit
++                let mut p = json!({
++                    "id": photo_id,
++                    "ids": {"type": "array", "items": {"type": "integer"}, "description": "Photos to export (default: the given/active photo)"},
++                    "path": {"type": "string"},
++                    "dir": {"type": "string"},
++                    "preset": {"type": "string", "description": "Export preset id or name"},
++                    "background": {"type": "boolean", "description": "Desktop background export (headless exports remain blocking)"},
++                    "resize": {"type": "object", "description": "Full Resize options; alternatively use the size helpers below"},
++                    "destinationMode": {"type": "string", "enum": ["specificFolder", "sameAsOriginal"], "description": "specificFolder (default) = everything into `dir`; sameAsOriginal = each photo into the folder of its original (+ `subfolder`); a photo with no folder on disk (demo, browser) or whose folder is gone gets an error"},
++                    "subfolder": {"type": "string", "description": "Created inside the destination folder"},
++                    "conflict": {"type": "string", "enum": ["unique", "overwrite", "skip"]},
++                    "tiffCompression": {"type": "string", "enum": ["none", "lzw", "zip"], "description": "zip (default); lzw is usually larger and slower than zip, and at 16 bit often larger than none: use it only when other software needs LZW"},
++                    "dngCompression": {"type": "string", "enum": ["lossless", "deflate", "uncompressed", "lossy"]},
++                    "format": {"type": "string", "enum": ["jpeg", "png", "tiff", "psd", "webp", "avif", "jxl", "original", "dng", "rendereddng"], "description": "psd = a flat PSD (no layers); rendereddng = Render to DNG, a linear 16-bit float DNG of the rendered photo with the edit baked in; original = the file as is + an XMP sidecar with the edits; dng = raw photos as DNG with the edits embedded"},
++                    "longEdge": {"type": "integer", "description": "Output long edge in px. When no size param is given: 3000; 0 = full size (cropped, native resolution)"},
++                    "shortEdge": {"type": "integer", "description": "Output short edge in px"},
++                    "width": {"type": "integer", "description": "Output width in px (with height: fit inside width × height, either orientation, unless `fit` says otherwise)"},
++                    "height": {"type": "integer", "description": "Output height in px"},
++                    "fit": {"type": "string", "enum": ["dimensions", "widthHeight"], "description": "With width + height: dimensions (default) fits either orientation (the larger number goes to the long edge); widthHeight limits the width to `width` and the height to `height` as the photo stands"},
++                    "megapixels": {"type": "number", "description": "Output size in megapixels"},
++                    "percent": {"type": "number", "description": "Output size as a percentage of full size"},
++                    "dontEnlarge": {"type": "boolean", "description": "Never upscale past the photo's own size (default true)"},
++                    "ppi": {"type": "integer", "description": "Print resolution written into the file (default 240)"},
++                    "quality": {"type": "integer", "description": "JPEG/AVIF/lossy JPEG XL quality 1..100"},
++                    "jxlLossless": {"type": "boolean", "description": "JPEG XL: mathematically lossless (quality unused); default false"},
++                    "jxlEffort": {"type": "string", "enum": ["fast", "normal"], "description": "JPEG XL encoder effort: normal (default) makes files about a quarter smaller than fast, in about twice the time"},
++                    "jxlProgressive": {"type": "boolean", "description": "JPEG XL: progressive file, a coarse image first (default false)"},
++                    "limitKb": {"type": "integer", "description": "JPEG: largest quality that fits this many KB"},
++                    "sharpen": {"type": "string", "enum": ["none", "screen", "matte", "glossy"]},
++                    "sharpenAmount": {"type": "string", "enum": ["low", "standard", "high"]},
++                    "naming": {"type": "string", "description": "File-name template, e.g. {name}-{seq} or {date:%Y-%m-%d}_{title}_{seq:2} (tokens: {name} {num} {seq} {seq:N} {date} {date:%…} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext})"},
++                    "startNumber": {"type": "integer", "description": "First {seq} value (default 1)"},
++                    "metadata": {"type": "string", "enum": ["all", "allExceptCamera", "copyright", "none"]},
++                    "removeLocation": {"type": "boolean"},
++                    "colorSpace": {"type": "string", "enum": ["srgb", "displayP3", "adobeRgb", "proPhoto", "rec2020"], "description": "Output colour space (default sRGB; AVIF is always sRGB; lossy JPEG XL writes adobeRgb/proPhoto as rec2020). adobeRgb = Adobe RGB (1998) compatible; the embedded ICC profile is generated from the published primaries"},
++                    "bitDepth": {"type": "integer", "enum": [8, 10, 16, 32], "description": "Bits per channel: PNG 8|16 (default 8), TIFF 8|16|32 (default 16; 32 = linear float with a linear profile), PSD 8|16 (default 16), AVIF 8|10, JPEG XL 8|16; JPEG/WebP are 8-bit"},
++                    "hdr": {"type": "boolean", "description": "HDR output for photos edited in HDR (develop.hdr): JPEG as an ISO 21496-1 gain map JPEG, AVIF as 10-bit, PNG and JPEG XL as 16-bit Rec. 2020 PQ, 32-bit TIFF with highlights above 1; other formats and SDR edits export as usual"},
++                    "hdrTransfer": {"type": "string", "enum": ["pq", "hlg"], "description": "Transfer curve of HDR AVIF output (default pq): pq = SMPTE ST 2084, hlg = ITU-R BT.2100 hybrid log-gamma"},
++                    "addToPhotos": {"type": "boolean", "description": "macOS: after writing the files, add them to Apple Photos (Apple Events to Photos' import; the first time, macOS asks the user to allow LightCraft to control Photos). The outcome is `applePhotos` in the result, the import job: {job, running, requested, album, imported?, ids?, warning?, error?}; headless waits for Photos, the desktop app returns the running job (outcome: command export.photosImports {job}). The files are written either way. An error before exporting on other platforms, or while another import is reserved or running"},
++                    "photosAlbum": {"type": "string", "description": "With addToPhotos: the album to add them to, a top-level Photos album of exactly this name, made when missing (several of that name: nothing is added); default none"},
++                    "watermark": {"description": "Text, or {text, vertical (boolean; defaults to false: upright columns right to left), size (text height as a fraction of the short edge, 0.005..0.5; default 0.035), opacity (0..1; default 0.7), anchor (topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight), insetX (margin from the left or right edge as a fraction of the short edge, 0..0.4; default 0.025), insetY (margin from the top or bottom edge, same units), inset (sets both), rotation (degrees clockwise: 0|90|180|270; default 0; the watermark is sized before it is turned), color [r,g,b] (sRGB 0..255), shadow (boolean), image (path of a graphic drawn instead of the text), imageWidth (fraction of the photo's width, 0.01..1; default 0.2)}. Unknown keys and out-of-range sizes are errors"}
++                });
++                p["afterExport"] = json!({"description": "After writing the files (Lightroom's After Export): \"nothing\" (default), \"showInFileManager\" (Finder / Explorer / the file manager shows the first file), \"openInPhotoCraft\", or {\"openIn\": application} (an app name or bundle path on macOS, a program path elsewhere; \"\" = each file's default application). The desktop app does it and reports `afterExport` in the result ({action, revealed?, opened?, app?, error?, skipped?}); headless it is skipped ({action, skipped: \"not available here\"}), the files are written either way. Any other value is an error"});
++                p
++            },
+             &[],
+         ),
+     ];
+@@ -803,6 +808,7 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
+                         "dngCompression",
+                         "addToPhotos",
+                         "photosAlbum",
++                        "afterExport",
+                     ],
+                 ),
+             )
+diff --git a/crates/ui-egui/locales/zh-hans-formats.json b/crates/ui-egui/locales/zh-hans-formats.json
+index 1d5f27c57..57b05f0e8 100644
+--- a/crates/ui-egui/locales/zh-hans-formats.json
++++ b/crates/ui-egui/locales/zh-hans-formats.json
+@@ -326,5 +326,7 @@
+   "{name} is installed and in use: face recognition is on": "{name} 已安装并在使用：人脸识别已开启",
+   "Bring photos in with File › Import Photos… ({keys}).": "通过 文件 › 导入照片… ({keys}) 导入照片。",
+   "View › Detail View ({keys}).": "视图 › 详细视图 ({keys})。",
+-  "File › Export… · File › Print… ({keys}).": "文件 › 导出… · 文件 › 打印… ({keys})。"
++  "File › Export… · File › Print… ({keys}).": "文件 › 导出… · 文件 › 打印… ({keys})。",
++  "{what} failed: {e}": "{what}失败：{e}",
++  "{what}: not available here": "{what}：此处不可用"
+ }
+diff --git a/crates/ui-egui/locales/zh-hans.json b/crates/ui-egui/locales/zh-hans.json
+index 86096946d..870769825 100644
+--- a/crates/ui-egui/locales/zh-hans.json
++++ b/crates/ui-egui/locales/zh-hans.json
+@@ -2498,5 +2498,13 @@
+   "cells overlap": "单元格重叠",
+   "current edits": "当前编辑",
+   "Brightness": "亮度",
+-  "cells": "个单元格"
++  "cells": "个单元格",
++  "Do nothing": "无操作",
++  "Open in PhotoCraft": "在 PhotoCraft 中打开",
++  "Open in Other Application…": "在其他应用程序中打开…",
++  "After export": "导出后",
++  "Applications": "应用程序",
++  "Programs": "程序",
++  "Choose an application": "选择应用程序",
++  "Choose Application for After Export…": "选择导出后使用的应用程序…"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant-formats.json b/crates/ui-egui/locales/zh-hant-formats.json
+index 51fb1109a..280058f18 100644
+--- a/crates/ui-egui/locales/zh-hant-formats.json
++++ b/crates/ui-egui/locales/zh-hant-formats.json
+@@ -326,5 +326,7 @@
+   "{name} is installed and in use: face recognition is on": "{name} 已安裝並在使用中：臉部辨識已開啟",
+   "Bring photos in with File › Import Photos… ({keys}).": "透過 檔案 › 匯入照片… ({keys}) 匯入照片。",
+   "View › Detail View ({keys}).": "檢視 › 詳細檢視 ({keys})。",
+-  "File › Export… · File › Print… ({keys}).": "檔案 › 匯出… · 檔案 › 列印… ({keys})。"
++  "File › Export… · File › Print… ({keys}).": "檔案 › 匯出… · 檔案 › 列印… ({keys})。",
++  "{what} failed: {e}": "{what}失敗：{e}",
++  "{what}: not available here": "{what}：此處無法使用"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant.json b/crates/ui-egui/locales/zh-hant.json
+index 963dddb60..243411d7e 100644
+--- a/crates/ui-egui/locales/zh-hant.json
++++ b/crates/ui-egui/locales/zh-hant.json
+@@ -2459,5 +2459,13 @@
+   "Single": "單張",
+   "Image Settings": "影像設定",
+   "Brightness": "亮度",
+-  "cells": "個儲存格"
++  "cells": "個儲存格",
++  "Do nothing": "不執行任何動作",
++  "Open in PhotoCraft": "在 PhotoCraft 中開啟",
++  "Open in Other Application…": "在其他應用程式中開啟…",
++  "After export": "匯出後",
++  "Applications": "應用程式",
++  "Programs": "程式",
++  "Choose an application": "選擇應用程式",
++  "Choose Application for After Export…": "選擇匯出後使用的應用程式…"
+ }
+diff --git a/crates/ui-egui/src/control.rs b/crates/ui-egui/src/control.rs
+index 63403650b..acabe84d1 100644
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -619,6 +619,9 @@ pub fn export_active(app: &mut LightcraftApp, p: &Value) -> Result<Value, String
+         if let Some(photos) = after.finish(&app.session, &files) {
+             out["applePhotos"] = photos;
+         }
++        if let Some(done) = crate::export_task::run_after_export(app, &opts.after_export, &files, false) {
++            out["afterExport"] = done;
++        }
+         out
+     };
+     // remember for Export with Previous (and to prefill the dialog)
+diff --git a/crates/ui-egui/src/dialogs.rs b/crates/ui-egui/src/dialogs.rs
+index 91d9dd261..af8edb8ab 100644
+--- a/crates/ui-egui/src/dialogs.rs
++++ b/crates/ui-egui/src/dialogs.rs
+@@ -20,8 +20,8 @@ pub use confirm::confirm_dialog;
+ pub use cull::{MAX_BURST_GAP, clamp_cull_burst, cull_params, fmt_gap, parse_gap};
+ pub(crate) use export::preset_lzw_note;
+ use export::{
+-    LIMIT_KB, QUALITY, START_NUMBER, WM_IMAGE_WIDTH, WM_INSET_X, WM_INSET_Y, WM_OPACITY, WM_POSITIONS, WM_SIZE, export_dialog_params, export_size,
+-    group_checklist, tiff_lzw_note, watermark_preview,
++    LIMIT_KB, QUALITY, START_NUMBER, WM_IMAGE_WIDTH, WM_INSET_X, WM_INSET_Y, WM_OPACITY, WM_POSITIONS, WM_SIZE, export_after_rows,
++    export_dialog_params, export_size, group_checklist, tiff_lzw_note, watermark_preview,
+ };
+ pub use frame::{ConfirmStyle, confirm_style, list_height, prompt};
+ use frame::{
+@@ -1771,6 +1771,7 @@ fn export_destination_rows(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Token
+     });
+     use lightcraft_engine::export::Conflict as K;
+     choices(ui, "If file exists", "exportConflict", &[(K::Unique, "Add number"), (K::Overwrite, "Overwrite"), (K::Skip, "Skip")], &mut opts.conflict);
++    export_after_rows(app, ui, opts);
+     export_apple_photos_rows(ui, t, opts);
+ }
+ 
+diff --git a/crates/ui-egui/src/dialogs/export.rs b/crates/ui-egui/src/dialogs/export.rs
+index 47252832b..1471d6af1 100644
+--- a/crates/ui-egui/src/dialogs/export.rs
++++ b/crates/ui-egui/src/dialogs/export.rs
+@@ -1,4 +1,4 @@
+-use super::frame::{field, num};
++use super::frame::{field, num, trailing_button_row};
+ use super::{ControlSpec, LightcraftApp, Section, SettingsGroup, Tokens, Track};
+ 
+ /// The Export dialog's watermark preview: the first exported photo, as wide as the dialog whatever
+@@ -142,6 +142,58 @@ pub(crate) fn preset_lzw_note(params: &serde_json::Value) -> Option<&'static str
+     tiff_lzw_note(&lightcraft_engine::export::ExportOptions::from_json(params))
+ }
+ 
++/// Export dialog, After export (Lightroom's Post-Processing ▸ After Export): show the files in the
++/// file manager or open them in an application once they are written (`combo:exportAfter`, items
++/// `item:exportAfter-<name>`; Open in Other Application… adds the application, typed or chosen
++/// with `button:exportChooseApp`). Not shown where the host can do neither (the web): an export
++/// there reports the choice skipped.
++pub(super) fn export_after_rows(app: &mut LightcraftApp, ui: &mut egui::Ui, opts: &mut lightcraft_engine::export::ExportOptions) {
++    use lightcraft_engine::export::AfterAction as A;
++    if app.services.reveal.is_none() && app.services.open_with.is_none() && app.services.open_all_with.is_none() {
++        return;
++    }
++    field(ui, "After export", |ui| {
++        // another application starts from the one Settings ▸ External Editing names
++        let other = match &opts.after_export {
++            A::OpenIn(a) => a.clone(),
++            _ => app.ui.settings.external_editor.clone(),
++        };
++        let options = [A::Nothing, A::ShowInFileManager, A::OpenInPhotoCraft, A::OpenIn(other)];
++        let c = crate::widgets::combo_box("exportAfter")
++            .width(220.0)
++            .selected_text(crate::i18n::tr(crate::export_task::after_export_label(&opts.after_export)))
++            .show_ui(ui, |ui| {
++                for a in options {
++                    let r = ui.selectable_label(opts.after_export.name() == a.name(), crate::i18n::tr(crate::export_task::after_export_label(&a)));
++                    crate::widgets::register(ui, format!("item:exportAfter-{}", a.name()), r.rect);
++                    if r.clicked() {
++                        opts.after_export = a;
++                    }
++                }
++            });
++        crate::widgets::name_combo(&c.response, crate::i18n::tr("After export"));
++        crate::widgets::register(ui, "combo:exportAfter", c.response.rect);
++    });
++    let A::OpenIn(chosen) = &mut opts.after_export else { return };
++    field(ui, "Application", |ui| {
++        trailing_button_row(ui, |ui| {
++            if app.services.picker.is_some()
++                && crate::widgets::text_button(ui, "exportChooseApp", crate::i18n::tr("Choose…"), false).clicked()
++                && let crate::pick::Picked::Now(paths) =
++                    crate::pick::ask(app, "dialog.exportChooseApp", &serde_json::json!({}), "app", crate::menus::application_request(), |_| None)
++                && let Some(path) = paths.into_iter().next()
++            {
++                *chosen = path;
++            }
++            crate::text_field::TextField::singleline("field:exportAfterApp", chosen)
++                .hint(crate::i18n::tr("System default"))
++                .label(crate::i18n::tr("Application"))
++                .width(ui.available_width())
++                .show(ui);
++        });
++    });
++}
++
+ /// The Export dialog's choices as `app.export` params (without the folder).
+ pub(super) fn export_dialog_params(
+     opts: &lightcraft_engine::export::ExportOptions,
+diff --git a/crates/ui-egui/src/export_task.rs b/crates/ui-egui/src/export_task.rs
+index 206161102..9022b71b6 100644
+--- a/crates/ui-egui/src/export_task.rs
++++ b/crates/ui-egui/src/export_task.rs
+@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, channel};
+ use std::sync::{Arc, Mutex};
+ 
+ use lightcraft_engine::activity::{Cancel, TaskGuard};
+-use lightcraft_engine::export::{AfterExport, Destination, ExportOptions, PreparedExport, run_batch};
++use lightcraft_engine::export::{AfterAction, AfterExport, Destination, ExportOptions, PreparedExport, run_batch};
+ use serde_json::{Value, json};
+ 
+ use crate::LightcraftApp;
+@@ -27,6 +27,8 @@ pub struct ExportTask {
+     rx: Receiver<Result<(Vec<Value>, Option<Value>, bool), String>>,
+     /// The export's row in the activity stack (`activity.cancel` sets `cancel`).
+     guard: TaskGuard,
++    /// What to do with the files once they are written (After export), here on the UI thread.
++    after: AfterAction,
+ }
+ 
+ impl ExportTask {
+@@ -38,13 +40,15 @@ impl ExportTask {
+ }
+ 
+ /// Start exporting `items` in the background, then do `after` with the files written (Add to Apple
+-/// Photos). Errors per photo are collected, not fatal.
++/// Photos) on the worker, and `opts.after_export` (show them, open them) here when it is done
++/// ([`poll`]). Errors per photo are collected, not fatal.
+ pub fn start(app: &mut LightcraftApp, items: Vec<PreparedExport>, opts: ExportOptions, to: Destination, after: AfterExport) -> Result<Value, String> {
+     if app.export.is_some() {
+         return Err("an export is already running".into());
+     }
+     let write = app.services.write_shared.clone().ok_or("no background writer")?;
+     let total = items.len();
++    let after_action = opts.after_export.clone();
+     let progress = Arc::new(Mutex::new((0, String::new())));
+     let cancel = Arc::new(AtomicBool::new(false));
+     let (tx, rx) = channel();
+@@ -81,7 +85,7 @@ pub fn start(app: &mut LightcraftApp, items: Vec<PreparedExport>, opts: ExportOp
+     std::thread::Builder::new().name("export".into()).spawn(work).map_err(|e| e.to_string())?;
+     #[cfg(target_arch = "wasm32")]
+     work();
+-    app.export = Some(ExportTask { total, progress, cancel, rx, guard });
++    app.export = Some(ExportTask { total, progress, cancel, rx, guard, after: after_action });
+     Ok(json!({"background": true, "total": total}))
+ }
+ 
+@@ -128,7 +132,7 @@ pub fn start_contact_sheet(app: &mut LightcraftApp, params: &Value) -> Result<Va
+     work();
+     let row = app.session.activity.start("export", "Exporting contact sheet", Cancel::Flag(cancel.clone()));
+     row.progress(0, total as u64);
+-    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row });
++    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, after: AfterAction::Nothing });
+     Ok(json!({"background": true, "total": total}))
+ }
+ 
+@@ -181,7 +185,7 @@ pub fn start_print(app: &mut LightcraftApp, params: &Value) -> Result<Value, Str
+     work();
+     let row = app.session.activity.start("export", "Printing to PDF", Cancel::Flag(cancel.clone()));
+     row.progress(0, total as u64);
+-    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row });
++    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, after: AfterAction::Nothing });
+     Ok(json!({"background": true, "total": total}))
+ }
+ 
+@@ -207,6 +211,109 @@ pub fn apple_photos_note(outcome: &Value) -> String {
+     m
+ }
+ 
++/// After export (#3440): show the files an export wrote in the file manager, or open them in an
++/// application, with the host's services (Photo ▸ Show in Finder's and Edit In's). `None` for Do
++/// nothing; else the outcome for the export's result (`afterExport`): `{action, revealed}`,
++/// `{action, app?, opened}`, `{action, error}`, or `{action, skipped}` when the export was
++/// cancelled, wrote nothing, or this host can't (the web). Never fails the export.
++pub fn run_after_export(app: &mut LightcraftApp, action: &AfterAction, files: &[Value], cancelled: bool) -> Option<Value> {
++    if *action == AfterAction::Nothing {
++        return None;
++    }
++    let paths = match action.targets(files, cancelled) {
++        Ok(paths) => paths,
++        Err(skipped) => return Some(skipped),
++    };
++    let mut out = action.outcome();
++    let done = match action {
++        AfterAction::Nothing => return None,
++        AfterAction::ShowInFileManager => {
++            let Some(reveal) = app.services.reveal.as_mut() else { return action.unavailable(files, cancelled) };
++            // the folder opens with the first file selected
++            let first = paths.first().map(|p| std::path::absolute(p).map_or_else(|_| p.clone(), |a| a.to_string_lossy().into_owned()));
++            first.ok_or_else(|| "the export wrote no files".to_string()).and_then(|path| {
++                reveal(&path)?;
++                out["revealed"] = json!(path);
++                Ok(())
++            })
++        }
++        AfterAction::OpenInPhotoCraft | AfterAction::OpenIn(_) => {
++            if app.services.open_with.is_none() && app.services.open_all_with.is_none() {
++                return action.unavailable(files, cancelled);
++            }
++            let editor = match action {
++                AfterAction::OpenIn(a) => a.clone(),
++                _ => crate::menus::photocraft_editor(&app.ui.settings),
++            };
++            open_exported(app, &editor, &paths).map(|opened| {
++                out["opened"] = json!(opened);
++            })
++        }
++    };
++    if let Err(e) = done {
++        out["error"] = json!(e);
++    }
++    Some(out)
++}
++
++/// Open the files an export wrote in `editor`, all with one start where the host can (as Open
++/// Original does). Only files of a type LightCraft reads are handed over (#2135); the paths
++/// opened, absolute.
++fn open_exported(app: &mut LightcraftApp, editor: &str, paths: &[String]) -> Result<Vec<String>, String> {
++    if let Some(check) = app.services.check_editor.as_ref() {
++        check(editor)?;
++    }
++    let files: Vec<String> = paths.iter().filter_map(|p| lightcraft_engine::open_path::openable(p, "").ok()).collect();
++    if files.is_empty() {
++        return Err("none of the files written can be handed to another application".into());
++    }
++    if let Some(open_all) = app.services.open_all_with.as_mut() {
++        open_all(&files, editor)?;
++        return Ok(files);
++    }
++    let open = app.services.open_with.as_mut().ok_or("opening another application isn't available here")?;
++    let mut opened = Vec::new();
++    let mut failed = None;
++    for f in files {
++        match open(&f, editor) {
++            Ok(()) => opened.push(f),
++            Err(e) => failed = Some(e),
++        }
++    }
++    match failed {
++        Some(e) if opened.is_empty() => Err(e),
++        _ => Ok(opened),
++    }
++}
++
++/// The label of an After export choice (the Export dialog's list, the export toast).
++pub(crate) fn after_export_label(a: &lightcraft_engine::export::AfterAction) -> &'static str {
++    use lightcraft_engine::export::AfterAction as A;
++    match a {
++        A::Nothing => "Do nothing",
++        A::ShowInFileManager => crate::menus::reveal_label(),
++        A::OpenInPhotoCraft => "Open in PhotoCraft",
++        A::OpenIn(_) => "Open in Other Application…",
++    }
++}
++
++/// The toast's account of [`run_after_export`]'s outcome: only what the user didn't see happen
++/// (an error, or not done here); a cancelled or empty export says so already.
++pub fn after_export_note(outcome: &Value) -> Option<String> {
++    let action = match outcome.get("action").and_then(Value::as_str) {
++        Some("showInFileManager") => AfterAction::ShowInFileManager,
++        Some("openInPhotoCraft") => AfterAction::OpenInPhotoCraft,
++        _ => AfterAction::OpenIn(String::new()),
++    };
++    // the choice as the dialog lists it, without its "…"
++    let what = crate::i18n::tr(after_export_label(&action)).trim_end_matches(['…', '.']).to_string();
++    if let Some(e) = outcome.get("error").and_then(Value::as_str) {
++        return Some(crate::i18n::tr_format!("{what} failed: {e}", what = what, e = e));
++    }
++    let why = outcome.get("skipped").and_then(Value::as_str)?;
++    (why == "not available here").then(|| crate::i18n::tr_format!("{what}: not available here", what = what))
++}
++
+ /// Per frame: when an Apple Photos import that no export task reports finishes (`app.export`
+ /// without `background`, `export.addToPhotos`), say how it went.
+ #[cfg(not(target_arch = "wasm32"))]
+@@ -268,18 +375,25 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
+         Ok(r) => {
+             let cancelled = matches!(&r, Ok((_, _, true)));
+             let total = task.total;
++            let after = task.after.clone();
+             app.export = None;
+-            // Photos refused (permission, not installed…): leave the way out on screen longer
+-            let photos_failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
++            // Photos refused (permission, not installed…) or After export failed: leave the way out on screen longer
++            let mut failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
+             let msg = match r {
+                 Ok((files, photos, _)) => {
+-                    let m = export_summary(&files, photos.as_ref(), total, cancelled);
+-                    app.last_export_result = Some(json!({"files": files, "cancelled": cancelled, "applePhotos": photos}));
++                    let mut m = export_summary(&files, photos.as_ref(), total, cancelled);
++                    let done = run_after_export(app, &after, &files, cancelled);
++                    failed |= done.as_ref().is_some_and(|d| d.get("error").is_some());
++                    if let Some(note) = done.as_ref().and_then(after_export_note) {
++                        m += " · ";
++                        m += &note;
++                    }
++                    app.last_export_result = Some(json!({"files": files, "cancelled": cancelled, "applePhotos": photos, "afterExport": done}));
+                     m
+                 }
+                 Err(e) => e,
+             };
+-            if photos_failed {
++            if failed {
+                 app.toast_for(ctx, msg, 15.0);
+             } else {
+                 app.toast(ctx, msg);
+@@ -407,6 +521,24 @@ mod contact_sheet_tests {
+ mod tests {
+     use super::*;
+ 
++    /// The toast's After export part (#3440): only what the user didn't see happen.
++    #[test]
++    fn after_export_notes_say_only_what_went_wrong() {
++        let reveal = crate::menus::reveal_label();
++        assert_eq!(after_export_note(&json!({"action": "showInFileManager", "revealed": "/x/a.jpg"})), None);
++        assert_eq!(after_export_note(&json!({"action": "openIn", "app": "Preview", "opened": ["/x/a.jpg"]})), None);
++        assert_eq!(after_export_note(&json!({"action": "openIn", "skipped": "the export wrote no files"})), None, "the count says so");
++        assert_eq!(after_export_note(&json!({"action": "openIn", "skipped": "the export was cancelled", "cancelled": true})), None);
++        assert_eq!(
++            after_export_note(&json!({"action": "showInFileManager", "skipped": "not available here"})),
++            Some(format!("{reveal}: not available here"))
++        );
++        assert_eq!(
++            after_export_note(&json!({"action": "openInPhotoCraft", "error": "PhotoCraft isn't installed"})),
++            Some("Open in PhotoCraft failed: PhotoCraft isn't installed".into())
++        );
++    }
++
+     /// The toast's Apple Photos part (issue #236): the count and album, a partial import's
+     /// warning, an error with what to do, a cancelled export.
+     #[test]
+diff --git a/crates/ui-egui/src/menus.rs b/crates/ui-egui/src/menus.rs
+index b6b6c66c5..05d479ccd 100644
+--- a/crates/ui-egui/src/menus.rs
++++ b/crates/ui-egui/src/menus.rs
+@@ -12,6 +12,7 @@ mod files;
+ mod run;
+ mod ui_commands;
+ 
++pub(crate) use files::photocraft_editor;
+ pub use files::{confirm_delete, delete_in_album, reveal_label, show_in_folders_enabled};
+ pub use run::{parse_rgb, run_ui_command};
+ pub use ui_commands::{LANGUAGE_COMMANDS, UI_COMMANDS, language_from_command, ui_commands};
+@@ -22,6 +23,45 @@ pub mod menubar;
+ /// (id, label, shortcut, menu path)
+ pub type UiCommand = (&'static str, &'static str, Option<&'static str>, &'static str);
+ 
++/// The file dialog that picks an application: the Export dialog's After export ▸ Open in Other
++/// Application… ▸ Choose… (`dialog.exportChooseApp`). An application bundle on macOS, a program
++/// elsewhere.
++pub(crate) fn application_request() -> PickRequest {
++    let filter: Option<(String, &'static [&'static str])> = if cfg!(target_os = "macos") {
++        Some((crate::i18n::tr("Applications").to_string(), &["app"]))
++    } else if cfg!(target_os = "windows") {
++        Some((crate::i18n::tr("Programs").to_string(), &["exe"]))
++    } else {
++        None
++    };
++    PickRequest { kind: crate::pick::PickKind::File, title: Some(crate::i18n::tr("Choose an application").to_string()), filter, file_name: None }
++}
++
++/// `dialog.exportChooseApp {app?}`: the application After export opens the files in, in the open
++/// Export dialog. Without `app`, the host's file dialog asks (off the UI thread where it can: the
++/// command comes back with the answer).
++fn choose_export_app(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
++    use lightcraft_engine::export::AfterAction;
++    if !matches!(app.ui.dialog, Some(Dialog::Export { .. })) {
++        return Err("the Export dialog isn't open".into());
++    }
++    let chosen = match p.get("app") {
++        Some(v) => v.as_str().ok_or("`app` must be the application's name or path")?.to_string(),
++        None => match crate::pick::ask(app, "dialog.exportChooseApp", p, "app", application_request(), |_| None) {
++            Picked::Now(paths) => match paths.into_iter().next() {
++                Some(path) => path,
++                None => return Ok(Value::Null),
++            },
++            Picked::Later => return Ok(Value::Null),
++            Picked::Unavailable => return Err("no file dialog here: give `app`".into()),
++        },
++    };
++    let action = AfterAction::from_param(&json!({"openIn": chosen}))?;
++    let Some(Dialog::Export { opts, .. }) = app.ui.dialog.as_mut() else { return Err("the Export dialog isn't open".into()) };
++    opts.after_export = action;
++    Ok(json!({"afterExport": opts.after_export}))
++}
++
+ /// Views whose bottom bar has the thumbnail-size slider and that draw tiles of that size.
+ fn thumb_size_view(app: &LightcraftApp) -> bool {
+     matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid | ViewMode::People)
+@@ -38,6 +78,7 @@ pub fn ui_enabled(app: &LightcraftApp, id: &str) -> bool {
+             !cfg!(target_arch = "wasm32") && !app.session.slideshow_export.as_ref().is_some_and(|r| r.running())
+         }
+         s if s.starts_with("panel.") || s.starts_with("tool.") || s.starts_with("section.") => app.session.active().is_some() || s == "panel.close",
++        "dialog.exportChooseApp" => matches!(app.ui.dialog, Some(Dialog::Export { .. })),
+         "app.export" | "dialog.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {
+             app.session.active().is_some()
+         }
+diff --git a/crates/ui-egui/src/menus/files.rs b/crates/ui-egui/src/menus/files.rs
+index d75282e57..e7239efc9 100644
+--- a/crates/ui-egui/src/menus/files.rs
++++ b/crates/ui-egui/src/menus/files.rs
+@@ -105,6 +105,13 @@ pub(super) fn show_in_folders(app: &mut LightcraftApp, id: Option<lightcraft_cat
+     Ok(json!({"path": path}))
+ }
+ 
++/// The editor Edit in PhotoCraft starts: the location Settings ▸ External Editing gives, else
++/// PhotoCraft by name (the host finds it where its installers put it).
++pub(crate) fn photocraft_editor(settings: &crate::state::AppSettings) -> String {
++    let path = settings.photocraft_path.trim();
++    if path.is_empty() { crate::state::PHOTOCRAFT.to_string() } else { path.to_string() }
++}
++
+ /// Photo ▸ Edit In: render a copy of each selected photo with its edits (stacked on its original)
+ /// as Settings ▸ External Editing asks for that editor, then open them there. `p` may override the
+ /// file (`format`, `colorSpace`, `bitDepth`) and the editor (`app`). PhotoCraft is checked first,
+@@ -117,12 +124,8 @@ pub(super) fn edit_in(app: &mut LightcraftApp, ctx: &egui::Context, p: &Value, p
+ 
+ fn edit_in_inner(app: &mut LightcraftApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
+     let settings = &app.ui.settings;
+-    let (file, configured) = if photocraft {
+-        let path = settings.photocraft_path.trim();
+-        (settings.photocraft_file, if path.is_empty() { crate::state::PHOTOCRAFT.to_string() } else { path.to_string() })
+-    } else {
+-        (settings.external_file, settings.external_editor.clone())
+-    };
++    let (file, configured) =
++        if photocraft { (settings.photocraft_file, photocraft_editor(settings)) } else { (settings.external_file, settings.external_editor.clone()) };
+     let editor = p.get("app").and_then(Value::as_str).map_or(configured, str::to_string);
+     if let Some(check) = app.services.check_editor.as_ref() {
+         check(&editor)?;
+diff --git a/crates/ui-egui/src/menus/run.rs b/crates/ui-egui/src/menus/run.rs
+index 0d8c057ce..2fb288e6a 100644
+--- a/crates/ui-egui/src/menus/run.rs
++++ b/crates/ui-egui/src/menus/run.rs
+@@ -1285,6 +1285,7 @@ fn ui_commands_9(app: &mut LightcraftApp, _ctx: &egui::Context, id: &str, p: &Va
+ /// Part 10 of 12 of the UI commands; `None` means the id is not one of this part's.
+ fn ui_commands_10(app: &mut LightcraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Option<Result<Value, String>> {
+     let r: Result<Value, String> = match id {
++        "dialog.exportChooseApp" => super::choose_export_app(app, p),
+         "dialog.export" => {
+             let prev = app.session.last_export.clone().unwrap_or_default();
+             let u = |k: &str, d: u64| prev.get(k).and_then(Value::as_u64).unwrap_or(d);
+diff --git a/crates/ui-egui/src/menus/ui_commands.rs b/crates/ui-egui/src/menus/ui_commands.rs
+index 738637762..7f76cf713 100644
+--- a/crates/ui-egui/src/menus/ui_commands.rs
++++ b/crates/ui-egui/src/menus/ui_commands.rs
+@@ -209,6 +209,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
+     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Edit"),
+     ("view.focusSearch", "Find…", Some("Cmd+F"), "Edit"),
+     ("dialog.export", "Export…", None, "File"),
++    // {app?}: the Export dialog's After export application (without `app`, a file dialog asks)
++    ("dialog.exportChooseApp", "Choose Application for After Export…", None, ""),
+     ("dialog.print", "Print…", Some("Cmd+P"), "File"),
+     // the module bar (`crate::panels::modules`), on Lightroom Classic's module keys
+     ("module.library", "Library", Some("Cmd+Alt+1"), "Window"),
+diff --git a/crates/ui-egui/src/tests.rs b/crates/ui-egui/src/tests.rs
+index f0d647c0b..64373da72 100644
+--- a/crates/ui-egui/src/tests.rs
++++ b/crates/ui-egui/src/tests.rs
+@@ -1,4 +1,5 @@
+ mod activity;
++mod after_export;
+ mod album_picker;
+ mod album_remove;
+ mod alt_preview;
+diff --git a/crates/ui-egui/src/tests/after_export.rs b/crates/ui-egui/src/tests/after_export.rs
+new file mode 100644
+index 000000000..ea44399c3
+--- /dev/null
++++ b/crates/ui-egui/src/tests/after_export.rs
+@@ -0,0 +1,357 @@
++//! Issue #3440: the Export dialog's After Export choice (Lightroom's Post-Processing): show the
++//! files in the file manager or open them in an application once the export has written them.
++
++use std::path::PathBuf;
++use std::sync::{Arc, Mutex};
++use std::time::Duration;
++
++use lightcraft_engine::export::AfterAction;
++use serde_json::{Value, json};
++
++use crate::headless::Headless;
++use crate::{LightcraftApp, Services};
++
++const T: Duration = Duration::from_secs(120);
++
++/// What the fake desktop was asked to do: `reveal <path>`, `open <app> <path>`, `openAll <app> <paths…>`.
++type Calls = Arc<Mutex<Vec<String>>>;
++
++/// A desktop whose file manager and application launcher only record what they are asked, and
++/// whose writer writes for real (the action only hands over files that exist).
++fn desktop(calls: &Calls) -> Services {
++    let (reveal, open, open_all) = (calls.clone(), calls.clone(), calls.clone());
++    Services {
++        png: None,
++        write_shared: Some(Arc::new(|path: &str, bytes: &[u8]| lightcraft_engine::export::write_file(path, bytes))),
++        write: Some(Box::new(|path: &str, bytes: &[u8]| lightcraft_engine::export::write_file(path, bytes))),
++        reveal: Some(Box::new(move |path: &str| {
++            reveal.lock().unwrap().push(format!("reveal {path}"));
++            Ok(())
++        })),
++        open_with: Some(Box::new(move |path: &str, app: &str| {
++            open.lock().unwrap().push(format!("open {app} {path}"));
++            Ok(())
++        })),
++        open_all_with: Some(Box::new(move |paths: &[String], app: &str| {
++            open_all.lock().unwrap().push(format!("openAll {app} {}", paths.join(" ")));
++            Ok(())
++        })),
++        check_editor: Some(Box::new(|_: &str| Ok(()))),
++        ..Default::default()
++    }
++}
++
++fn scratch(tag: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("lc-after-export-{tag}-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&dir);
++    std::fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++fn app(services: Services) -> Headless {
++    sized(services, [1200.0, 800.0])
++}
++
++fn sized(services: Services, size: [f32; 2]) -> Headless {
++    let mut h = Headless::new(LightcraftApp::new(lightcraft_engine::Session::with_demo(), services), size, 1.0);
++    h.settle(T);
++    h
++}
++
++/// Export the first `n` photos in view through the Export dialog (64 px JPEGs into `dir`) with
++/// `after` chosen, and wait for the background export to finish.
++fn export(h: &mut Headless, n: usize, dir: &std::path::Path, after: AfterAction, conflict: lightcraft_engine::export::Conflict) {
++    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(n).map(|p| p.0).collect();
++    h.request("engine.execute", json!({"command": "library.select", "params": {"ids": ids}}), T);
++    h.request("engine.execute", json!({"command": "dialog.export", "params": {}}), T);
++    h.step();
++    let Some(crate::state::Dialog::Export { opts, full_size, resize, dir: d, .. }) = &mut h.app.ui.dialog else { panic!("no Export dialog") };
++    *full_size = false;
++    *resize = lightcraft_engine::export::Resize::long_edge(64);
++    *d = dir.to_string_lossy().into_owned();
++    opts.naming = "{seq}".into();
++    opts.conflict = conflict;
++    opts.after_export = after;
++    let r = h.request("ui.dialog.confirm", json!({}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    assert!(h.app.export.is_some(), "the dialog exports in the background");
++    assert!(h.step_until(T, |h| h.app.export.is_none()), "the export finished");
++}
++
++fn written(h: &Headless) -> Vec<String> {
++    let r = h.app.last_export_result.as_ref().expect("an export result");
++    r["files"].as_array().unwrap().iter().filter_map(|f| f["path"].as_str()).map(abs).collect()
++}
++
++fn abs(p: &str) -> String {
++    std::path::absolute(p).unwrap().to_string_lossy().into_owned()
++}
++
++fn outcome(h: &Headless) -> Value {
++    h.app.last_export_result.as_ref().map(|r| r["afterExport"].clone()).unwrap_or_default()
++}
++
++#[test]
++fn show_in_finder_reveals_the_first_file_once_the_export_is_done() {
++    let calls = Calls::default();
++    let mut h = app(desktop(&calls));
++    let dir = scratch("reveal");
++    export(&mut h, 2, &dir, AfterAction::ShowInFileManager, Default::default());
++    let files = written(&h);
++    assert_eq!(files.len(), 2, "{:?}", h.app.last_export_result);
++    assert_eq!(*calls.lock().unwrap(), [format!("reveal {}", files[0])], "one reveal, of the first file");
++    assert_eq!(outcome(&h), json!({"action": "showInFileManager", "revealed": files[0]}));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn open_in_an_application_gets_every_file_written_in_one_start() {
++    let calls = Calls::default();
++    let mut h = app(desktop(&calls));
++    let dir = scratch("open");
++    export(&mut h, 3, &dir, AfterAction::OpenIn("Preview".into()), Default::default());
++    let files = written(&h);
++    assert_eq!(files.len(), 3, "{:?}", h.app.last_export_result);
++    assert_eq!(*calls.lock().unwrap(), [format!("openAll Preview {}", files.join(" "))]);
++    assert_eq!(outcome(&h), json!({"action": "openIn", "app": "Preview", "opened": files}));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// PhotoCraft is found as Photo ▸ Edit In finds it: where Settings ▸ External Editing says, else by name.
++#[test]
++fn open_in_photocraft_uses_the_edit_in_lookup() {
++    let calls = Calls::default();
++    let mut services = desktop(&calls);
++    services.open_all_with = None; // one start per file where the host can't hand over several
++    let mut h = app(services);
++    h.app.ui.settings.photocraft_path = "/Portable/PhotoCraft.app".into();
++    let dir = scratch("photocraft");
++    export(&mut h, 2, &dir, AfterAction::OpenInPhotoCraft, Default::default());
++    let files = written(&h);
++    let want: Vec<String> = files.iter().map(|f| format!("open /Portable/PhotoCraft.app {f}")).collect();
++    assert_eq!(*calls.lock().unwrap(), want);
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn nothing_happens_when_the_export_wrote_nothing() {
++    let calls = Calls::default();
++    let mut h = app(desktop(&calls));
++    let dir = scratch("skipped");
++    export(&mut h, 2, &dir, AfterAction::Nothing, Default::default());
++    assert!(calls.lock().unwrap().is_empty(), "Do nothing does nothing");
++    assert_eq!(outcome(&h), Value::Null);
++    // the same two again, with If file exists ▸ Skip: no file written, nothing revealed
++    export(&mut h, 2, &dir, AfterAction::ShowInFileManager, lightcraft_engine::export::Conflict::Skip);
++    assert!(written(&h).is_empty(), "{:?}", h.app.last_export_result);
++    assert!(calls.lock().unwrap().is_empty(), "{:?}", calls.lock().unwrap());
++    assert_eq!(outcome(&h), json!({"action": "showInFileManager", "skipped": "the export wrote no files"}));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn nothing_happens_when_the_export_is_cancelled() {
++    let calls = Calls::default();
++    let mut services = desktop(&calls);
++    services.write_shared = Some(Arc::new(|path: &str, bytes: &[u8]| {
++        std::thread::sleep(Duration::from_millis(300));
++        lightcraft_engine::export::write_file(path, bytes)
++    }));
++    let mut h = app(services);
++    let dir = scratch("cancel");
++    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(5).map(|p| p.0).collect();
++    let r = h.request(
++        "engine.execute",
++        json!({"command": "app.export", "params": {"ids": ids, "dir": dir, "longEdge": 64, "background": true, "afterExport": {"openIn": "Preview"}}}),
++        T,
++    );
++    assert_eq!(r["ok"], true, "{r}");
++    h.app.export.as_ref().unwrap().cancel.store(true, std::sync::atomic::Ordering::Relaxed);
++    assert!(h.step_until(T, |h| h.app.export.is_none()));
++    assert!(calls.lock().unwrap().is_empty(), "{:?}", calls.lock().unwrap());
++    assert_eq!(outcome(&h)["cancelled"], true, "{}", outcome(&h));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// No file manager (the web, a host without one): the export still writes its files, and the
++/// result and the toast say the action was skipped.
++#[test]
++fn without_a_file_manager_the_export_says_it_skipped_the_action() {
++    let calls = Calls::default();
++    let mut services = desktop(&calls);
++    services.reveal = None;
++    let mut h = app(services);
++    let dir = scratch("unavailable");
++    export(&mut h, 1, &dir, AfterAction::ShowInFileManager, Default::default());
++    assert_eq!(written(&h).len(), 1);
++    assert_eq!(outcome(&h), json!({"action": "showInFileManager", "skipped": "not available here"}));
++    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
++    assert!(toast.contains("not available here"), "{toast}");
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// `app.export` without `background` (a control-channel script) does it too, before answering.
++#[test]
++fn a_foreground_export_does_it_before_answering() {
++    let calls = Calls::default();
++    let mut h = app(desktop(&calls));
++    let dir = scratch("foreground");
++    let id = h.app.session.active().unwrap().0;
++    let r = h.request(
++        "engine.execute",
++        json!({"command": "app.export", "params": {"ids": [id], "dir": dir, "longEdge": 64, "afterExport": "showInFileManager"}}),
++        T,
++    );
++    assert_eq!(r["ok"], true, "{r}");
++    let path = abs(r["result"]["files"][0]["path"].as_str().unwrap());
++    assert_eq!(*calls.lock().unwrap(), [format!("reveal {path}")]);
++    assert_eq!(r["result"]["afterExport"], json!({"action": "showInFileManager", "revealed": path}));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++fn click(h: &mut Headless, id: &str) {
++    h.step();
++    h.step();
++    let r = h.request("ui.clickWidget", json!({"id": id}), T);
++    assert_eq!(r["ok"], true, "{id}: {r}");
++    for _ in 0..4 {
++        h.step();
++    }
++}
++
++fn chosen(h: &Headless) -> AfterAction {
++    match &h.app.ui.dialog {
++        Some(crate::state::Dialog::Export { opts, .. }) => opts.after_export.clone(),
++        _ => panic!("no Export dialog"),
++    }
++}
++
++/// The dialog's After export dropdown, and Choose… for another application (the host's file
++/// dialog answers `dialog.exportChooseApp` with the application picked).
++#[test]
++fn the_dialog_offers_each_choice() {
++    let calls = Calls::default();
++    let mut services = desktop(&calls);
++    let asked = Arc::new(Mutex::new(Vec::new()));
++    let a = asked.clone();
++    services.picker = Some(Box::new(move |req: crate::pick::PickRequest| {
++        a.lock().unwrap().push(req);
++        let (tx, rx) = std::sync::mpsc::channel();
++        tx.send(vec!["/Applications/Preview.app".to_string()]).unwrap();
++        Ok(rx)
++    }));
++    // tall enough that the dialog shows its last rows without scrolling
++    let mut h = sized(services, [1400.0, 1800.0]);
++    h.request("engine.execute", json!({"command": "dialog.export", "params": {}}), T);
++    for (item, want) in [
++        ("showInFileManager", AfterAction::ShowInFileManager),
++        ("openInPhotoCraft", AfterAction::OpenInPhotoCraft),
++        ("nothing", AfterAction::Nothing),
++    ] {
++        click(&mut h, "combo:exportAfter");
++        click(&mut h, &format!("item:exportAfter-{item}"));
++        assert_eq!(chosen(&h), want, "{item}");
++    }
++    // another application starts from the one Settings ▸ External Editing names
++    h.app.ui.settings.external_editor = "Affinity Photo".into();
++    click(&mut h, "combo:exportAfter");
++    click(&mut h, "item:exportAfter-openIn");
++    assert_eq!(chosen(&h), AfterAction::OpenIn("Affinity Photo".into()));
++    click(&mut h, "button:exportChooseApp");
++    assert!(h.step_until(T, |h| chosen(h) == AfterAction::OpenIn("/Applications/Preview.app".into())), "{:?}", chosen(&h));
++    let req = asked.lock().unwrap().clone();
++    assert_eq!((req.len(), req[0].kind), (1, crate::pick::PickKind::File));
++    if cfg!(target_os = "macos") {
++        assert_eq!(req[0].filter.as_ref().unwrap().1, &["app"]);
++    }
++    // the control channel can name it outright; a hostile one is refused
++    let r = h.request("engine.execute", json!({"command": "dialog.exportChooseApp", "params": {"app": "Affinity Photo 2"}}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    assert_eq!(chosen(&h), AfterAction::OpenIn("Affinity Photo 2".into()));
++    let r = h.request("engine.execute", json!({"command": "dialog.exportChooseApp", "params": {"app": "a\nb"}}), T);
++    assert_eq!(r["ok"], false, "{r}");
++    assert_eq!(chosen(&h), AfterAction::OpenIn("Affinity Photo 2".into()));
++    // the dialog's params (Export, Save preset) carry it
++    let Some(crate::state::Dialog::Export { opts, .. }) = &h.app.ui.dialog else { panic!("no Export dialog") };
++    assert_eq!(opts.to_json()["afterExport"], json!({"openIn": "Affinity Photo 2"}));
++}
++
++/// The choice made in the dialog goes with the export (`app.session.last_export`), so Export
++/// with Previous does it again and the dialog opens on it next time.
++#[test]
++fn export_with_previous_does_it_again() {
++    let calls = Calls::default();
++    let mut h = app(desktop(&calls));
++    let dir = scratch("previous");
++    export(&mut h, 1, &dir, AfterAction::ShowInFileManager, Default::default());
++    assert_eq!(calls.lock().unwrap().len(), 1, "{:?}", calls.lock().unwrap());
++    let last = h.app.session.last_export.clone().unwrap_or_default();
++    assert_eq!(last["afterExport"], json!("showInFileManager"), "{last}");
++    calls.lock().unwrap().clear();
++    let r = h.request("engine.execute", json!({"command": "app.exportPrevious", "params": {}}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    assert!(h.step_until(T, |h| h.app.export.is_none()), "the export finished");
++    let reveals: Vec<String> = calls.lock().unwrap().clone();
++    assert_eq!(reveals.len(), 1, "Export with Previous shows the file again: {reveals:?}");
++    assert!(reveals[0].starts_with("reveal "), "{reveals:?}");
++    assert_eq!(outcome(&h)["action"], "showInFileManager", "{}", outcome(&h));
++    // the dialog opens on the choice last used
++    h.request("engine.execute", json!({"command": "dialog.export", "params": {}}), T);
++    h.step();
++    assert_eq!(chosen(&h), AfterAction::ShowInFileManager);
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// Save preset in the Export dialog keeps the After export choice; loading the preset brings it
++/// back, and exporting with it (File ▸ Export with Preset, `app.export {preset}`) does it.
++#[test]
++fn an_export_preset_keeps_the_choice() {
++    let calls = Calls::default();
++    let mut h = sized(desktop(&calls), [1400.0, 1800.0]);
++    let dir = scratch("preset");
++    h.request("engine.execute", json!({"command": "dialog.export", "params": {}}), T);
++    h.step();
++    if let Some(crate::state::Dialog::Export { opts, preset_name, .. }) = &mut h.app.ui.dialog {
++        opts.after_export = AfterAction::OpenIn("Preview".into());
++        *preset_name = "Desktop then Preview".into();
++    }
++    click(&mut h, "button:exportSavePreset");
++    let preset = h.app.session.export_presets.iter().find(|p| p.name == "Desktop then Preview").cloned();
++    let preset = preset.unwrap_or_else(|| panic!("saved: {:?}", h.app.session.export_presets));
++    assert_eq!(preset.params["afterExport"], json!({"openIn": "Preview"}), "{}", preset.params);
++    // what the dialog's Preset list loads
++    let params = h.app.session.export_params(&json!({"preset": "Desktop then Preview"})).unwrap();
++    assert_eq!(lightcraft_engine::export::ExportOptions::from_json(&params).after_export, AfterAction::OpenIn("Preview".into()));
++    h.request("ui.dialog.cancel", json!({}), T);
++    // exporting with the preset opens the files written
++    let id = h.app.session.active().unwrap().0;
++    let r = h.request(
++        "engine.execute",
++        json!({"command": "app.export", "params": {"ids": [id], "dir": dir, "preset": "Desktop then Preview", "longEdge": 64}}),
++        T,
++    );
++    assert_eq!(r["ok"], true, "{r}");
++    let path = abs(r["result"]["files"][0]["path"].as_str().unwrap());
++    assert_eq!(*calls.lock().unwrap(), [format!("openAll Preview {path}")]);
++    assert_eq!(r["result"]["afterExport"], json!({"action": "openIn", "app": "Preview", "opened": [path]}));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// `app.export` refuses an `afterExport` it doesn't know before writing anything.
++#[test]
++fn an_unknown_choice_is_refused_before_exporting() {
++    let calls = Calls::default();
++    let mut h = app(desktop(&calls));
++    let dir = scratch("unknown");
++    let id = h.app.session.active().unwrap().0;
++    let r = h.request(
++        "engine.execute",
++        json!({"command": "app.export", "params": {"ids": [id], "dir": dir, "longEdge": 64, "afterExport": "showInFinderr"}}),
++        T,
++    );
++    assert_eq!(r["ok"], false, "{r}");
++    assert!(r.to_string().contains("afterExport"), "{r}");
++    assert_eq!(std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0), 0, "nothing written");
++    assert!(calls.lock().unwrap().is_empty());
++    let _ = std::fs::remove_dir_all(&dir);
++}
+diff --git a/docs/mcp.md b/docs/mcp.md
+index 6801f2d6d..be9532a80 100644
+--- a/docs/mcp.md
++++ b/docs/mcp.md
+@@ -341,6 +341,19 @@ the terminal running `lightcraft-cli`) to control Photos. After that, any client
+ read to the user's Photos library (and so to iCloud Photos when that is on), not only exported ones: see [Who
+ can add what](apple-photos.md#how-it-works).
+ 
++## After export
++
++`app.export` takes `afterExport`, the Export dialog's After export choice (Lightroom's Post-Processing):
++`"nothing"` (default), `"showInFileManager"` (Finder / Explorer / the file manager, at the first file written),
++`"openInPhotoCraft"` (PhotoCraft, found as Photo ▸ Edit In finds it) or `{"openIn": "Application"}` (an app name or
++path; at most 4096 bytes, no control characters). Presets keep it. Only the desktop app (connect mode) does it,
++once the export has finished and wrote files; the result's `afterExport` then says what it did (`{action, revealed}`,
++`{action, app?, opened}` or `{action, error}`), or `{action, skipped}` when the export was cancelled or wrote nothing.
++Headless (this server, `lightcraft-cli`, the web) writes the files as asked and reports `{action, skipped: "not
++available here"}`, so a preset made in the desktop app still exports here. An unknown value is refused before
++anything is written. In the desktop app `dialog.exportChooseApp {app?}` sets the Open in Other Application… choice
++of the open Export dialog (no `app`: asks with a file picker).
++
+ ## Export progress and cancellation
+ 
+ Headless direct `export`, `command_run` / `run_command` with `app.export`, and `cmd_app_export`
+-- 
+2.43.0
+

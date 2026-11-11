@@ -1,7 +1,7 @@
 From 07f97d14fada4f32ff14c7b8d8818341e982218b Mon Sep 17 00:00:00 2001
 From: LightCraft additional extensions <noreply@example.invalid>
 Date: Wed, 11 Nov 2026 10:24:09 +0000
-Subject: [PATCH 2/2] Do not check for official updates at launch
+Subject: [PATCH 2/7] Do not check for official updates at launch
 
 An update would replace this build with the official release, which has no
 module bar; Help > Check for Updates still works when chosen.
@@ -10,7 +10,7 @@ module bar; Help > Check for Updates still works when chosen.
  1 file changed, 4 insertions(+), 1 deletion(-)
 
 diff --git a/apps/lightcraft/src/main.rs b/apps/lightcraft/src/main.rs
-index 97479ad6..d864f825 100644
+index 97479ad68..d864f8253 100644
 --- a/apps/lightcraft/src/main.rs
 +++ b/apps/lightcraft/src/main.rs
 @@ -364,7 +364,10 @@ fn main() -> eframe::Result {

@@ -1,0 +1,1521 @@
+From 87a608fb60c41736ca7af0eaef0ceadbabb7bb5b Mon Sep 17 00:00:00 2001
+From: LightCraft additional extensions <noreply@example.invalid>
+Date: Wed, 11 Nov 2026 20:26:08 +0000
+Subject: [PATCH 4/7] Quick Retouch tools in Develop: Dodge, Burn, Sponge,
+ Quick / Object Selection, Clone Stamp, Quick Mask
+
+Photoshop-style retouch tools built only from existing commands (UI-only; no engine, pipeline or
+GPU change). A new Quick Retouch row tops the Masking panel, the commands are in Window > Tools,
+and the default keymap gains Shift+B (cycle Dodge/Burn/Sponge), Shift+W (cycle Quick/Object
+Selection), Shift+Q (Clone Stamp) and Q (Quick Mask), all previously unbound.
+
+- Dodge / Burn: a new brush mask with local Exposure +/-(2 EV x Exposure %), intersected with a
+  Luminance Range for Shadows / Midtones / Highlights (All: none); every other local slider zeroed
+  so a remembered brush effect does not mix in. One undo step (begin/endInteraction).
+- Sponge: a new brush mask with local Saturation -/+ Flow % (Desaturate / Saturate).
+- Options bar: Range, Exposure %, Mode, Flow edit the mask in use (one undo step each).
+- Quick Selection: an empty brush mask, Auto Mask on, a larger brush, the overlay shown; Auto
+  Mask and size come back when the tool is left.
+- Object Selection: the existing SAM 3 Object mask (start_object, with its download offer).
+- Clone Stamp: Remove panel in Clone mode; Alt/Option-click sets the source (spot.add source),
+  with an Aligned option.
+- Quick Mask: red 50 % colour overlay with the brush; the previous overlay settings come back.
+
+Simplified and Traditional Chinese strings; headless tests in tests/retouch_tools.rs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EzwanTUC5ztbqABwMnjziB
+---
+ crates/ui-egui/locales/zh-hans.json         |  24 +-
+ crates/ui-egui/locales/zh-hant.json         |  24 +-
+ crates/ui-egui/src/app/frame.rs             |   1 +
+ crates/ui-egui/src/lib.rs                   |   1 +
+ crates/ui-egui/src/menus/run.rs             |   3 +
+ crates/ui-egui/src/menus/ui_commands.rs     |  18 +
+ crates/ui-egui/src/panels.rs                |   1 +
+ crates/ui-egui/src/panels/detail/retouch.rs |  40 +-
+ crates/ui-egui/src/panels/masking.rs        |   3 +
+ crates/ui-egui/src/panels/quick_retouch.rs  | 149 +++++
+ crates/ui-egui/src/panels/right/crop.rs     |  14 +
+ crates/ui-egui/src/retouch_tools.rs         | 636 ++++++++++++++++++++
+ crates/ui-egui/src/state.rs                 |   3 +
+ crates/ui-egui/src/tests.rs                 |   1 +
+ crates/ui-egui/src/tests/retouch_tools.rs   | 391 ++++++++++++
+ 15 files changed, 1303 insertions(+), 6 deletions(-)
+ create mode 100644 crates/ui-egui/src/panels/quick_retouch.rs
+ create mode 100644 crates/ui-egui/src/retouch_tools.rs
+ create mode 100644 crates/ui-egui/src/tests/retouch_tools.rs
+
+diff --git a/crates/ui-egui/locales/zh-hans.json b/crates/ui-egui/locales/zh-hans.json
+index 870769825..a441089e5 100644
+--- a/crates/ui-egui/locales/zh-hans.json
++++ b/crates/ui-egui/locales/zh-hans.json
+@@ -2506,5 +2506,27 @@
+   "Applications": "应用程序",
+   "Programs": "程序",
+   "Choose an application": "选择应用程序",
+-  "Choose Application for After Export…": "选择导出后使用的应用程序…"
++  "Choose Application for After Export…": "选择导出后使用的应用程序…",
++  "Quick Retouch": "快速修饰",
++  "Dodge": "减淡",
++  "Burn": "加深",
++  "Sponge": "海绵",
++  "Quick Selection": "快速选择",
++  "Object Selection": "对象选择",
++  "Clone Stamp": "仿制图章",
++  "Quick Mask": "快速蒙版",
++  "Cycle Dodge / Burn / Sponge": "循环切换减淡/加深/海绵",
++  "Cycle Quick / Object Selection": "循环切换快速选择/对象选择",
++  "retouch|Exposure": "曝光度",
++  "Desaturate": "去色",
++  "Saturate": "加色",
++  "Select Subject": "选择主体",
++  "Aligned": "对齐",
++  "Alt-click (⌥-click) sets the clone source": "按住 Alt（⌥）单击设置仿制源",
++  "Clone source set · paint to clone from it": "已设置仿制源 · 涂抹即可从该处仿制",
++  "Paint to lighten · ⌥ erases": "涂抹以减淡 · 按住 ⌥ 擦除",
++  "Paint to darken · ⌥ erases": "涂抹以加深 · 按住 ⌥ 擦除",
++  "Paint to desaturate · ⌥ erases": "涂抹以去色 · 按住 ⌥ 擦除",
++  "Paint to saturate · ⌥ erases": "涂抹以加色 · 按住 ⌥ 擦除",
++  "Paint over what to select · ⌥ erases": "涂抹要选择的区域 · 按住 ⌥ 擦除"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant.json b/crates/ui-egui/locales/zh-hant.json
+index 243411d7e..9f18e81a5 100644
+--- a/crates/ui-egui/locales/zh-hant.json
++++ b/crates/ui-egui/locales/zh-hant.json
+@@ -2467,5 +2467,27 @@
+   "Applications": "應用程式",
+   "Programs": "程式",
+   "Choose an application": "選擇應用程式",
+-  "Choose Application for After Export…": "選擇匯出後使用的應用程式…"
++  "Choose Application for After Export…": "選擇匯出後使用的應用程式…",
++  "Quick Retouch": "快速修飾",
++  "Dodge": "加亮",
++  "Burn": "加深",
++  "Sponge": "海綿",
++  "Quick Selection": "快速選取",
++  "Object Selection": "物件選取",
++  "Clone Stamp": "仿製印章",
++  "Quick Mask": "快速遮色片",
++  "Cycle Dodge / Burn / Sponge": "循環切換加亮/加深/海綿",
++  "Cycle Quick / Object Selection": "循環切換快速選取/物件選取",
++  "retouch|Exposure": "曝光度",
++  "Desaturate": "降低飽和度",
++  "Saturate": "提高飽和度",
++  "Select Subject": "選取主體",
++  "Aligned": "對齊",
++  "Alt-click (⌥-click) sets the clone source": "按住 Alt（⌥）點按以設定仿製來源",
++  "Clone source set · paint to clone from it": "已設定仿製來源 · 塗抹即可從該處仿製",
++  "Paint to lighten · ⌥ erases": "塗抹以加亮 · 按住 ⌥ 擦除",
++  "Paint to darken · ⌥ erases": "塗抹以加深 · 按住 ⌥ 擦除",
++  "Paint to desaturate · ⌥ erases": "塗抹以降低飽和度 · 按住 ⌥ 擦除",
++  "Paint to saturate · ⌥ erases": "塗抹以提高飽和度 · 按住 ⌥ 擦除",
++  "Paint over what to select · ⌥ erases": "塗抹要選取的區域 · 按住 ⌥ 擦除"
+ }
+diff --git a/crates/ui-egui/src/app/frame.rs b/crates/ui-egui/src/app/frame.rs
+index 008721567..f6a53cf80 100644
+--- a/crates/ui-egui/src/app/frame.rs
++++ b/crates/ui-egui/src/app/frame.rs
+@@ -472,6 +472,7 @@ impl LightcraftApp {
+         // right panels and left panel run to the bottom; the bottom bar sits between them).
+         // a view or panel command run in the Print module leaves it, before the bar draws
+         panels::modules::before_frame(self);
++        crate::retouch_tools::before_frame(self);
+         panels::topbar::show(self, ui);
+         panels::library_problem::banner(self, ui);
+         // filled: the gaps the dock leaves between its panes show chrome, not the dark clear colour
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index e1b341055..b64840d42 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -41,6 +41,7 @@ pub mod pick;
+ pub mod recheck;
+ pub mod region;
+ pub mod reload;
++pub mod retouch_tools;
+ pub mod render;
+ pub mod shortcuts;
+ pub mod sidebar;
+diff --git a/crates/ui-egui/src/menus/run.rs b/crates/ui-egui/src/menus/run.rs
+index 2fb288e6a..628dc7ad8 100644
+--- a/crates/ui-egui/src/menus/run.rs
++++ b/crates/ui-egui/src/menus/run.rs
+@@ -202,6 +202,9 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
+     // the app's own context: a toast's time comes from its clock (a fresh context's clock is at 0,
+     // and a toast set by it was long over by the app's clock: it never showed)
+     let ctx = app.tasks.repaint.clone().unwrap_or_default();
++    if let Some(r) = crate::retouch_tools::command(app, &ctx, id, p) {
++        return Some(r);
++    }
+     const PARTS: [fn(&mut LightcraftApp, &egui::Context, &str, &Value) -> Option<Result<Value, String>>; 12] = [
+         ui_commands_1,
+         ui_commands_2,
+diff --git a/crates/ui-egui/src/menus/ui_commands.rs b/crates/ui-egui/src/menus/ui_commands.rs
+index 7f76cf713..fbf896c23 100644
+--- a/crates/ui-egui/src/menus/ui_commands.rs
++++ b/crates/ui-egui/src/menus/ui_commands.rs
+@@ -169,6 +169,24 @@ pub const UI_COMMANDS: &[UiCommand] = &[
+     ("tool.linear", "Linear Gradient", Some("L"), "Window>Tools"),
+     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
+     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
++    // Quick Retouch (`crate::retouch_tools`, the Masking panel's top row): Photoshop's tools as
++    // masks. {range?: all | shadows | midtones | highlights, exposure?: 1..100} — a new brush mask
++    // with local Exposure ±(2 EV × exposure %), intersected with the range's Luminance Range
++    ("tool.dodge", "Dodge", None, "Window>Tools"),
++    ("tool.burn", "Burn", None, "Window>Tools"),
++    // {mode?: desaturate | saturate, flow?: 1..100}: local Saturation ∓flow
++    ("tool.sponge", "Sponge", None, "Window>Tools"),
++    // the Dodge / Burn / Sponge used last; again while one is in use: the next
++    ("tool.toningCycle", "Cycle Dodge / Burn / Sponge", Some("Shift+B"), "Window>Tools"),
++    // an empty brush mask with Auto Mask on, a larger brush and the overlay shown
++    ("tool.quickSelect", "Quick Selection", None, "Window>Tools"),
++    // the Object (SAM 3) mask; offers the model's download when it is missing
++    ("tool.objectSelect", "Object Selection", None, "Window>Tools"),
++    ("tool.selectionCycle", "Cycle Quick / Object Selection", Some("Shift+W"), "Window>Tools"),
++    // Remove ▸ Clone; ⌥/Alt-click on the photo sets the source
++    ("tool.cloneStamp", "Clone Stamp", Some("Shift+Q"), "Window>Tools"),
++    // {on?}: a red 50 % overlay of the selected mask with the brush; off restores the overlay
++    ("tool.quickMask", "Quick Mask", Some("Q"), "Window>Tools"),
+     ("tool.none", "No Tool", None, ""),
+     // brush size / feather of the active brush (Masking brush, Remove tool and its selected spot)
+     ("brush.smaller", "Decrease Brush Size", Some("["), "Window>Tools"),
+diff --git a/crates/ui-egui/src/panels.rs b/crates/ui-egui/src/panels.rs
+index 92bfa4d6c..13e896cb6 100644
+--- a/crates/ui-egui/src/panels.rs
++++ b/crates/ui-egui/src/panels.rs
+@@ -26,6 +26,7 @@ pub mod person;
+ pub mod presets;
+ pub mod print_module;
+ pub mod profiles;
++pub mod quick_retouch;
+ pub mod right;
+ pub mod second;
+ pub mod slideshow;
+diff --git a/crates/ui-egui/src/panels/detail/retouch.rs b/crates/ui-egui/src/panels/detail/retouch.rs
+index d74ead9ba..989799aa9 100644
+--- a/crates/ui-egui/src/panels/detail/retouch.rs
++++ b/crates/ui-egui/src/panels/detail/retouch.rs
+@@ -51,6 +51,9 @@ pub(super) fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &
+     if spot_keys(app, ui, map, d, &grips) {
+         return;
+     }
++    if clone_source_click(app, ui, resp, map, &p) {
++        return;
++    }
+     let r = (app.ui.remove_size as f64 * long) as f32;
+     // a target or source under `q`: the selected spot's first, then the nearest pin
+     let hit = |q: Pos2| {
+@@ -128,11 +131,40 @@ pub(super) fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &
+             _ => "remove",
+         };
+         let pts: Vec<[f64; 2]> = points.iter().map(|q| [q.x, q.y]).collect();
+-        let _ = app.run(
+-            "spot.add",
+-            json!({"mode": mode, "points": pts, "size": app.ui.remove_size, "feather": app.ui.remove_feather, "opacity": app.ui.remove_opacity}),
+-        );
++        let mut spot =
++            json!({"mode": mode, "points": pts, "size": app.ui.remove_size, "feather": app.ui.remove_feather, "opacity": app.ui.remove_opacity});
++        // Clone Stamp: from the ⌥/Alt-clicked source (without one, the engine picks the best match)
++        if mode == "clone"
++            && let Some(first) = pts.first()
++            && let Some(o) = crate::retouch_tools::clone_offset(app, *first)
++        {
++            spot["source"] = json!(o);
++        }
++        let _ = app.run("spot.add", spot);
++    }
++}
++
++/// Clone mode: ⌥/Alt-click sets the source the next strokes clone from (Photoshop's Clone Stamp);
++/// the source shows as a crosshair. Whether the click was used up.
++fn clone_source_click(app: &mut LightcraftApp, ui: &egui::Ui, resp: &egui::Response, map: &CanvasMap, p: &egui::Painter) -> bool {
++    if app.ui.tool != "clone" {
++        return false;
++    }
++    let used = resp.clicked() && ui.input(|i| i.modifiers.alt);
++    if used && let Some(q) = resp.interact_pointer_pos() {
++        let n = map.norm(q);
++        crate::retouch_tools::set_clone_source(app, [n.x, n.y]);
++        app.toast(ui.ctx(), crate::i18n::tr("Clone source set · paint to clone from it"));
++    }
++    if let Some(src) = crate::retouch_tools::clone_source(app) {
++        let c = map.screen(Point::new(src.at[0], src.at[1]));
++        let stroke = Stroke::new(1.5, Color32::WHITE);
++        p.circle_stroke(c, 7.0, stroke);
++        p.line_segment([c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)], stroke);
++        p.line_segment([c - vec2(0.0, 11.0), c + vec2(0.0, 11.0)], stroke);
++        register(ui, "cloneSource", Rect::from_center_size(c, vec2(14.0, 14.0)));
+     }
++    used
+ }
+ 
+ /// Keyboard stand-ins for the Remove tool: each spot's target and source (an arrow press moves
+diff --git a/crates/ui-egui/src/panels/masking.rs b/crates/ui-egui/src/panels/masking.rs
+index ce28482c4..2c1c19758 100644
+--- a/crates/ui-egui/src/panels/masking.rs
++++ b/crates/ui-egui/src/panels/masking.rs
+@@ -90,6 +90,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+     let t = Tokens::get(ui.ctx());
+     let d = app.session.develop_of(id).unwrap_or_default();
+     header(ui, "Masking");
++    // Photoshop's retouch tools, made of masks (Dodge, Burn, Sponge, selections, Clone Stamp, Quick Mask)
++    super::quick_retouch::show(app, ui);
++    divider(ui);
+     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 10 }).show(ui, |ui| {
+         ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).color(t.text_dim));
+         ui.add_space(6.0);
+diff --git a/crates/ui-egui/src/panels/quick_retouch.rs b/crates/ui-egui/src/panels/quick_retouch.rs
+new file mode 100644
+index 000000000..69547f13c
+--- /dev/null
++++ b/crates/ui-egui/src/panels/quick_retouch.rs
+@@ -0,0 +1,149 @@
++//! The Masking panel's Quick Retouch row (Dodge, Burn, Sponge, Quick / Object Selection, Clone
++//! Stamp, Quick Mask) and the options of the tool in use. The tools are `crate::retouch_tools`.
++
++use lightcraft_develop::{ControlSpec, Section, Track};
++use serde_json::json;
++
++use super::edit::apply_slider_out;
++use crate::LightcraftApp;
++use crate::icons::Icon;
++use crate::retouch_tools::{self as rt, RetouchTool, SpongeMode, ToneRange};
++use crate::theme::Tokens;
++use crate::widgets::{icon_button, register, slider, text_button};
++
++/// "Dodge (Shift+B)": a name with the key of its command (or of its group's cycle).
++fn with_key(app: &LightcraftApp, ui: &egui::Ui, name: &str, ids: &[&str]) -> String {
++    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
++    let name = crate::i18n::tr(name);
++    match ids.iter().find_map(|id| crate::shortcuts::shortcut_of(&app.ui.settings.keymap, id)) {
++        Some(sc) => format!("{name} ({})", crate::menubar::shortcut_text(sc, mac)),
++        None => name.to_string(),
++    }
++}
++
++/// The row's icon of each tool (Photoshop-like glyphs from the icon set).
++fn icon(tool: RetouchTool) -> Icon {
++    match tool {
++        RetouchTool::Dodge => Icon::Sun,
++        RetouchTool::Burn => Icon::Moon,
++        RetouchTool::Sponge => Icon::GradeAll,
++        RetouchTool::QuickSelect => Icon::Brush,
++        RetouchTool::ObjectSelect => Icon::Subject,
++        RetouchTool::CloneStamp => Icon::Target,
++    }
++}
++
++/// One line of tool buttons (the name and key on hover; it wraps in a narrow panel, so the
++/// Create New Mask tiles below move down as little as possible), then the options of the tool
++/// in use.
++pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
++    let t = Tokens::get(ui.ctx());
++    let current = rt::current(app).map(|c| c.tool);
++    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 4 }).show(ui, |ui| {
++        ui.horizontal_wrapped(|ui| {
++            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
++            let title = ui.label(egui::RichText::new(crate::i18n::tr("Quick Retouch")).color(t.text_dim));
++            register(ui, "retouch:title", title.rect);
++            ui.add_space(4.0);
++            for tool in RetouchTool::ALL {
++                let ids: Vec<&str> = [tool.command()].into_iter().chain(tool.cycle_command()).collect();
++                let tip = with_key(app, ui, tool.label(), &ids);
++                let b = icon_button(ui, &format!("retouch-{}", tool.id()), icon(tool), egui::vec2(26.0, 24.0), current == Some(tool), true, &tip);
++                register(ui, format!("retouch:{}", tool.id()), b.rect);
++                if b.clicked()
++                    && let Err(e) = app.run(tool.command(), json!({}))
++                {
++                    app.toast(ui.ctx(), e);
++                }
++            }
++            let on = app.ui.retouch.quick_mask.is_some();
++            let tip = with_key(app, ui, "Quick Mask", &["tool.quickMask"]);
++            let b = icon_button(ui, "retouch-quickMask", Icon::Mask, egui::vec2(26.0, 24.0), on, true, &tip);
++            register(ui, "retouch:quickMask", b.rect);
++            if b.clicked()
++                && let Err(e) = app.run("tool.quickMask", json!({}))
++            {
++                app.toast(ui.ctx(), e);
++            }
++        });
++        // the tool in use, by name (the icons alone don't say)
++        if let Some(tool) = current {
++            ui.label(egui::RichText::new(crate::i18n::tr(tool.label())).color(t.text_label).size(11.5));
++        }
++    });
++    options(app, ui);
++}
++
++const fn percent(id: &'static str, label: &'static str) -> ControlSpec {
++    ControlSpec { id, label, section: Section::Light, min: 1.0, max: 100.0, default: 50.0, step: 1.0, decimals: 0, track: Track::Plain }
++}
++
++const EXPOSURE: ControlSpec = percent("retouch.exposure", "Exposure");
++const FLOW: ControlSpec = percent("retouch.flow", "Flow");
++
++/// The options bar of the painting tool in use: Range and Exposure (Dodge, Burn), Mode and Flow
++/// (Sponge), Select Subject (Quick Selection). They edit its mask.
++fn options(app: &mut LightcraftApp, ui: &mut egui::Ui) {
++    let Some((c, m)) = rt::current_mask(app) else { return };
++    let t = Tokens::get(ui.ctx());
++    match c.tool {
++        RetouchTool::Dodge | RetouchTool::Burn => {
++            choice_row(ui, &t, "Range", |ui| {
++                for r in ToneRange::ALL {
++                    if text_button(ui, &format!("retouchRange-{}", r.id()), r.label(), app.ui.retouch.range == r).clicked()
++                        && let Err(e) = rt::set_range(app, r)
++                    {
++                        app.toast(ui.ctx(), e);
++                    }
++                }
++            });
++            // the mask's own Exposure, as Photoshop's percentage
++            let v = (m.adjust.exposure.abs() / rt::EV_AT_FULL * 100.0).clamp(1.0, 100.0);
++            let out = slider(ui, &EXPOSURE, v, true, Some(crate::i18n::tr_ctx("retouch", "Exposure")));
++            let sign = if c.tool == RetouchTool::Burn { -1.0 } else { 1.0 };
++            apply_slider_out(app, &EXPOSURE, out, |app, v| {
++                app.ui.retouch.exposure = v as f32;
++                app.run("mask.adjust", json!({"id": m.id, "values": {"exposure": sign * rt::exposure_ev(v as f32)}}))
++            });
++        }
++        RetouchTool::Sponge => {
++            choice_row(ui, &t, "Mode", |ui| {
++                for mode in [SpongeMode::Desaturate, SpongeMode::Saturate] {
++                    if text_button(ui, &format!("retouchSponge-{}", mode.id()), mode.label(), app.ui.retouch.sponge_mode == mode).clicked()
++                        && let Err(e) = rt::set_sponge_mode(app, mode)
++                    {
++                        app.toast(ui.ctx(), e);
++                    }
++                }
++            });
++            let v = m.adjust.saturation.abs().clamp(1.0, 100.0);
++            let out = slider(ui, &FLOW, v, true, None);
++            let sign = if m.adjust.saturation > 0.0 { 1.0 } else { -1.0 };
++            apply_slider_out(app, &FLOW, out, |app, v| {
++                app.ui.retouch.flow = v as f32;
++                app.run("mask.adjust", json!({"id": m.id, "values": {"saturation": sign * v}}))
++            });
++        }
++        RetouchTool::QuickSelect => {
++            egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 6 }).show(ui, |ui| {
++                if text_button(ui, "retouchSelectSubject", "Select Subject", false).clicked()
++                    && let Err(e) = app.run("mask.addComponent", json!({"id": m.id, "op": "add", "kind": "subject"}))
++                {
++                    app.toast(ui.ctx(), e);
++                }
++            });
++        }
++        RetouchTool::ObjectSelect | RetouchTool::CloneStamp => {}
++    }
++}
++
++/// A label and its buttons, wrapping in a narrow panel.
++fn choice_row(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui::Ui)) {
++    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 4 }).show(ui, |ui| {
++        ui.horizontal_wrapped(|ui| {
++            ui.spacing_mut().item_spacing.y = 6.0;
++            ui.label(egui::RichText::new(crate::i18n::tr(label)).color(t.text_dim));
++            add(ui);
++        });
++    });
++}
+diff --git a/crates/ui-egui/src/panels/right/crop.rs b/crates/ui-egui/src/panels/right/crop.rs
+index 0b71fffe8..eea74a7c6 100644
+--- a/crates/ui-egui/src/panels/right/crop.rs
++++ b/crates/ui-egui/src/panels/right/crop.rs
+@@ -283,6 +283,20 @@ pub(super) fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+                 }
+             }
+         });
++        if app.ui.tool == "clone" {
++            // Clone Stamp: ⌥/Alt-click sets the source; Aligned keeps its offset after the first stroke
++            ui.add_space(4.0);
++            let mut aligned = app.ui.retouch.clone_aligned;
++            let r = ui.checkbox(&mut aligned, crate::i18n::tr("Aligned"));
++            crate::widgets::register(ui, "check:cloneAligned", r.rect);
++            if r.changed() {
++                app.ui.retouch.clone_aligned = aligned;
++                if let Some(s) = app.ui.retouch.clone_source.as_mut() {
++                    s.offset = None;
++                }
++            }
++            ui.label(egui::RichText::new(crate::i18n::tr("Alt-click (⌥-click) sets the clone source")).color(Tokens::get(ui.ctx()).text_dim));
++        }
+         ui.add_space(8.0);
+         ui.label(crate::i18n::tr_format!("{} spot(s) on this photo", d.spots.len()));
+         ui.add_space(4.0);
+diff --git a/crates/ui-egui/src/retouch_tools.rs b/crates/ui-egui/src/retouch_tools.rs
+new file mode 100644
+index 000000000..56583b3ec
+--- /dev/null
++++ b/crates/ui-egui/src/retouch_tools.rs
+@@ -0,0 +1,636 @@
++//! Photoshop-style quick retouch tools in Develop, built from what LightCraft already has (no new
++//! mask kinds or pipeline work): each one is a short sequence of existing commands.
++//!
++//! - Dodge / Burn: a new brush mask with local Exposure ± (Exposure % → ±2 EV at 100 %), optionally
++//!   intersected with a Luminance Range (Shadows / Midtones / Highlights), the brush ready.
++//! - Sponge: a new brush mask with local Saturation ∓ Flow % (Desaturate / Saturate).
++//! - Quick Selection: a new, empty brush mask with Auto Mask on, a larger brush and the overlay
++//!   shown (Auto Mask and the size come back when the tool is left).
++//! - Object Selection: the Masking panel's Object (SAM 3) mask, with its model download offer.
++//! - Clone Stamp: the Remove panel in Clone mode; ⌥/Alt-click on the photo sets the source.
++//! - Quick Mask: a red 50 % overlay with the brush (the previous overlay settings come back).
++//!
++//! Creating a mask is one undo step: the steps run inside `develop.beginInteraction` /
++//! `develop.endInteraction` (cancelled on an error).
++
++use lightcraft_develop::{LocalAdjustments, MaskOp, MaskShape};
++use serde::{Deserialize, Serialize};
++use serde_json::{Value, json};
++
++use crate::LightcraftApp;
++use crate::state::{Dialog, RightPanel, ViewMode};
++
++/// The tools of the Quick Retouch row.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub enum RetouchTool {
++    #[default]
++    Dodge,
++    Burn,
++    Sponge,
++    QuickSelect,
++    ObjectSelect,
++    CloneStamp,
++}
++
++impl RetouchTool {
++    pub const ALL: [RetouchTool; 6] = [Self::Dodge, Self::Burn, Self::Sponge, Self::QuickSelect, Self::ObjectSelect, Self::CloneStamp];
++
++    /// The UI command that starts the tool.
++    pub fn command(self) -> &'static str {
++        match self {
++            Self::Dodge => "tool.dodge",
++            Self::Burn => "tool.burn",
++            Self::Sponge => "tool.sponge",
++            Self::QuickSelect => "tool.quickSelect",
++            Self::ObjectSelect => "tool.objectSelect",
++            Self::CloneStamp => "tool.cloneStamp",
++        }
++    }
++
++    /// The tool's name (English source of the translation).
++    pub fn label(self) -> &'static str {
++        match self {
++            Self::Dodge => "Dodge",
++            Self::Burn => "Burn",
++            Self::Sponge => "Sponge",
++            Self::QuickSelect => "Quick Selection",
++            Self::ObjectSelect => "Object Selection",
++            Self::CloneStamp => "Clone Stamp",
++        }
++    }
++
++    /// The id its button is registered under (`button:retouch-<id>`).
++    pub fn id(self) -> &'static str {
++        match self {
++            Self::Dodge => "dodge",
++            Self::Burn => "burn",
++            Self::Sponge => "sponge",
++            Self::QuickSelect => "quickSelect",
++            Self::ObjectSelect => "objectSelect",
++            Self::CloneStamp => "cloneStamp",
++        }
++    }
++
++    /// The command whose key steps through the tool's group (Shift+B, Shift+W).
++    pub fn cycle_command(self) -> Option<&'static str> {
++        match self {
++            Self::Dodge | Self::Burn | Self::Sponge => Some("tool.toningCycle"),
++            Self::QuickSelect | Self::ObjectSelect => Some("tool.selectionCycle"),
++            Self::CloneStamp => None,
++        }
++    }
++
++    fn toning(self) -> bool {
++        matches!(self, Self::Dodge | Self::Burn | Self::Sponge)
++    }
++
++    fn selection(self) -> bool {
++        matches!(self, Self::QuickSelect | Self::ObjectSelect)
++    }
++}
++
++/// Which tones Dodge and Burn act on: the brush mask intersected with a Luminance Range.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub enum ToneRange {
++    All,
++    Shadows,
++    #[default]
++    Midtones,
++    Highlights,
++}
++
++impl ToneRange {
++    pub const ALL: [ToneRange; 4] = [Self::All, Self::Shadows, Self::Midtones, Self::Highlights];
++
++    pub fn id(self) -> &'static str {
++        match self {
++            Self::All => "all",
++            Self::Shadows => "shadows",
++            Self::Midtones => "midtones",
++            Self::Highlights => "highlights",
++        }
++    }
++
++    pub fn label(self) -> &'static str {
++        match self {
++            Self::All => "All",
++            Self::Shadows => "Shadows",
++            Self::Midtones => "Midtones",
++            Self::Highlights => "Highlights",
++        }
++    }
++
++    fn parse(s: &str) -> Option<Self> {
++        Self::ALL.into_iter().find(|r| r.id() == s)
++    }
++
++    /// The Luminance Range (lo, hi) on its 0..1 scale (−8..+4 EV, white near 0.667): shadows up
++    /// to about sRGB 30 %, midtones to about 78 %, highlights above. `None` for All.
++    pub fn band(self) -> Option<(f64, f64)> {
++        match self {
++            Self::All => None,
++            Self::Shadows => Some((0.0, 0.35)),
++            Self::Midtones => Some((0.35, 0.60)),
++            Self::Highlights => Some((0.60, 1.0)),
++        }
++    }
++}
++
++/// The Luminance Range's falloff on both sides.
++pub const RANGE_FEATHER: f64 = 0.1;
++/// Local exposure (EV) of Dodge / Burn at 100 %: the default 50 % is ±1 EV.
++pub const EV_AT_FULL: f64 = 2.0;
++/// The smallest brush Quick Selection paints with (fraction of the long edge).
++pub const QUICK_SELECT_SIZE: f32 = 0.08;
++/// Quick Mask's overlay: Photoshop's red at 50 %.
++pub const QUICK_MASK_COLOR: [u8; 3] = [230, 30, 40];
++pub const QUICK_MASK_OPACITY: f32 = 50.0;
++
++/// Sponge: take colour out of, or put it into, what is painted.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub enum SpongeMode {
++    #[default]
++    Desaturate,
++    Saturate,
++}
++
++impl SpongeMode {
++    pub fn id(self) -> &'static str {
++        match self {
++            Self::Desaturate => "desaturate",
++            Self::Saturate => "saturate",
++        }
++    }
++
++    pub fn label(self) -> &'static str {
++        match self {
++            Self::Desaturate => "Desaturate",
++            Self::Saturate => "Saturate",
++        }
++    }
++
++    fn sign(self) -> f64 {
++        match self {
++            Self::Desaturate => -1.0,
++            Self::Saturate => 1.0,
++        }
++    }
++}
++
++/// The tool in use: which, on which photo, and (painting tools) its mask.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct Current {
++    pub tool: RetouchTool,
++    pub photo: u64,
++    pub mask: Option<u32>,
++}
++
++/// The overlay as it was before Quick Mask turned on.
++#[derive(Clone, Debug, PartialEq)]
++pub struct OverlayRestore {
++    pub on: bool,
++    pub mode: String,
++    pub color: [u8; 3],
++    pub opacity: f32,
++}
++
++/// Clone Stamp's source, set by ⌥/Alt-clicking the photo; with Aligned, the offset of the first
++/// stroke after it is kept for the following ones.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct CloneSource {
++    pub photo: u64,
++    pub at: [f64; 2],
++    pub offset: Option<[f64; 2]>,
++}
++
++/// The Quick Retouch options (saved) and the tool in use (not saved).
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(default, rename_all = "camelCase")]
++pub struct RetouchState {
++    /// The Dodge / Burn / Sponge tool Shift+B starts from.
++    pub toning: RetouchTool,
++    /// The Quick / Object Selection tool Shift+W starts from.
++    pub selection: RetouchTool,
++    pub range: ToneRange,
++    /// Dodge / Burn Exposure, 1..100 %.
++    pub exposure: f32,
++    pub sponge_mode: SpongeMode,
++    /// Sponge Flow, 1..100 %: the local Saturation it sets.
++    pub flow: f32,
++    /// Clone Stamp: the source moves with the brush after the first stroke.
++    pub clone_aligned: bool,
++    #[serde(skip)]
++    pub current: Option<Current>,
++    /// Auto Mask and brush size before Quick Selection changed them.
++    #[serde(skip)]
++    pub quick_select_restore: Option<(bool, f32)>,
++    /// On while Quick Mask is: the overlay to go back to.
++    #[serde(skip)]
++    pub quick_mask: Option<OverlayRestore>,
++    #[serde(skip)]
++    pub clone_source: Option<CloneSource>,
++}
++
++impl Default for RetouchState {
++    fn default() -> Self {
++        Self {
++            toning: RetouchTool::Dodge,
++            selection: RetouchTool::QuickSelect,
++            range: ToneRange::Midtones,
++            exposure: 50.0,
++            sponge_mode: SpongeMode::Desaturate,
++            flow: 50.0,
++            clone_aligned: true,
++            current: None,
++            quick_select_restore: None,
++            quick_mask: None,
++            clone_source: None,
++        }
++    }
++}
++
++/// The local adjustments of a tool's new mask: everything else at zero, so an effect remembered for
++/// new brush masks does not mix in.
++pub fn effect(tool: RetouchTool, s: &RetouchState) -> LocalAdjustments {
++    let mut a = LocalAdjustments::default();
++    match tool {
++        RetouchTool::Dodge => a.exposure = exposure_ev(s.exposure),
++        RetouchTool::Burn => a.exposure = -exposure_ev(s.exposure),
++        RetouchTool::Sponge => a.saturation = s.sponge_mode.sign() * f64::from(s.flow.clamp(1.0, 100.0)),
++        _ => {}
++    }
++    a
++}
++
++/// Exposure % as local EV (positive).
++pub fn exposure_ev(percent: f32) -> f64 {
++    f64::from(percent.clamp(1.0, 100.0)) / 100.0 * EV_AT_FULL
++}
++
++/// A new mask's name: the tool, and its range or mode.
++fn mask_name(tool: RetouchTool, s: &RetouchState) -> String {
++    let tr = crate::i18n::tr;
++    match tool {
++        RetouchTool::Dodge | RetouchTool::Burn if s.range != ToneRange::All => format!("{} · {}", tr(tool.label()), tr(s.range.label())),
++        RetouchTool::Sponge => format!("{} · {}", tr(tool.label()), tr(s.sponge_mode.label())),
++        _ => tr(tool.label()).to_string(),
++    }
++}
++
++/// The ids of the Quick Retouch commands (`tool.*` ones are enabled with an active photo).
++pub const COMMANDS: &[&str] = &[
++    "tool.dodge",
++    "tool.burn",
++    "tool.sponge",
++    "tool.toningCycle",
++    "tool.quickSelect",
++    "tool.objectSelect",
++    "tool.selectionCycle",
++    "tool.cloneStamp",
++    "tool.quickMask",
++];
++
++/// Run a Quick Retouch command; `None`: `id` is not one.
++pub fn command(app: &mut LightcraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Option<Result<Value, String>> {
++    if !COMMANDS.contains(&id) {
++        return None;
++    }
++    if app.session.active().is_none() {
++        return Some(Err(format!("{id}: no active photo")));
++    }
++    Some(match id {
++        "tool.dodge" => options(app, id, p).and_then(|_| start(app, ctx, RetouchTool::Dodge)),
++        "tool.burn" => options(app, id, p).and_then(|_| start(app, ctx, RetouchTool::Burn)),
++        "tool.sponge" => options(app, id, p).and_then(|_| start(app, ctx, RetouchTool::Sponge)),
++        "tool.quickSelect" => start(app, ctx, RetouchTool::QuickSelect),
++        "tool.objectSelect" => start(app, ctx, RetouchTool::ObjectSelect),
++        "tool.cloneStamp" => start(app, ctx, RetouchTool::CloneStamp),
++        "tool.toningCycle" => {
++            let next = cycle(app, RetouchTool::toning, app.ui.retouch.toning, |t| match t {
++                RetouchTool::Dodge => RetouchTool::Burn,
++                RetouchTool::Burn => RetouchTool::Sponge,
++                _ => RetouchTool::Dodge,
++            });
++            start(app, ctx, next)
++        }
++        "tool.selectionCycle" => {
++            let next = cycle(app, RetouchTool::selection, app.ui.retouch.selection, |t| match t {
++                RetouchTool::QuickSelect => RetouchTool::ObjectSelect,
++                _ => RetouchTool::QuickSelect,
++            });
++            start(app, ctx, next)
++        }
++        _ => quick_mask(app, ctx, p),
++    })
++}
++
++/// The tool a group's key starts: the next one while a tool of the group is in use, else the one
++/// used last.
++fn cycle(app: &LightcraftApp, group: fn(RetouchTool) -> bool, last: RetouchTool, next: fn(RetouchTool) -> RetouchTool) -> RetouchTool {
++    match app.ui.retouch.current.filter(|c| group(c.tool) && alive(app, c)) {
++        Some(c) => next(c.tool),
++        None => last,
++    }
++}
++
++/// `{range?, exposure?}` (Dodge / Burn) and `{mode?, flow?}` (Sponge): remembered for the next time.
++fn options(app: &mut LightcraftApp, id: &str, p: &Value) -> Result<(), String> {
++    let s = &mut app.ui.retouch;
++    if let Some(v) = p.get("range").filter(|v| !v.is_null()) {
++        s.range = v.as_str().and_then(ToneRange::parse).ok_or_else(|| format!("{id}: unknown range {v} (all|shadows|midtones|highlights)"))?;
++    }
++    if let Some(v) = p.get("exposure").filter(|v| !v.is_null()) {
++        s.exposure = v.as_f64().ok_or_else(|| format!("{id}: `exposure` is a percentage (1..100)"))?.clamp(1.0, 100.0) as f32;
++    }
++    if let Some(v) = p.get("mode").filter(|v| !v.is_null()) {
++        s.sponge_mode = match v.as_str() {
++            Some("desaturate") => SpongeMode::Desaturate,
++            Some("saturate") => SpongeMode::Saturate,
++            _ => return Err(format!("{id}: unknown mode {v} (desaturate|saturate)")),
++        };
++    }
++    if let Some(v) = p.get("flow").filter(|v| !v.is_null()) {
++        s.flow = v.as_f64().ok_or_else(|| format!("{id}: `flow` is a percentage (1..100)"))?.clamp(1.0, 100.0) as f32;
++    }
++    Ok(())
++}
++
++/// Start `tool` on the active photo.
++fn start(app: &mut LightcraftApp, ctx: &egui::Context, tool: RetouchTool) -> Result<Value, String> {
++    end_current(app);
++    let photo = app.session.active().map(|p| p.0).ok_or("no active photo")?;
++    if tool.toning() {
++        app.ui.retouch.toning = tool;
++    } else if tool.selection() {
++        app.ui.retouch.selection = tool;
++    }
++    let mut mask = None;
++    match tool {
++        RetouchTool::Dodge | RetouchTool::Burn | RetouchTool::Sponge => {
++            let range = if tool == RetouchTool::Sponge { None } else { app.ui.retouch.range.band() };
++            let id = new_mask(app, tool, range)?;
++            mask = Some(id);
++            app.run("tool.brush", json!({}))?;
++            app.ui.brush_erase = false;
++            let hint = match tool {
++                RetouchTool::Dodge => "Paint to lighten · ⌥ erases",
++                RetouchTool::Burn => "Paint to darken · ⌥ erases",
++                _ if app.ui.retouch.sponge_mode == SpongeMode::Saturate => "Paint to saturate · ⌥ erases",
++                _ => "Paint to desaturate · ⌥ erases",
++            };
++            app.toast(ctx, crate::i18n::tr(hint));
++        }
++        RetouchTool::QuickSelect => {
++            let id = new_mask(app, tool, None)?;
++            mask = Some(id);
++            app.run("tool.brush", json!({}))?;
++            app.ui.retouch.quick_select_restore = Some((app.ui.brush_auto_mask, app.ui.brush_size));
++            app.ui.brush_erase = false;
++            app.ui.brush_auto_mask = true;
++            app.ui.brush_size = app.ui.brush_size.max(QUICK_SELECT_SIZE);
++            // the selection shows while it is painted (the new mask's adjustment hid the overlay)
++            app.ui.mask_overlay = true;
++            app.toast(ctx, crate::i18n::tr("Paint over what to select · ⌥ erases"));
++        }
++        RetouchTool::ObjectSelect => {
++            crate::panels::modules::leave_print(app);
++            app.ui.right = RightPanel::Masking;
++            app.ui.view = ViewMode::Detail;
++            crate::panels::masking::start_object(app, ctx, "new");
++        }
++        RetouchTool::CloneStamp => {
++            if app.ui.right != RightPanel::Remove {
++                app.run("panel.remove", json!({}))?;
++            }
++            app.ui.right = RightPanel::Remove;
++            app.ui.view = ViewMode::Detail;
++            app.ui.tool = "clone".into();
++            app.toast(ctx, crate::i18n::tr("Alt-click (⌥-click) sets the clone source"));
++        }
++    }
++    app.ui.retouch.current = Some(Current { tool, photo, mask });
++    Ok(json!({"tool": tool.id(), "mask": mask}))
++}
++
++/// A new brush mask for `tool` with its effect (and the Luminance Range `range` intersected), as
++/// one undo step. The mask selected before is selected again when a step fails.
++fn new_mask(app: &mut LightcraftApp, tool: RetouchTool, range: Option<(f64, f64)>) -> Result<u32, String> {
++    let before = app.session.active_mask;
++    app.run("develop.beginInteraction", json!({"label": tool.label()}))?;
++    match new_mask_steps(app, tool, range) {
++        Ok(id) => {
++            app.run("develop.endInteraction", json!({}))?;
++            Ok(id)
++        }
++        Err(e) => {
++            let _ = app.run("develop.cancelInteraction", json!({}));
++            app.session.active_mask = before;
++            Err(e)
++        }
++    }
++}
++
++fn new_mask_steps(app: &mut LightcraftApp, tool: RetouchTool, range: Option<(f64, f64)>) -> Result<u32, String> {
++    let name = mask_name(tool, &app.ui.retouch);
++    let r = app.run("mask.add", json!({"kind": "brush", "name": name}))?;
++    let id = r.get("activeMask").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()).ok_or("mask.add: no new mask")?;
++    if let Some((lo, hi)) = range {
++        app.run(
++            "mask.addComponent",
++            json!({"id": id, "op": "intersect", "kind": "luminanceRange", "lo": lo, "hi": hi, "loFeather": RANGE_FEATHER, "hiFeather": RANGE_FEATHER}),
++        )?;
++    }
++    let values = serde_json::to_value(effect(tool, &app.ui.retouch)).map_err(|e| e.to_string())?;
++    app.run("mask.adjust", json!({"id": id, "values": values}))?;
++    Ok(id)
++}
++
++/// Q: Quick Mask `{on?}` (toggles when omitted). On: a red 50 % colour overlay of the selected mask
++/// (a new brush mask when none is selected) with the brush; off: the overlay as it was.
++fn quick_mask(app: &mut LightcraftApp, ctx: &egui::Context, p: &Value) -> Result<Value, String> {
++    let on = match p.get("on").filter(|v| !v.is_null()) {
++        None => app.ui.retouch.quick_mask.is_none(),
++        Some(Value::Bool(b)) => *b,
++        Some(other) => return Err(format!("tool.quickMask: `on` must be true or false, not {other}")),
++    };
++    let name = crate::i18n::tr("Quick Mask");
++    if !on {
++        if let Some(r) = app.ui.retouch.quick_mask.take() {
++            app.ui.mask_overlay = r.on;
++            app.ui.mask_overlay_mode = r.mode;
++            app.ui.mask_overlay_color = r.color;
++            app.ui.mask_overlay_opacity = r.opacity;
++            app.toast(ctx, crate::i18n::tr_format!("{name} Off", name = name));
++        }
++        return Ok(json!({"on": false}));
++    }
++    let saved = app.ui.retouch.quick_mask.clone().unwrap_or_else(|| OverlayRestore {
++        on: app.ui.mask_overlay,
++        mode: app.ui.mask_overlay_mode.clone(),
++        color: app.ui.mask_overlay_color,
++        opacity: app.ui.mask_overlay_opacity,
++    });
++    let selected =
++        app.session.active().and_then(|id| app.session.develop_of(id)).is_some_and(|d| d.masks.iter().any(|m| Some(m.id) == app.session.active_mask));
++    if !selected {
++        app.run("mask.add", json!({"kind": "brush", "name": name}))?;
++    }
++    app.run("tool.brush", json!({}))?;
++    app.ui.brush_erase = false;
++    app.ui.retouch.quick_mask = Some(saved);
++    app.ui.mask_overlay = true;
++    app.ui.mask_overlay_mode = lightcraft_pipeline::MaskView::Color.name().into();
++    app.ui.mask_overlay_color = QUICK_MASK_COLOR;
++    app.ui.mask_overlay_opacity = QUICK_MASK_OPACITY;
++    app.toast(ctx, crate::i18n::tr_format!("{name} On", name = name));
++    Ok(json!({"on": true, "mask": app.session.active_mask}))
++}
++
++/// Whether the tool `c` started is still the one in use.
++pub fn alive(app: &LightcraftApp, c: &Current) -> bool {
++    if app.session.active().map(|p| p.0) != Some(c.photo) {
++        return false;
++    }
++    match c.tool {
++        RetouchTool::Dodge | RetouchTool::Burn | RetouchTool::Sponge | RetouchTool::QuickSelect => {
++            app.ui.right == RightPanel::Masking && app.ui.tool == "brush" && app.session.active_mask == c.mask
++        }
++        RetouchTool::ObjectSelect => app.ui.tool == "object" || matches!(app.ui.dialog, Some(Dialog::SamModel { .. })),
++        RetouchTool::CloneStamp => app.ui.right == RightPanel::Remove && app.ui.tool == "clone",
++    }
++}
++
++/// The tool in use, while it is.
++pub fn current(app: &LightcraftApp) -> Option<Current> {
++    app.ui.retouch.current.filter(|c| alive(app, c))
++}
++
++/// Leave the tool in use: Quick Selection's Auto Mask and brush size come back.
++fn end_current(app: &mut LightcraftApp) {
++    app.ui.retouch.current = None;
++    if let Some((auto, size)) = app.ui.retouch.quick_select_restore.take() {
++        app.ui.brush_auto_mask = auto;
++        app.ui.brush_size = size;
++    }
++}
++
++/// Once a frame, before anything draws: a tool left (another mask, panel, tool or photo) ends.
++pub fn before_frame(app: &mut LightcraftApp) {
++    if app.ui.retouch.current.is_some_and(|c| !alive(app, &c)) {
++        end_current(app);
++    }
++}
++
++// ------------------------------------------------------------------------ options of the mask in use
++
++/// The mask the painting tool in use paints into, on the active photo.
++pub fn current_mask(app: &LightcraftApp) -> Option<(Current, lightcraft_develop::Mask)> {
++    let c = current(app)?;
++    let id = c.mask?;
++    let d = app.session.active().and_then(|p| app.session.develop_of(p))?;
++    let m = d.masks.iter().find(|m| m.id == id)?.clone();
++    Some((c, m))
++}
++
++/// The index of the Luminance Range a Dodge / Burn mask is intersected with.
++fn range_component(m: &lightcraft_develop::Mask) -> Option<usize> {
++    m.components.iter().position(|c| c.op == MaskOp::Intersect && matches!(c.shape, MaskShape::LuminanceRange { .. }))
++}
++
++/// Dodge / Burn Range: remembered, and the mask in use follows (one undo step).
++pub fn set_range(app: &mut LightcraftApp, range: ToneRange) -> Result<(), String> {
++    let old = app.ui.retouch.clone();
++    app.ui.retouch.range = range;
++    let Some((c, m)) = current_mask(app).filter(|(c, _)| matches!(c.tool, RetouchTool::Dodge | RetouchTool::Burn)) else { return Ok(()) };
++    let overlay = app.ui.mask_overlay;
++    app.run("develop.beginInteraction", json!({"label": "Range"}))?;
++    let r = (|| {
++        match (range_component(&m), range.band()) {
++            (Some(k), None) => app.run("mask.component", json!({"id": m.id, "component": k, "action": "delete"})).map(|_| ()),
++            (Some(k), Some((lo, hi))) => {
++                let shape = MaskShape::LuminanceRange { lo, hi, lo_feather: RANGE_FEATHER, hi_feather: RANGE_FEATHER };
++                app.run("mask.update", json!({"id": m.id, "component": k, "shape": shape})).map(|_| ())
++            }
++            (None, Some((lo, hi))) => app
++                .run(
++                    "mask.addComponent",
++                    json!({"id": m.id, "op": "intersect", "kind": "luminanceRange", "lo": lo, "hi": hi, "loFeather": RANGE_FEATHER, "hiFeather": RANGE_FEATHER}),
++                )
++                .map(|_| ()),
++            (None, None) => Ok(()),
++        }?;
++        rename_if_automatic(app, &m, c.tool, &old)
++    })();
++    finish(app, r)?;
++    app.ui.mask_overlay = overlay;
++    Ok(())
++}
++
++/// Sponge Mode: remembered, and the mask in use follows (one undo step).
++pub fn set_sponge_mode(app: &mut LightcraftApp, mode: SpongeMode) -> Result<(), String> {
++    let old = app.ui.retouch.clone();
++    app.ui.retouch.sponge_mode = mode;
++    let Some((c, m)) = current_mask(app).filter(|(c, _)| c.tool == RetouchTool::Sponge) else { return Ok(()) };
++    let flow = m.adjust.saturation.abs().clamp(1.0, 100.0);
++    app.run("develop.beginInteraction", json!({"label": "Sponge"}))?;
++    let r = app
++        .run("mask.adjust", json!({"id": m.id, "values": {"saturation": mode.sign() * flow}}))
++        .and_then(|_| rename_if_automatic(app, &m, c.tool, &old));
++    finish(app, r)
++}
++
++/// End an interaction: committed when its steps all ran, cancelled otherwise.
++fn finish(app: &mut LightcraftApp, r: Result<(), String>) -> Result<(), String> {
++    match r {
++        Ok(()) => app.run("develop.endInteraction", json!({})).map(|_| ()),
++        Err(e) => {
++            let _ = app.run("develop.cancelInteraction", json!({}));
++            Err(e)
++        }
++    }
++}
++
++/// A mask still named as the tool named it follows its new range or mode; a name the user gave stays.
++fn rename_if_automatic(app: &mut LightcraftApp, m: &lightcraft_develop::Mask, tool: RetouchTool, old: &RetouchState) -> Result<(), String> {
++    if m.name == mask_name(tool, old) {
++        let name = mask_name(tool, &app.ui.retouch);
++        if name != m.name {
++            app.run("mask.rename", json!({"id": m.id, "name": name}))?;
++        }
++    }
++    Ok(())
++}
++
++// ------------------------------------------------------------------------ Clone Stamp source
++
++/// ⌥/Alt-click with Clone Stamp: the next strokes clone from `at` (normalized photo point).
++pub fn set_clone_source(app: &mut LightcraftApp, at: [f64; 2]) {
++    if let Some(photo) = app.session.active() {
++        app.ui.retouch.clone_source = Some(CloneSource { photo: photo.0, at, offset: None });
++    }
++}
++
++/// The source of the active photo's clone strokes, while the Clone mode is on.
++pub fn clone_source(app: &LightcraftApp) -> Option<CloneSource> {
++    let photo = app.session.active()?.0;
++    app.ui.retouch.clone_source.filter(|s| s.photo == photo && app.ui.tool == "clone")
++}
++
++/// The `source` offset of a clone stroke starting at `first`: from the set source to `first`;
++/// Aligned keeps the first stroke's offset for the next ones. `None`: no source set (the engine
++/// picks one).
++pub fn clone_offset(app: &mut LightcraftApp, first: [f64; 2]) -> Option<[f64; 2]> {
++    let src = clone_source(app)?;
++    let aligned = app.ui.retouch.clone_aligned;
++    if aligned && let Some(o) = src.offset {
++        return Some(o);
++    }
++    let o = [src.at[0] - first[0], src.at[1] - first[1]];
++    if aligned && let Some(s) = app.ui.retouch.clone_source.as_mut() {
++        s.offset = Some(o);
++    }
++    Some(o)
++}
+diff --git a/crates/ui-egui/src/state.rs b/crates/ui-egui/src/state.rs
+index 673f3a08d..c2d9810cc 100644
+--- a/crates/ui-egui/src/state.rs
++++ b/crates/ui-egui/src/state.rs
+@@ -384,6 +384,8 @@ pub struct UiState {
+     /// The module bar's state (Library | Develop | Print | Export, `crate::panels::modules`).
+     #[serde(skip)]
+     pub modules: crate::panels::modules::ModuleState,
++    /// The Quick Retouch tools' options and the tool in use (`crate::retouch_tools`).
++    pub retouch: crate::retouch_tools::RetouchState,
+ }
+ 
+ impl Default for UiState {
+@@ -535,6 +537,7 @@ impl Default for UiState {
+             dialog: None,
+             print: Default::default(),
+             modules: Default::default(),
++            retouch: Default::default(),
+         }
+     }
+ }
+diff --git a/crates/ui-egui/src/tests.rs b/crates/ui-egui/src/tests.rs
+index 64373da72..43a97c85b 100644
+--- a/crates/ui-egui/src/tests.rs
++++ b/crates/ui-egui/src/tests.rs
+@@ -82,6 +82,7 @@ mod quit_unsaved;
+ mod rating;
+ mod recheck;
+ mod rename_person;
++mod retouch_tools;
+ mod rules_editor;
+ mod sam_setup;
+ mod scan_probes;
+diff --git a/crates/ui-egui/src/tests/retouch_tools.rs b/crates/ui-egui/src/tests/retouch_tools.rs
+new file mode 100644
+index 000000000..5cdfa9096
+--- /dev/null
++++ b/crates/ui-egui/src/tests/retouch_tools.rs
+@@ -0,0 +1,391 @@
++//! The Masking panel's Quick Retouch tools (Dodge, Burn, Sponge, Quick / Object Selection, Clone
++//! Stamp, Quick Mask), driven through the control channel as a person clicks and types them.
++
++use std::time::Duration;
++
++use lightcraft_develop::{LocalAdjustments, MaskOp, MaskShape, SpotMode};
++use serde_json::{Value, json};
++
++use crate::headless::Headless;
++use crate::retouch_tools::{RetouchTool, current};
++use crate::state::{Dialog, RightPanel, ViewMode};
++use crate::{LightcraftApp, Services};
++
++const T: Duration = Duration::from_secs(20);
++
++fn detail(panel: &str) -> Headless {
++    let services = Services { png: None, ..Default::default() };
++    let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), services);
++    let mut h = Headless::new(app, [1200.0, 900.0], 1.0);
++    let r = h.request("ui.set", json!({"view": "detail"}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    let r = h.request("engine.execute", json!({"command": panel}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    h
++}
++
++fn exec(h: &mut Headless, command: &str, params: Value) -> Value {
++    let r = h.request("engine.execute", json!({"command": command, "params": params}), T);
++    assert_eq!(r["ok"], true, "{command}: {r}");
++    r["result"].clone()
++}
++
++fn develop(h: &Headless) -> lightcraft_develop::DevelopSettings {
++    let id = h.app.session.active().expect("active photo");
++    (*h.app.session.develop_of(id).unwrap_or_default()).clone()
++}
++
++fn click(h: &mut Headless, id: &str) {
++    let r = h.request("ui.clickWidget", json!({"id": id}), T);
++    assert_eq!(r["ok"], true, "{id}: {r}");
++}
++
++fn key(h: &mut Headless, k: &str, shift: bool) {
++    let r = h.request("ui.key", json!({"key": k, "shift": shift}), T);
++    assert_eq!(r["ok"], true, "{k}: {r}");
++}
++
++fn pointer(h: &mut Headless, events: Value, alt: bool) {
++    let r = h.request("ui.pointer", json!({"events": events, "alt": alt}), T);
++    assert_eq!(r["ok"], true, "{r}");
++}
++
++fn click_photo(h: &mut Headless, x: f64, y: f64, alt: bool) {
++    pointer(h, json!([{"kind": "down", "x": x, "y": y}, {"kind": "up", "x": x, "y": y}]), alt);
++}
++
++fn tool(h: &Headless) -> Option<RetouchTool> {
++    current(&h.app).map(|c| c.tool)
++}
++
++/// A few frames, so per-frame bookkeeping (the tool in use ending) has run.
++fn frames(h: &mut Headless) {
++    for _ in 0..3 {
++        h.step();
++    }
++}
++
++fn luminance(m: &lightcraft_develop::Mask) -> Option<(f64, f64)> {
++    m.components.iter().find_map(|c| match c.shape {
++        MaskShape::LuminanceRange { lo, hi, .. } if c.op == MaskOp::Intersect => Some((lo, hi)),
++        _ => None,
++    })
++}
++
++/// The coverage of mask `mask` at pixel (x, 50) of a 100×100 frame whose left half is a midtone
++/// (18 % grey) and right half a bright highlight.
++fn coverage(h: &Headless, mask: usize, x: usize) -> f32 {
++    use lightcraft_pipeline::{geometry::Frame, masks::evaluate_one};
++    use lightcraft_raster::{Plane, Rgb32f};
++    let d = develop(h);
++    let mut log_l = Plane::new(100, 100);
++    for (i, v) in log_l.data.iter_mut().enumerate() {
++        *v = if i % 100 < 50 { 0.18f32.log2() } else { 3.0 };
++    }
++    let a = evaluate_one(&d.masks[mask], &Frame::new(100, 100, &Default::default(), true), 100, 100, &Rgb32f::new(100, 100), &log_l, 0.0, None);
++    a.get(x, 50)
++}
++
++#[test]
++fn dodge_is_one_undo_step_an_exposure_brush_mask_limited_to_the_midtones() {
++    let mut h = detail("panel.masking");
++    // an effect remembered for new brush masks must not mix into Dodge
++    exec(&mut h, "mask.add", json!({"kind": "radial"}));
++    exec(&mut h, "mask.adjust", json!({"values": {"clarity": 40}}));
++    exec(&mut h, "mask.saveEffect", json!({"name": "Crisp"}));
++    exec(&mut h, "mask.delete", json!({}));
++    exec(&mut h, "mask.toolEffect", json!({"tool": "brush", "name": "Crisp"}));
++    exec(&mut h, "mask.add", json!({"kind": "brush"}));
++    assert_eq!(develop(&h).masks[0].adjust.clarity, 40.0, "new brush masks take the remembered effect");
++    exec(&mut h, "mask.delete", json!({}));
++    assert!(develop(&h).masks.is_empty());
++
++    h.app.ui.mask_overlay = true;
++    h.app.ui.brush_erase = true;
++    h.app.ui.tool.clear();
++    click(&mut h, "retouch:dodge");
++    let d = develop(&h);
++    assert_eq!(d.masks.len(), 1);
++    let m = &d.masks[0];
++    assert_eq!(m.name, "Dodge · Midtones");
++    assert_eq!(m.components.len(), 2);
++    assert!(matches!(m.components[0].shape, MaskShape::Brush { .. }) && m.components[0].op == MaskOp::Add);
++    assert_eq!(luminance(m), Some((0.35, 0.60)), "Midtones (the default) intersects a Luminance Range");
++    assert_eq!(m.adjust, LocalAdjustments { exposure: 1.0, ..Default::default() }, "+1 EV at 50 %, nothing else");
++    assert_eq!(h.app.session.active_mask, Some(m.id));
++    assert_eq!((h.app.ui.right, h.app.ui.view, h.app.ui.tool.as_str()), (RightPanel::Masking, ViewMode::Detail, "brush"));
++    assert!(!h.app.ui.brush_erase, "the brush paints");
++    assert!(!h.app.ui.mask_overlay, "dodging is judged on the photo");
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::Dodge));
++    assert!(h.app.widgets.iter().any(|(w, _)| w == "slider:retouch.exposure"), "the options bar shows Exposure");
++
++    // one undo step takes the whole mask away; redo brings it back whole
++    let made = develop(&h).masks;
++    exec(&mut h, "edit.undo", json!({}));
++    assert!(develop(&h).masks.is_empty());
++    exec(&mut h, "edit.redo", json!({}));
++    assert_eq!(develop(&h).masks, made);
++
++    // painting covers only the midtones
++    exec(&mut h, "mask.select", json!({"id": made[0].id}));
++    let r = h.request("ui.set", json!({"brushSize": 0.4, "brushFeather": 0.0, "brushFlow": 100.0}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    click_photo(&mut h, 0.5, 0.5, false);
++    let d = develop(&h);
++    let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush first") };
++    assert_eq!(strokes.len(), 1, "the stroke goes into the Dodge mask's brush");
++    assert!(coverage(&h, 0, 30) > 0.95, "midtone painted: {}", coverage(&h, 0, 30));
++    assert!(coverage(&h, 0, 70) < 0.05, "highlight left alone: {}", coverage(&h, 0, 70));
++}
++
++#[test]
++fn dodge_burn_and_sponge_options_set_the_mask() {
++    let mut h = detail("panel.masking");
++    exec(&mut h, "tool.dodge", json!({"exposure": 25, "range": "highlights"}));
++    let m = develop(&h).masks[0].clone();
++    assert_eq!((m.adjust.exposure, luminance(&m)), (0.5, Some((0.60, 1.0))));
++    assert_eq!(m.name, "Dodge · Highlights");
++    frames(&mut h);
++
++    // Range ▸ All drops the Luminance Range (one undo step), Shadows brings one back
++    click(&mut h, "button:retouchRange-all");
++    let m = develop(&h).masks[0].clone();
++    assert_eq!((m.components.len(), luminance(&m), m.name.as_str()), (1, None, "Dodge"));
++    exec(&mut h, "edit.undo", json!({}));
++    let m = develop(&h).masks[0].clone();
++    assert_eq!((luminance(&m), m.name.as_str()), (Some((0.60, 1.0)), "Dodge · Highlights"));
++    frames(&mut h);
++    click(&mut h, "button:retouchRange-shadows");
++    assert_eq!(luminance(&develop(&h).masks[0]), Some((0.0, 0.35)));
++    assert_eq!(h.app.ui.retouch.range, crate::retouch_tools::ToneRange::Shadows, "the range is remembered");
++
++    // Burn: the same mask darkening, with the remembered range
++    click(&mut h, "retouch:burn");
++    let d = develop(&h);
++    assert_eq!(d.masks.len(), 2);
++    let m = &d.masks[1];
++    assert_eq!((m.adjust.exposure, luminance(m), m.name.as_str()), (-0.5, Some((0.0, 0.35)), "Burn · Shadows"));
++    assert_eq!(m.adjust, LocalAdjustments { exposure: -0.5, ..Default::default() });
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::Burn));
++
++    // Sponge: local Saturation ∓ flow, no range
++    exec(&mut h, "tool.sponge", json!({"mode": "saturate", "flow": 30}));
++    let m = develop(&h).masks[2].clone();
++    assert_eq!(
++        (m.adjust, m.components.len(), m.name.as_str()),
++        (LocalAdjustments { saturation: 30.0, ..Default::default() }, 1, "Sponge · Saturate")
++    );
++    assert_eq!(h.app.ui.tool, "brush");
++    frames(&mut h);
++    click(&mut h, "button:retouchSponge-desaturate");
++    let m = develop(&h).masks[2].clone();
++    assert_eq!((m.adjust.saturation, m.name.as_str()), (-30.0, "Sponge · Desaturate"));
++    exec(&mut h, "edit.undo", json!({}));
++    let m = develop(&h).masks[2].clone();
++    assert_eq!((m.adjust.saturation, m.name.as_str()), (30.0, "Sponge · Saturate"), "the mode change is one undo step");
++
++    assert!(h.app.run("tool.dodge", json!({"range": "everything"})).is_err(), "an unknown range is refused");
++    assert_eq!(develop(&h).masks.len(), 3);
++}
++
++#[test]
++fn quick_selection_paints_with_auto_mask_and_gives_it_back() {
++    let mut h = detail("panel.masking");
++    h.app.ui.brush_auto_mask = false;
++    h.app.ui.brush_size = 0.03;
++    h.app.ui.mask_overlay = false;
++    click(&mut h, "retouch:quickSelect");
++    let d = develop(&h);
++    assert_eq!(d.masks.len(), 1);
++    let m = &d.masks[0];
++    assert_eq!(m.name, "Quick Selection");
++    assert!(matches!(&m.components[..], [c] if matches!(&c.shape, MaskShape::Brush { strokes } if strokes.is_empty())));
++    assert_eq!(m.adjust, LocalAdjustments::default(), "a selection first; its sliders come after");
++    assert!(h.app.ui.brush_auto_mask, "Auto Mask is on");
++    assert_eq!(h.app.ui.brush_size, crate::retouch_tools::QUICK_SELECT_SIZE, "a larger brush");
++    assert!(h.app.ui.mask_overlay, "the selection is shown");
++    assert_eq!(h.app.ui.tool, "brush");
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::QuickSelect));
++
++    click_photo(&mut h, 0.5, 0.5, false);
++    let d = develop(&h);
++    let MaskShape::Brush { strokes } = &d.masks[0].components[0].shape else { panic!("brush") };
++    assert!(strokes.len() == 1 && strokes[0].auto_mask, "the stroke sticks to edges");
++
++    // leaving the tool gives Auto Mask and the size back
++    exec(&mut h, "tool.none", json!({}));
++    frames(&mut h);
++    assert_eq!(tool(&h), None);
++    assert!(!h.app.ui.brush_auto_mask);
++    assert_eq!(h.app.ui.brush_size, 0.03);
++
++    // the new mask was one undo step (the stroke another)
++    exec(&mut h, "edit.undo", json!({}));
++    exec(&mut h, "edit.undo", json!({}));
++    assert!(develop(&h).masks.is_empty());
++}
++
++#[test]
++fn object_selection_starts_the_object_mask_or_offers_the_model() {
++    let mut h = detail("panel.edit");
++    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
++    let dir = std::env::temp_dir().join(format!("lc-retouch-sam-{}-{stamp}", std::process::id()));
++    h.app.session.segmenter.dir = Some(dir.join("sam3"));
++    exec(&mut h, "tool.objectSelect", json!({}));
++    assert_eq!((h.app.ui.right, h.app.ui.view), (RightPanel::Masking, ViewMode::Detail));
++    if lightcraft_engine::segment::Segmenter::AVAILABLE && h.app.session.segmenter.remote_endpoint().is_none() {
++        assert!(
++            matches!(&h.app.ui.dialog, Some(Dialog::SamModel { then: Some((k, o)), .. }) if k == "object" && o == "new"),
++            "the model's download is offered, the Object mask to follow: {:?}",
++            h.app.ui.dialog.is_some()
++        );
++    } else {
++        // a build without SAM 3 says so; no empty Object mask is left behind
++        assert!(develop(&h).masks.is_empty());
++        assert!(h.app.ui.toast.is_some());
++    }
++    assert!(!dir.exists(), "nothing is downloaded or created");
++    assert_eq!(h.app.ui.retouch.selection, RetouchTool::ObjectSelect, "Shift+W starts from it next time");
++}
++
++#[test]
++fn clone_stamp_opens_remove_in_clone_mode_and_alt_click_sets_the_source() {
++    let mut h = detail("panel.masking");
++    click(&mut h, "retouch:cloneStamp");
++    assert_eq!((h.app.ui.right, h.app.ui.view, h.app.ui.tool.as_str()), (RightPanel::Remove, ViewMode::Detail, "clone"));
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::CloneStamp));
++    assert!(h.app.widgets.iter().any(|(w, _)| w == "check:cloneAligned"), "Aligned shows in Clone mode");
++    // pressed again: still Clone (the panel command alone would close Remove)
++    exec(&mut h, "tool.cloneStamp", json!({}));
++    assert_eq!((h.app.ui.right, h.app.ui.tool.as_str()), (RightPanel::Remove, "clone"));
++
++    h.app.ui.remove_size = 0.03;
++    click_photo(&mut h, 0.3, 0.3, true);
++    assert!(develop(&h).spots.is_empty(), "⌥-click sets the source, it paints nothing");
++    let src = h.app.ui.retouch.clone_source.expect("a source");
++    assert!((src.at[0] - 0.3).abs() < 0.02 && (src.at[1] - 0.3).abs() < 0.02, "{src:?}");
++    frames(&mut h);
++    assert!(h.app.widgets.iter().any(|(w, _)| w == "cloneSource"), "the source is marked");
++
++    let near = |o: lightcraft_geom::Point, x: f64, y: f64| (o.x - x).abs() < 0.03 && (o.y - y).abs() < 0.03;
++    click_photo(&mut h, 0.6, 0.6, false);
++    let d = develop(&h);
++    assert_eq!(d.spots.len(), 1);
++    assert_eq!(d.spots[0].mode, SpotMode::Clone);
++    let o = d.spots[0].source_offset.expect("source");
++    assert!(near(o, -0.3, -0.3), "cloned from the ⌥-clicked point: {o:?}");
++    // Aligned: the next stroke keeps the offset
++    click_photo(&mut h, 0.75, 0.45, false);
++    let o = develop(&h).spots[1].source_offset.expect("source");
++    assert!(near(o, -0.3, -0.3), "aligned: {o:?}");
++    // not aligned: every stroke clones from the source point itself
++    h.app.ui.retouch.clone_aligned = false;
++    click_photo(&mut h, 0.5, 0.85, false);
++    let o = develop(&h).spots[2].source_offset.expect("source");
++    assert!(near(o, -0.2, -0.55), "from the source: {o:?}");
++}
++
++#[test]
++fn quick_mask_shows_a_red_overlay_with_the_brush_and_restores_the_overlay() {
++    let mut h = detail("panel.edit");
++    h.app.ui.mask_overlay = false;
++    h.app.ui.mask_overlay_mode = "colorOnBw".into();
++    h.app.ui.mask_overlay_color = [40, 200, 70];
++    h.app.ui.mask_overlay_opacity = 80.0;
++    let r = exec(&mut h, "tool.quickMask", json!({}));
++    assert_eq!(r["on"], true);
++    let d = develop(&h);
++    assert_eq!(d.masks.len(), 1, "with no mask selected, a brush mask to paint");
++    assert_eq!(d.masks[0].name, "Quick Mask");
++    assert_eq!((h.app.ui.right, h.app.ui.tool.as_str()), (RightPanel::Masking, "brush"));
++    assert!(h.app.ui.mask_overlay);
++    assert_eq!((h.app.ui.mask_overlay_mode.as_str(), h.app.ui.mask_overlay_color, h.app.ui.mask_overlay_opacity), ("color", [230, 30, 40], 50.0));
++    frames(&mut h);
++    assert!(h.app.ui.retouch.quick_mask.is_some());
++
++    let r = exec(&mut h, "tool.quickMask", json!({}));
++    assert_eq!(r["on"], false);
++    assert!(!h.app.ui.mask_overlay);
++    assert_eq!(
++        (h.app.ui.mask_overlay_mode.as_str(), h.app.ui.mask_overlay_color, h.app.ui.mask_overlay_opacity),
++        ("colorOnBw", [40, 200, 70], 80.0),
++        "the overlay as it was"
++    );
++    assert_eq!(develop(&h).masks.len(), 1, "the mask stays: it is the selection");
++
++    // Q again, with a mask selected: no new mask; the mask was one undo step
++    key(&mut h, "Q", false);
++    assert!(h.app.ui.retouch.quick_mask.is_some(), "Q turns Quick Mask on");
++    assert_eq!(develop(&h).masks.len(), 1);
++    key(&mut h, "Q", false);
++    assert!(h.app.ui.retouch.quick_mask.is_none(), "and off");
++    exec(&mut h, "edit.undo", json!({}));
++    assert!(develop(&h).masks.is_empty());
++}
++
++#[test]
++fn retouch_keys_start_and_cycle_the_tools() {
++    let mut h = detail("panel.edit");
++    frames(&mut h);
++    key(&mut h, "B", true);
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::Dodge), "Shift+B starts Dodge");
++    key(&mut h, "B", true);
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::Burn), "then Burn");
++    key(&mut h, "B", true);
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::Sponge), "then Sponge");
++    let d = develop(&h);
++    assert_eq!(d.masks.iter().map(|m| (m.adjust.exposure, m.adjust.saturation)).collect::<Vec<_>>(), [(1.0, 0.0), (-1.0, 0.0), (0.0, -50.0)]);
++    key(&mut h, "B", true);
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::Dodge), "and round again");
++
++    key(&mut h, "W", true);
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::QuickSelect), "Shift+W: Quick Selection");
++    key(&mut h, "W", true);
++    frames(&mut h);
++    assert_eq!(h.app.ui.retouch.selection, RetouchTool::ObjectSelect, "then Object Selection");
++    assert!(!h.app.ui.brush_auto_mask, "Quick Selection's Auto Mask was given back");
++    h.app.ui.dialog = None;
++
++    key(&mut h, "Q", true);
++    assert_eq!((h.app.ui.right, h.app.ui.tool.as_str()), (RightPanel::Remove, "clone"), "Shift+Q: Clone Stamp");
++    key(&mut h, "Q", false);
++    assert!(h.app.ui.retouch.quick_mask.is_some(), "Q: Quick Mask");
++    assert_eq!(h.app.ui.right, RightPanel::Masking);
++
++    // with no other tool in use, the group's key starts the tool used last
++    exec(&mut h, "panel.edit", json!({}));
++    frames(&mut h);
++    key(&mut h, "B", true);
++    frames(&mut h);
++    assert_eq!(tool(&h), Some(RetouchTool::Dodge));
++}
++
++/// The new keys are free in the default keymap: no UI command, alias or engine command has them.
++#[test]
++fn retouch_keys_share_no_binding() {
++    use crate::shortcuts::{ALIASES, parse};
++    let ours = ["tool.toningCycle", "tool.selectionCycle", "tool.cloneStamp", "tool.quickMask"];
++    let keyed: Vec<_> = crate::menus::ui_commands().filter(|c| ours.contains(&c.0)).map(|c| (c.0, c.2.and_then(parse))).collect();
++    assert_eq!(keyed.len(), ours.len());
++    let mut others: Vec<(String, _)> =
++        crate::menus::ui_commands().filter(|c| !ours.contains(&c.0)).filter_map(|c| Some((c.0.to_string(), c.2.and_then(parse)?))).collect();
++    others.extend(ALIASES.iter().filter_map(|(sc, id, _)| Some((format!("alias {id}"), parse(sc)?))));
++    others.extend(lightcraft_engine::command_specs().iter().filter_map(|c| Some((c.id.to_string(), c.shortcut.and_then(parse)?))));
++    for (id, k) in keyed {
++        let k = k.unwrap_or_else(|| panic!("{id} has a default key"));
++        assert!(!others.iter().any(|(_, o)| *o == k), "{id}'s key is taken by {:?}", others.iter().find(|(_, o)| *o == k));
++    }
++    // and every Quick Retouch command is in Window ▸ Tools
++    for id in crate::retouch_tools::COMMANDS {
++        assert!(crate::menus::ui_commands().any(|c| c.0 == *id && c.3 == "Window>Tools"), "{id}");
++    }
++}
+-- 
+2.43.0
+

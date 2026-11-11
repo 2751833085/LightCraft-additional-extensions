@@ -1,0 +1,86 @@
+From 9d7da1832d24a25f7b7ecbaefe7de7e19603a904 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 20:41:44 +0000
+Subject: [PATCH 7/7] Fit the four features together: Classic set yields Q /
+ Shift+W to Spot Removal and Masking; tooltips use the active set
+
+---
+ crates/ui-egui/src/keymap_profiles.rs      |  4 ++++
+ crates/ui-egui/src/panels/quick_retouch.rs |  2 +-
+ crates/ui-egui/src/tests/classic_keymap.rs | 18 ++++++++++++++++++
+ docs/classic-keymap.md                     |  5 +++++
+ 4 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/crates/ui-egui/src/keymap_profiles.rs b/crates/ui-egui/src/keymap_profiles.rs
+index 27cfb21bf..7144c9cdd 100644
+--- a/crates/ui-egui/src/keymap_profiles.rs
++++ b/crates/ui-egui/src/keymap_profiles.rs
+@@ -72,6 +72,10 @@ pub const CLASSIC_OVERRIDES: &[(&str, &str)] = &[
+     ("tool.guidedUpright", "Shift+T"),
+     ("view.toolOverlay", "H"),
+     ("view.maskOverlayMode", "Alt+O"),
++    // Quick Retouch: Q is Spot Removal and ⇧W Masking in Classic, so Quick Mask and the
++    // Quick / Object Selection cycle have no key there (⇧B toning and ⇧Q Clone Stamp keep theirs)
++    ("tool.quickMask", ""),
++    ("tool.selectionCycle", ""),
+     // ⇧P flags Pick and advances (a Classic alias below), so Presets has no key
+     ("panel.presets", ""),
+     // Develop settings: ⌘U Auto, ⌘⇧S Sync Settings, ⌘⌥⇧M Match Total Exposures
+diff --git a/crates/ui-egui/src/panels/quick_retouch.rs b/crates/ui-egui/src/panels/quick_retouch.rs
+index 69547f13c..134707d93 100644
+--- a/crates/ui-egui/src/panels/quick_retouch.rs
++++ b/crates/ui-egui/src/panels/quick_retouch.rs
+@@ -15,7 +15,7 @@ use crate::widgets::{icon_button, register, slider, text_button};
+ fn with_key(app: &LightcraftApp, ui: &egui::Ui, name: &str, ids: &[&str]) -> String {
+     let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+     let name = crate::i18n::tr(name);
+-    match ids.iter().find_map(|id| crate::shortcuts::shortcut_of(&app.ui.settings.keymap, id)) {
++    match ids.iter().find_map(|id| crate::shortcuts::shortcut_of(app.ui.settings.key_profile, &app.ui.settings.keymap, id)) {
+         Some(sc) => format!("{name} ({})", crate::menubar::shortcut_text(sc, mac)),
+         None => name.to_string(),
+     }
+diff --git a/crates/ui-egui/src/tests/classic_keymap.rs b/crates/ui-egui/src/tests/classic_keymap.rs
+index 4bfee45c3..2f97b3d08 100644
+--- a/crates/ui-egui/src/tests/classic_keymap.rs
++++ b/crates/ui-egui/src/tests/classic_keymap.rs
+@@ -477,3 +477,21 @@ fn classic_h_hides_the_pins() {
+     assert_ne!(h.app.ui.tool_overlay, overlay, "elsewhere Classic's H cycles the tool overlay");
+     assert_eq!(h.app.ui.right, RightPanel::None, "and doesn't open Remove (Q)");
+ }
++
++/// The Quick Retouch keys: Lightroom Classic's `Q` (Spot Removal) and `⇧W` (Masking panel) win
++/// in the Classic set, so Quick Mask and the selection cycle have none there; `⇧B` toning and
++/// `⇧Q` Clone Stamp keep theirs in both sets.
++#[test]
++fn quick_retouch_keys_yield_to_classic_spot_removal_and_masking() {
++    let km = Keymap::new();
++    assert_eq!(shortcut_of(KeyProfile::Lightroom, &km, "tool.quickMask"), Some("Q"));
++    assert_eq!(shortcut_of(KeyProfile::Lightroom, &km, "tool.selectionCycle"), Some("Shift+W"));
++    assert_eq!(shortcut_of(KeyProfile::Classic, &km, "tool.quickMask"), None);
++    assert_eq!(shortcut_of(KeyProfile::Classic, &km, "tool.selectionCycle"), None);
++    assert_eq!(owners(KeyProfile::Classic, &km, "Q"), vec!["panel.remove"]);
++    assert_eq!(owners(KeyProfile::Classic, &km, "Shift+W"), vec!["panel.masking"]);
++    for profile in KeyProfile::ALL {
++        assert_eq!(shortcut_of(profile, &km, "tool.toningCycle"), Some("Shift+B"));
++        assert_eq!(shortcut_of(profile, &km, "tool.cloneStamp"), Some("Shift+Q"));
++    }
++}
+diff --git a/docs/classic-keymap.md b/docs/classic-keymap.md
+index 5bb142c68..8a015593e 100644
+--- a/docs/classic-keymap.md
++++ b/docs/classic-keymap.md
+@@ -72,6 +72,11 @@ Keys the Lightroom set gives that the Classic set takes away, so nothing clashes
+ | `panel.presets` (Presets panel) | `⇧P` | no key |
+ | `app.exportPrevious` secondary key | `⌘E` | dropped (`⌘⌥⇧E`, Classic's key, stays) |
+ | `version.create` secondary key | `⇧M` | dropped (`⌘N` while editing) |
++| `tool.quickMask` (Quick Mask) | `Q` | no key (`Q` is Spot Removal) |
++| `tool.selectionCycle` (Quick / Object Selection) | `⇧W` | no key (`⇧W` is the Masking panel) |
++
++The other Quick Retouch keys stay in both sets: `⇧B` steps Dodge / Burn / Sponge and `⇧Q` is
++the Clone Stamp (Lightroom Classic's `⇧Q` luminance range mask has no LightCraft command).
+ 
+ Keys that are already Lightroom Classic's in both sets include:
+ `G` grid, `N` Survey, `⇧R` Reference view, `F` full-screen preview, `J` clipping, `V` black &
+-- 
+2.43.0
+

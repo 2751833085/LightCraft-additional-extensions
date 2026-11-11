@@ -1,0 +1,802 @@
+From 047603bc10d613ad195bba8619123664061427db Mon Sep 17 00:00:00 2001
+From: LightCraft additional extensions <noreply@example.invalid>
+Date: Wed, 11 Nov 2026 20:34:01 +0000
+Subject: [PATCH 6/7] Before/After shows before against after
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Before view never borrows the edited stand-ins: until the Before
+render arrives (or when it fails), an edited photo's Before side is a
+neutral frame saying "Rendering before…" or why it failed, in Show
+Original, side by side, top/bottom and both wipes; the preview and the
+thumbnail still stand in when the photo's settings are its before
+settings (#2248, adapted from upstream PR #3993). A failed Before render
+under a stand-in raises the failure pill as the After's does.
+
+Y, Shift+Y, Alt+Y and Alt+Shift+Y outside the Detail view (a grid,
+Compare, Survey, Reference, the Print module) open the photo in the
+Detail view with that layout, as Lightroom Classic's Y goes from Library
+to Develop's Before/After; in Compare it opens the select. The bottom
+bar's Before/After button and the View menu's checks light up only where
+the layout is on screen.
+
+Wipes label their Before and After sides as side by side does; Show
+Original's Before pill is larger with an accent outline; the edit guide
+says \ toggles the original instead of "hold".
+
+Copy Before's Settings to After and Swap keep the current crop and
+orientation, which the Before view shows, instead of the raw before
+settings' frame.
+
+zh-Hans / zh-Hant: 正在渲染修改前… / 正在算繪編輯前…, and the failure line.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EzwanTUC5ztbqABwMnjziB
+---
+ crates/engine/src/cmd/before.rs               |   4 +-
+ crates/engine/src/tests.rs                    |  30 +++
+ crates/ui-egui/locales/zh-hans.json           |   4 +-
+ crates/ui-egui/locales/zh-hant.json           |   4 +-
+ crates/ui-egui/src/menus/menubar.rs           |   4 +-
+ crates/ui-egui/src/menus/run.rs               |  46 ++--
+ crates/ui-egui/src/panels/bottombar.rs        |   7 +-
+ crates/ui-egui/src/panels/detail.rs           | 223 +++++++++++++----
+ crates/ui-egui/src/tests.rs                   |   1 +
+ .../ui-egui/src/tests/before_after_fixes.rs   | 227 ++++++++++++++++++
+ docs/user/guides/edit-a-photo.md              |   2 +-
+ 11 files changed, 484 insertions(+), 68 deletions(-)
+ create mode 100644 crates/ui-egui/src/tests/before_after_fixes.rs
+
+diff --git a/crates/engine/src/cmd/before.rs b/crates/engine/src/cmd/before.rs
+index a6de32c46..ec9d37895 100644
+--- a/crates/engine/src/cmd/before.rs
++++ b/crates/engine/src/cmd/before.rs
+@@ -61,7 +61,9 @@ fn before_to_after(s: &mut Session, swap: bool) -> Result<Value> {
+     let id = active(s, c)?;
+     let photo = s.catalog.photo(id).ok_or_else(|| bad(c, "no photo"))?;
+     let after = photo.develop.clone();
+-    let before = s.before.get(&id).map(|b| (**b).clone()).unwrap_or_else(|| photo.import_defaults());
++    // what the Before view shows: its settings with the current crop and orientation, so the
++    // photo keeps the frame it has (a raw import state would drop the crop)
++    let before = s.before_settings(photo);
+     s.set_develop(id, before, if swap { "Swap Before and After" } else { "Copy Before to After" })?;
+     if swap {
+         s.before.insert(id, after);
+diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
+index 632814334..6348f09d2 100644
+--- a/crates/engine/src/tests.rs
++++ b/crates/engine/src/tests.rs
+@@ -811,6 +811,36 @@ fn before_is_the_import_state_and_can_be_set_copied_and_swapped() {
+     assert_ne!(k1, k2);
+ }
+ 
++/// Copy Before's Settings to After and Swap give the photo what the Before view shows: the before
++/// settings with the current crop and orientation (the Before view always uses those), not the
++/// raw before settings, which dropped the crop and the rotation of a photo set to its import state.
++#[test]
++fn copy_before_to_after_and_swap_keep_the_current_crop_and_orientation() {
++    let mut s = demo();
++    let id = s.active().unwrap();
++    let import = s.catalog.photo(id).unwrap().import_defaults();
++    s.execute("develop.set", &json!({"values": {"light.exposure": 1.5}})).unwrap();
++    s.execute("crop.set", &json!({"rect": [0.1, 0.1, 0.9, 0.9]})).unwrap();
++    s.execute("photo.rotateRight", &json!({})).unwrap();
++    let (crop, orientation) = (active_dev(&s).crop, active_dev(&s).orientation);
++    assert_ne!(crop, import.crop, "the crop is an edit");
++    assert_ne!(orientation, import.orientation, "the rotation is an edit");
++    let shown = s.before_settings(s.catalog.photo(id).unwrap());
++    s.execute("beforeAfter.copyBeforeToAfter", &json!({})).unwrap();
++    let d = active_dev(&s);
++    assert_eq!(d.light.exposure, import.light.exposure, "the before look");
++    assert_eq!((d.crop, d.orientation), (crop, orientation), "the crop and orientation stay");
++    assert_eq!(d, shown, "the photo is what the Before view showed");
++    // swap: the same, and the old settings become the before
++    s.execute("edit.undo", &json!({})).unwrap();
++    assert_eq!(active_dev(&s).light.exposure, 1.5);
++    s.execute("beforeAfter.swap", &json!({})).unwrap();
++    let d = active_dev(&s);
++    assert_eq!(d.light.exposure, import.light.exposure);
++    assert_eq!((d.crop, d.orientation), (crop, orientation), "a swap keeps the crop and orientation");
++    assert_eq!(s.before_settings(s.catalog.photo(id).unwrap()).light.exposure, 1.5);
++}
++
+ #[test]
+ fn presets_versions_history_and_select_by() {
+     let mut s = demo();
+diff --git a/crates/ui-egui/locales/zh-hans.json b/crates/ui-egui/locales/zh-hans.json
+index 3f29793c4..294d02c32 100644
+--- a/crates/ui-egui/locales/zh-hans.json
++++ b/crates/ui-egui/locales/zh-hans.json
+@@ -2535,5 +2535,7 @@
+   "Your own shortcuts stay as they are in either set.": "您自己设置的快捷键在两种方案下都保持不变。",
+   "Keyboard": "键盘",
+   "Lightroom Classic gives the commands its keys (E Loupe, D Develop, R Crop…). Your own shortcuts stay as they are.": "Lightroom Classic 方案使用 Lightroom Classic 的按键（E 放大视图、D 修改照片、R 裁剪……）。您自己设置的快捷键保持不变。",
+-  "Keyboard Shortcut Set": "键盘快捷键方案"
++  "Keyboard Shortcut Set": "键盘快捷键方案",
++  "Rendering before…": "正在渲染修改前…",
++  "The before view can't be rendered": "无法渲染修改前视图"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant.json b/crates/ui-egui/locales/zh-hant.json
+index 95995a759..f489c9365 100644
+--- a/crates/ui-egui/locales/zh-hant.json
++++ b/crates/ui-egui/locales/zh-hant.json
+@@ -2496,5 +2496,7 @@
+   "Your own shortcuts stay as they are in either set.": "您自己設定的快速鍵在兩種方案下都保持不變。",
+   "Keyboard": "鍵盤",
+   "Lightroom Classic gives the commands its keys (E Loupe, D Develop, R Crop…). Your own shortcuts stay as they are.": "Lightroom Classic 方案使用 Lightroom Classic 的按鍵（E 放大檢視、D 修改相片、R 裁切……）。您自己設定的快速鍵保持不變。",
+-  "Keyboard Shortcut Set": "鍵盤快速鍵方案"
++  "Keyboard Shortcut Set": "鍵盤快速鍵方案",
++  "Rendering before…": "正在算繪編輯前…",
++  "The before view can't be rendered": "無法算繪編輯前檢視"
+ }
+diff --git a/crates/ui-egui/src/menus/menubar.rs b/crates/ui-egui/src/menus/menubar.rs
+index 1034400ba..eb7279746 100644
+--- a/crates/ui-egui/src/menus/menubar.rs
++++ b/crates/ui-egui/src/menus/menubar.rs
+@@ -432,8 +432,8 @@ pub fn checked(app: &LightcraftApp, id: &str) -> Option<bool> {
+         "view.maskOverlayAll" => Some(u.mask_overlay_all),
+         "view.maskPins" => Some(u.mask_pins),
+         "view.showOriginal" => Some(u.before_after == crate::state::BeforeAfter::Original),
+-        "view.beforeAfter" => Some(u.before_after == crate::state::BeforeAfter::SideBySide),
+-        "view.beforeAfterSplit" => Some(u.before_after == crate::state::BeforeAfter::Split),
++        "view.beforeAfter" => Some(u.view == crate::state::ViewMode::Detail && u.before_after == crate::state::BeforeAfter::SideBySide),
++        "view.beforeAfterSplit" => Some(u.view == crate::state::ViewMode::Detail && u.before_after == crate::state::BeforeAfter::Split),
+         "view.autoAdvance" => Some(u.auto_advance),
+         "view.filterBar" => Some(u.filter_bar),
+         "library.toggleFilters" => Some(!app.session.filters_off()),
+diff --git a/crates/ui-egui/src/menus/run.rs b/crates/ui-egui/src/menus/run.rs
+index 9ae859469..c717e1481 100644
+--- a/crates/ui-egui/src/menus/run.rs
++++ b/crates/ui-egui/src/menus/run.rs
+@@ -146,6 +146,32 @@ fn theme_command(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
+     Ok(appearance_json(app))
+ }
+ 
++/// `Y` and its variants: in the Detail view, toggle that Before / After layout. Elsewhere (a grid,
++/// Compare, Survey, Reference, the Print module) open the photo in the Detail view with the layout
++/// on, as Lightroom Classic's `Y` in Library goes to Develop's Before / After: in Compare the select,
++/// else the active photo. Only the Detail view draws Before / After, so the layout set behind
++/// another view did nothing on screen.
++fn before_after_view(app: &mut LightcraftApp, mode: BeforeAfter) -> Result<Value, String> {
++    if app.ui.view == ViewMode::Detail && !crate::panels::modules::print_active(app) {
++        app.ui.before_after = if app.ui.before_after == mode { BeforeAfter::Off } else { mode };
++        return Ok(Value::Null);
++    }
++    let photo = if app.ui.view == ViewMode::Compare {
++        crate::panels::compare::compare_pair(app).map(|(select, _)| select).or_else(|| app.session.active())
++    } else {
++        app.session.active()
++    };
++    let Some(id) = photo else { return Err("Before/After needs a photo: select one first".into()) };
++    if app.ui.view == ViewMode::Compare {
++        // the select alone, as the Detail view opened from Compare shows it
++        app.session.execute("library.select", &json!({"ids": [id.0], "active": id.0})).map_err(|e| e.to_string())?;
++    }
++    crate::panels::modules::switch(app, crate::panels::modules::Module::Develop)?;
++    app.ui.view = ViewMode::Detail;
++    app.ui.before_after = mode;
++    Ok(json!({"photo": id.0}))
++}
++
+ /// Handle UI commands; `None` means "not a UI command — send it to the engine".
+ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+     if let Some(module) = crate::panels::modules::Module::from_command(id) {
+@@ -657,22 +683,10 @@ fn ui_commands_4(app: &mut LightcraftApp, _ctx: &egui::Context, id: &str, p: &Va
+             // keeps its mode; reveal_command brings it to the front.
+             Ok(json!({"open": app.ui.right != RightPanel::None}))
+         }
+-        "view.beforeAfter" => {
+-            app.ui.before_after = if app.ui.before_after == BeforeAfter::SideBySide { BeforeAfter::Off } else { BeforeAfter::SideBySide };
+-            Ok(Value::Null)
+-        }
+-        "view.beforeAfterSplit" => {
+-            app.ui.before_after = if app.ui.before_after == BeforeAfter::Split { BeforeAfter::Off } else { BeforeAfter::Split };
+-            Ok(Value::Null)
+-        }
+-        "view.beforeAfterTopBottom" => {
+-            app.ui.before_after = if app.ui.before_after == BeforeAfter::TopBottom { BeforeAfter::Off } else { BeforeAfter::TopBottom };
+-            Ok(Value::Null)
+-        }
+-        "view.beforeAfterSplitTopBottom" => {
+-            app.ui.before_after = if app.ui.before_after == BeforeAfter::SplitTopBottom { BeforeAfter::Off } else { BeforeAfter::SplitTopBottom };
+-            Ok(Value::Null)
+-        }
++        "view.beforeAfter" => before_after_view(app, BeforeAfter::SideBySide),
++        "view.beforeAfterSplit" => before_after_view(app, BeforeAfter::Split),
++        "view.beforeAfterTopBottom" => before_after_view(app, BeforeAfter::TopBottom),
++        "view.beforeAfterSplitTopBottom" => before_after_view(app, BeforeAfter::SplitTopBottom),
+         "view.showOriginal" => {
+             app.ui.before_after = if app.ui.before_after == BeforeAfter::Original { BeforeAfter::Off } else { BeforeAfter::Original };
+             Ok(Value::Null)
+diff --git a/crates/ui-egui/src/panels/bottombar.rs b/crates/ui-egui/src/panels/bottombar.rs
+index 81ea562ea..575b36639 100644
+--- a/crates/ui-egui/src/panels/bottombar.rs
++++ b/crates/ui-egui/src/panels/bottombar.rs
+@@ -194,9 +194,10 @@ fn right_side(app: &mut LightcraftApp, ui: &mut egui::Ui, full: Rect, compact_zo
+     if app.ui.view == ViewMode::Survey {
+         // no zoom or thumbnail size in Survey
+     } else if matches!(app.ui.view, ViewMode::Detail | ViewMode::Compare) {
+-        if icon_button(&mut child, "beforeAfter", Icon::BeforeAfter, vec2(30.0, 30.0), app.ui.before_after.is_layout(), true, "Before/After (Y)")
+-            .clicked()
+-        {
++        // lit where the layout is on screen; in Compare a click opens the select in the Detail view
++        // with Before / After on (view.beforeAfter), as Lightroom Classic's Y does from Library
++        let lit = app.ui.view == ViewMode::Detail && app.ui.before_after.is_layout();
++        if icon_button(&mut child, "beforeAfter", Icon::BeforeAfter, vec2(30.0, 30.0), lit, true, "Before/After (Y)").clicked() {
+             let _ = app.run("view.beforeAfter", json!({}));
+         }
+         if app.ui.view == ViewMode::Detail
+diff --git a/crates/ui-egui/src/panels/detail.rs b/crates/ui-egui/src/panels/detail.rs
+index 71b0ef8b6..6f6edf89d 100644
+--- a/crates/ui-egui/src/panels/detail.rs
++++ b/crates/ui-egui/src/panels/detail.rs
+@@ -286,46 +286,30 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+     let single = hover_key.is_none() && !split && !show_before && !split_view && !interacting;
+     let camera_full = request_camera_full(app, &photo, single && !windows.is_empty(), native_long.min(texture_side));
+     let p = ui.painter_at(canvas);
+-    let draw = |slot: Slot, r: Rect, clip: Rect| draw_slot(app, &p, id, ppp, slot, r, clip);
+     // soft proofing: a paper-white surround and the proof's name, as Lightroom shows it
+     if app.ui.soft_proof && !fullscreen {
+         proof_surround(app, &p, &t, canvas);
+     }
+-    let shown;
+-    // the Before label's pill, painted once the window renders are down (they would cover it)
+-    let mut before_badge: Option<(Rect, std::sync::Arc<egui::Galley>)> = None;
+     // below what else lives in the canvas' top-left corner: the filter pill, the info overlay
+     let pill_inset = if !fullscreen && filter_pill_shown(app) { FILTER_PILL_INSET + FILTER_PILL_HEIGHT } else { 0.0 };
+     let badge_top_inset = pill_inset.max(info_overlay_extent(app, &p, &photo));
+-    if split {
+-        // each view stays in its pane: zoomed in, a photo reaches past it (and would cover the
+-        // other view's margins with its whole-frame render, magnified and blurred)
+-        let br = before_img;
+-        draw(Slot::Before, br, areas[0]);
+-        shown = draw(Slot::Main, img_rect, main_area);
+-        split_labels(&p, &t, [(br, areas[0]), (img_rect, main_area)]);
+-    } else if show_before {
+-        shown = draw(Slot::Before, img_rect, canvas);
+-        // on the photo itself, so it gets the hover label's dark pill to stay readable over light
+-        // pictures; painted after the window renders below, which would cover it zoomed in
+-        let g = p.layout_no_wrap(crate::i18n::tr("Before").to_string(), t.font(12.0), Color32::WHITE);
+-        before_badge = Some((label_badge_rect(img_rect, canvas, g.size(), badge_top_inset), g));
+-    } else if let Some((_key, label)) = &hover_key
+-        && let Some(tex) = app.renderer.textures.get(&Slot::Hover).filter(|t| t.photo == id)
+-    {
+-        draw_hover(&p, &t, tex, label, [img_rect, canvas], badge_top_inset);
+-        shown = "hover";
+-    } else {
+-        shown = draw(Slot::Main, img_rect, canvas);
+-        if shown == "none" {
+-            none_message(app, &p, &t, canvas, id);
+-        }
+-    }
+-    // a wipe shows the Before whole-frame render on its side of the line…
+     let line = crate::region::wipe_line(img_rect, canvas);
+-    draw_wipe_before(app, &p, id, img_rect, line);
++    let places = ViewPlaces {
++        id,
++        ppp,
++        mode: ViewMode { split, show_before, split_view },
++        img_rect,
++        before_img,
++        areas: &areas,
++        main_area,
++        canvas,
++        line,
++        hover: hover_key.as_ref().map(|(_, label)| label.as_str()),
++        badge_top_inset,
++    };
++    let DrawnViews { shown, before_badge, before_placeholder } = draw_views(app, &p, &t, &places);
+     let camera_full_drawn = camera_full && draw_camera_full(app, &p, id, img_rect, display_aspect, window_cover(&windows));
+-    // …and the window renders go over the whole-frame ones, all of them, where they belong in the
++    // the window renders go over the whole-frame ones, all of them, where they belong in the
+     // frame (clipped to their pane, or their side of the line)
+     let drawn = draw_windows(app, &p, &window_ctx, &windows, [canvas, img_rect], (show_before, split));
+     let shown = shown_after_windows(shown, camera_full_drawn, drawn);
+@@ -338,11 +322,17 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+         camera_preview_badge(ui, canvas, img_rect.intersect(canvas));
+     }
+     if let Some((bg, g)) = before_badge {
+-        paint_badge(&p, bg, g);
++        paint_before_badge(&p, &t, bg, g);
+         register(ui, "canvas:beforeLabel", bg);
+     }
+-    // the line of a wipe over both
++    if let Some(r) = before_placeholder {
++        register(ui, "canvas:beforeRendering", r);
++    }
++    // the line of a wipe over both, and which side is which
+     draw_wipe_line(app.ui.before_after, &p, img_rect, line);
++    if split_view && !show_before {
++        wipe_labels(&p, &t, app.ui.before_after, img_rect, main_area);
++    }
+     let map = CanvasMap::new(&frame, img_rect);
+     let over = OverPhoto { photo: &photo, d: &d, map: &map, canvas, img_rect, fullscreen, crop_tool };
+     photo_overlays(app, ui, &p, &over);
+@@ -366,7 +356,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+     let rendering = ui.ctx().data_mut(|d| rendering_overdue(d.get_temp_mut_or(egui::Id::unique("loupe-rendering"), None), keys, coming, now));
+     // the render failed while a stand-in is up: what is on screen is all there will be (also while
+     // a library change retries it)
+-    let failed = failed_render(app, id, !rendering && (!show_before || split), shown);
++    let failed = failed_render(app, id, Slot::Main, !rendering && (!show_before || split), shown)
++        .or_else(|| failed_render(app, id, Slot::Before, !rendering && show_before && !split, shown));
+     if rendering || failed.is_some() {
+         let over = if crop_tool { canvas } else { img_rect.intersect(if split { main_area } else { canvas }) };
+         let over = if over.is_positive() { over } else { canvas };
+@@ -455,8 +446,93 @@ fn face_boxes(
+     }
+ }
+ 
+-/// A wipe shows the Before whole-frame render on its side of the line.
+-fn draw_wipe_before(app: &LightcraftApp, p: &egui::Painter, id: PhotoId, img_rect: Rect, line: Pos2) {
++/// Where the loupe's views go.
++struct ViewPlaces<'a> {
++    id: PhotoId,
++    ppp: f32,
++    mode: ViewMode,
++    img_rect: Rect,
++    before_img: Rect,
++    areas: &'a [Rect],
++    main_area: Rect,
++    canvas: Rect,
++    /// A wipe's line.
++    line: Pos2,
++    /// The hovered look's label, while one is hovered.
++    hover: Option<&'a str>,
++    badge_top_inset: f32,
++}
++
++/// What the loupe's whole-frame views drew.
++struct DrawnViews {
++    /// What shows the photo ("render", a stand-in's name, "hover", "none").
++    shown: &'static str,
++    /// Show Original's Before label, painted once the window renders are down (they would cover it).
++    before_badge: Option<(Rect, std::sync::Arc<egui::Galley>)>,
++    /// Where the Before view has nothing that shows the before settings yet: the neutral frame that
++    /// says so, never the edited photo under the Before label (#2248).
++    before_placeholder: Option<Rect>,
++}
++
++/// Draw the whole-frame views of the layout: Before and After side by side or stacked, the Before
++/// alone (Show Original), the hovered look, or the After, and a wipe's Before side.
++fn draw_views(app: &LightcraftApp, p: &egui::Painter, t: &Tokens, v: &ViewPlaces) -> DrawnViews {
++    let draw = |slot: Slot, r: Rect, clip: Rect| draw_slot(app, p, v.id, v.ppp, slot, r, clip);
++    let (img_rect, canvas, id) = (v.img_rect, v.canvas, v.id);
++    let mut out = DrawnViews { shown: "none", before_badge: None, before_placeholder: None };
++    if v.mode.split {
++        // each view stays in its pane: zoomed in, a photo reaches past it (and would cover the
++        // other view's margins with its whole-frame render, magnified and blurred)
++        let (br, pane) = (v.before_img, v.areas.first().copied().unwrap_or(canvas));
++        if draw(Slot::Before, br, pane) == "none" {
++            out.before_placeholder = Some(draw_before_placeholder(app, p, t, id, br, pane));
++        }
++        out.shown = draw(Slot::Main, img_rect, v.main_area);
++        split_labels(p, t, [(br, pane), (img_rect, v.main_area)]);
++    } else if v.mode.show_before {
++        out.shown = draw(Slot::Before, img_rect, canvas);
++        if out.shown == "none" {
++            out.before_placeholder = Some(draw_before_placeholder(app, p, t, id, img_rect, canvas));
++        }
++        // on the photo itself, so it gets a dark pill to stay readable over light pictures;
++        // painted after the window renders, which would cover it zoomed in
++        let g = p.layout_no_wrap(crate::i18n::tr("Before").to_string(), t.semibold(14.0), Color32::WHITE);
++        out.before_badge = Some((label_badge_rect(img_rect, canvas, g.size(), v.badge_top_inset), g));
++    } else if let Some(label) = v.hover
++        && let Some(tex) = app.renderer.textures.get(&Slot::Hover).filter(|t| t.photo == id)
++    {
++        draw_hover(p, t, tex, label, [img_rect, canvas], v.badge_top_inset);
++        out.shown = "hover";
++    } else {
++        out.shown = draw(Slot::Main, img_rect, canvas);
++        if out.shown == "none" {
++            none_message(app, p, t, canvas, id);
++        }
++    }
++    // a wipe shows the Before whole-frame render on its side of the line (the window renders go
++    // over the whole-frame ones, on their side of it)
++    if !v.mode.split && !v.mode.show_before {
++        out.before_placeholder = draw_wipe_before(app, p, t, id, [img_rect, canvas], v.line);
++    }
++    out
++}
++
++/// A wipe shows the Before whole-frame render on its side of the line; until it has one, a neutral
++/// frame there that says the Before is rendering (the After under it would pass for the Before),
++/// whose rect it returns.
++fn draw_wipe_before(app: &LightcraftApp, p: &egui::Painter, t: &Tokens, id: PhotoId, [img_rect, canvas]: [Rect; 2], line: Pos2) -> Option<Rect> {
++    let mode = app.ui.before_after;
++    if !matches!(mode, BeforeAfter::Split | BeforeAfter::SplitTopBottom) {
++        return None;
++    }
++    if app.renderer.textures.get(&Slot::Before).is_none_or(|t| t.photo != id) {
++        if stand_in_shows(app, id, Slot::Before) {
++            // the photo's settings are its before settings: the After side looks the same
++            return None;
++        }
++        let side = crate::region::window_clip(mode, true, canvas, canvas, img_rect);
++        return Some(draw_before_placeholder(app, p, t, id, img_rect, side));
++    }
+     if app.ui.before_after == BeforeAfter::Split
+         && let Some(tex) = app.renderer.textures.get(&Slot::Before).filter(|t| t.photo == id)
+     {
+@@ -473,6 +549,35 @@ fn draw_wipe_before(app: &LightcraftApp, p: &egui::Painter, id: PhotoId, img_rec
+         let top = Rect::from_min_max(before_rect.min, pos2(before_rect.right(), before_rect.top() + v * before_rect.height()));
+         p.image(tex.id(), top, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, v)), Color32::WHITE);
+     }
++    None
++}
++
++/// The Before view while it has nothing showing the before settings (its render is on its way, or
++/// failed): a neutral frame where the photo goes, clipped to `clip`, saying so. Returns the part
++/// of it on screen.
++fn draw_before_placeholder(app: &LightcraftApp, p: &egui::Painter, t: &Tokens, id: PhotoId, frame: Rect, clip: Rect) -> Rect {
++    let shown = frame.intersect(clip);
++    let shown = if shown.is_positive() { shown } else { clip };
++    p.rect_filled(shown, 0.0, Color32::from_gray(58));
++    let p = p.with_clip_rect(shown);
++    let at = shown.center();
++    let rendering = app.renderer.is_pending(Slot::Before) && !app.renderer.retrying(Slot::Before);
++    match app.renderer.failure_of(Slot::Before, id).filter(|_| !rendering) {
++        Some(e) => {
++            p.text(
++                at - vec2(0.0, 10.0),
++                Align2::CENTER_CENTER,
++                crate::i18n::tr("The before view can't be rendered"),
++                t.semibold(14.0),
++                Color32::from_gray(230),
++            );
++            p.text(at + vec2(0.0, 12.0), Align2::CENTER_CENTER, e, t.font(12.0), Color32::from_gray(190));
++        }
++        None => {
++            p.text(at, Align2::CENTER_CENTER, crate::i18n::tr("Rendering before…"), t.font(13.0), Color32::from_gray(210));
++        }
++    }
++    shown
+ }
+ 
+ /// Once a photo is on screen, prepare its neighbours in filmstrip order (source decoded and kept,
+@@ -628,11 +733,11 @@ fn none_message(app: &LightcraftApp, p: &egui::Painter, t: &Tokens, canvas: Rect
+     }
+ }
+ 
+-/// The render failed while a stand-in is up: what is on screen is all there will be (also while a
+-/// library change retries it).
+-fn failed_render<'a>(app: &'a LightcraftApp, id: PhotoId, settled: bool, shown: &str) -> Option<&'a str> {
+-    (settled && !matches!(shown, "render" | "none" | "hover") && (!app.renderer.is_pending(Slot::Main) || app.renderer.retrying(Slot::Main)))
+-        .then(|| app.renderer.failure_of(Slot::Main, id))
++/// `slot`'s render (the After view's, or the Before view's when it is shown alone) failed while a
++/// stand-in is up: what is on screen is all there will be (also while a library change retries it).
++fn failed_render<'a>(app: &'a LightcraftApp, id: PhotoId, slot: Slot, settled: bool, shown: &str) -> Option<&'a str> {
++    (settled && !matches!(shown, "render" | "none" | "hover") && (!app.renderer.is_pending(slot) || app.renderer.retrying(slot)))
++        .then(|| app.renderer.failure_of(slot, id))
+         .flatten()
+ }
+ 
+@@ -1000,11 +1105,13 @@ fn request_before(app: &mut LightcraftApp, a: &LoupeAsk, [sw, sh]: [usize; 2]) {
+ /// between photos, and the full render replaces them in place). Returns what it drew.
+ fn draw_slot(app: &LightcraftApp, p: &egui::Painter, id: PhotoId, ppp: f32, slot: Slot, r: Rect, clip: Rect) -> &'static str {
+     let mine = |s: Slot| app.renderer.textures.get(&s).filter(|t| t.photo == id);
++    // (the stand-ins show the current settings: not for a Before view they would not match)
++    let stand_in = || stand_in_shows(app, id, slot);
+     let (tex, what) = if let Some(t) = mine(slot) {
+         (t, "render")
+-    } else if let Some(t) = mine(Slot::Preview) {
++    } else if let Some(t) = mine(Slot::Preview).filter(|_| stand_in()) {
+         (t, t.quick.map(quick_name).unwrap_or("preview"))
+-    } else if let Some(t) = app.renderer.thumb(id) {
++    } else if let Some(t) = app.renderer.thumb(id).filter(|_| stand_in()) {
+         (t, "thumb")
+     } else {
+         return "none";
+@@ -1014,6 +1121,14 @@ fn draw_slot(app: &LightcraftApp, p: &egui::Painter, id: PhotoId, ppp: f32, slot
+     what
+ }
+ 
++/// Whether the preview or thumbnail may stand in for `slot` until its own render arrives. They show
++/// the photo's current settings, so for the Before view only while those are its before settings:
++/// an edited photo would otherwise show its edits labelled Before until the Before render replaces
++/// them (#2248; after upstream PR #3993).
++pub(crate) fn stand_in_shows(app: &LightcraftApp, id: PhotoId, slot: Slot) -> bool {
++    slot != Slot::Before || app.session.catalog.photo(id).is_some_and(|ph| *ph.develop == app.session.before_settings(ph))
++}
++
+ /// The hovered look's render over the photo, with its label.
+ fn draw_hover(p: &egui::Painter, t: &Tokens, tex: &crate::render::Tex, label: &str, [img_rect, canvas]: [Rect; 2], badge_top_inset: f32) {
+     let hover_rect = fit_texture_rect(img_rect, tex.size);
+@@ -1029,6 +1144,14 @@ fn paint_badge(p: &egui::Painter, bg: Rect, g: std::sync::Arc<egui::Galley>) {
+     p.galley(bg.min + vec2(8.0, 4.0), g, Color32::WHITE);
+ }
+ 
++/// Show Original's "Before" label: a darker pill with an accent outline, so it is not missed on any
++/// photo (`\` latches the view until it is pressed again).
++fn paint_before_badge(p: &egui::Painter, t: &Tokens, bg: Rect, g: std::sync::Arc<egui::Galley>) {
++    p.rect_filled(bg, 4.0, Color32::from_black_alpha(210));
++    p.rect_stroke(bg, 4.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
++    p.galley(bg.min + vec2(8.0, 4.0), g, Color32::WHITE);
++}
++
+ /// No photo is active: the empty-library message if the library is empty, else "No photo selected".
+ fn show_no_photo(app: &mut LightcraftApp, ui: &mut egui::Ui, canvas: Rect) {
+     if super::empty_library::shown(&app.session) {
+@@ -1056,6 +1179,20 @@ fn split_labels(p: &egui::Painter, t: &Tokens, [before, after]: [(Rect, Rect); 2
+     p.text(label_at(after.0, after.1), Align2::LEFT_CENTER, crate::i18n::tr("After"), t.font(12.0), t.text_dim);
+ }
+ 
++/// A wipe's labels, as side by side shows them: Before under (or, stacked, over) its side of the
++/// line, After under its side, kept in the pane when the photo reaches past it.
++fn wipe_labels(p: &egui::Painter, t: &Tokens, mode: BeforeAfter, img: Rect, pane: Rect) {
++    let (left, right) = (img.left().max(pane.left()), img.right().min(pane.right()));
++    let below = img.bottom().min(pane.bottom()) + 14.0;
++    let (before, before_align, after, after_align) = match mode {
++        BeforeAfter::Split => (pos2(left, below), Align2::LEFT_CENTER, pos2(right, below), Align2::RIGHT_CENTER),
++        BeforeAfter::SplitTopBottom => (pos2(left, img.top().max(pane.top()) - 14.0), Align2::LEFT_CENTER, pos2(left, below), Align2::LEFT_CENTER),
++        _ => return,
++    };
++    p.text(before, before_align, crate::i18n::tr("Before"), t.font(12.0), t.text_dim);
++    p.text(after, after_align, crate::i18n::tr("After"), t.font(12.0), t.text_dim);
++}
++
+ /// What is drawn over the photo.
+ struct OverPhoto<'a> {
+     photo: &'a lightcraft_catalog::Photo,
+diff --git a/crates/ui-egui/src/tests.rs b/crates/ui-egui/src/tests.rs
+index 598fe789c..7a3f7a987 100644
+--- a/crates/ui-egui/src/tests.rs
++++ b/crates/ui-egui/src/tests.rs
+@@ -5,6 +5,7 @@ mod album_remove;
+ mod alt_preview;
+ mod appearance;
+ mod before_after;
++mod before_after_fixes;
+ mod browse_active;
+ mod button;
+ mod canvas_keys;
+diff --git a/crates/ui-egui/src/tests/before_after_fixes.rs b/crates/ui-egui/src/tests/before_after_fixes.rs
+new file mode 100644
+index 000000000..005774bca
+--- /dev/null
++++ b/crates/ui-egui/src/tests/before_after_fixes.rs
+@@ -0,0 +1,227 @@
++//! Before / After shows before against after: the Before view never shows the edited photo while
++//! its own render is on its way (#2248), `Y` from a grid or Compare opens the Detail view's Before /
++//! After, a wipe names its sides, and Copy Before's Settings to After keeps the frame shown.
++
++use std::cell::Cell;
++use std::rc::Rc;
++use std::time::Duration;
++
++use serde_json::{Value, json};
++
++use crate::headless::{Headless, RenderGate};
++use crate::render::Slot;
++use crate::state::{BeforeAfter, ViewMode};
++use crate::{LightcraftApp, Services};
++
++const T: Duration = Duration::from_secs(20);
++const SETTLE: Duration = Duration::from_secs(120);
++
++fn demo() -> Headless {
++    let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services { png: None, ..Default::default() });
++    Headless::new(app, [1400.0, 900.0], 1.0)
++}
++
++fn ok(h: &mut Headless, method: &str, params: Value) -> Value {
++    let r = h.request(method, params, T);
++    assert_eq!(r["ok"], true, "{method}: {r}");
++    r
++}
++
++fn cmd(h: &mut Headless, id: &str, params: Value) -> Value {
++    ok(h, "engine.execute", json!({"command": id, "params": params}))
++}
++
++fn has(h: &Headless, widget: &str) -> bool {
++    h.app.widgets.iter().any(|(w, _)| w == widget)
++}
++
++fn count(h: &Headless, text: &str) -> usize {
++    h.painted_text().iter().filter(|t| t.as_str() == text).count()
++}
++
++/// The demo's third photo, edited (brighter), open in the Detail view without the filmstrip, with
++/// its Before render held back. Returns the photo and the gate's latch.
++fn edited_photo_before_render_held(fails_before: bool) -> (Headless, lightcraft_catalog::PhotoId, Rc<Cell<bool>>) {
++    let mut h = demo();
++    // the grid first: its thumbnails are the stand-ins a Before view must not borrow
++    h.settle(SETTLE);
++    let id = h.app.session.visible_cloned()[2];
++    cmd(&mut h, "library.select", json!({"ids": [id.0], "active": id.0}));
++    ok(&mut h, "ui.set", json!({"view": "detail", "right": "none", "filmstrip": false}));
++    cmd(&mut h, "develop.set", json!({"control": "light.exposure", "value": 1.5}));
++    assert!(h.settle(SETTLE), "the edited photo renders");
++    let open = Rc::new(Cell::new(fails_before));
++    let gate = if fails_before { RenderGate::failing(open.clone(), |s| s == Slot::Before) } else { RenderGate::new(open.clone()) };
++    h.app.renderer.set_offload(Box::new(gate));
++    (h, id, open)
++}
++
++fn before_rendered(h: &Headless, id: lightcraft_catalog::PhotoId) -> bool {
++    h.app.renderer.textures.get(&Slot::Before).is_some_and(|t| t.photo == id)
++}
++
++/// The stand-ins (preview, thumbnail) show the photo's current settings: they stand in for the
++/// Before view only while those are its before settings.
++#[test]
++fn the_before_view_takes_a_stand_in_only_when_it_looks_the_same() {
++    use crate::panels::detail::stand_in_shows;
++    let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services { png: None, ..Default::default() });
++    let id = app.session.visible_cloned()[0];
++    app.session.execute("library.select", &json!({"ids": [id.0], "active": id.0})).unwrap();
++    app.session.execute("beforeAfter.setBefore", &json!({"source": "current"})).unwrap();
++    assert!(stand_in_shows(&app, id, Slot::Before), "settings = before settings: the stand-in looks the same");
++    app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.5})).unwrap();
++    assert!(!stand_in_shows(&app, id, Slot::Before), "edited: the stand-in would show the edits");
++    assert!(stand_in_shows(&app, id, Slot::Main), "the After view still uses the stand-in");
++}
++
++/// #2248: Show Original (`\`) of an edited photo whose Before render is not there yet showed the
++/// thumbnail, the edited photo, under the Before label. Now a neutral frame says the Before is
++/// rendering, until the Before render replaces it.
++#[test]
++fn show_original_never_shows_the_edited_stand_in() {
++    let (mut h, id, open) = edited_photo_before_render_held(false);
++    assert!(h.app.renderer.thumb(id).is_some(), "a stand-in the Before view could have borrowed");
++    h.app.ui.before_after = BeforeAfter::Original;
++    for _ in 0..5 {
++        h.step();
++    }
++    assert!(!before_rendered(&h, id), "no Before render of the photo yet");
++    assert_eq!(h.app.loupe_shown, Some((id, "none")), "nothing of the edited photo is drawn as the Before");
++    assert!(has(&h, "canvas:beforeRendering"), "the neutral frame is up");
++    assert_eq!(count(&h, crate::i18n::tr("Rendering before…")), 1, "it says the Before is rendering");
++    assert!(has(&h, "canvas:beforeLabel"), "under the Before label");
++    open.set(true);
++    assert!(h.step_until(SETTLE, |h| before_rendered(h, id)), "the Before render lands");
++    h.settle(SETTLE);
++    assert_eq!(h.app.loupe_shown, Some((id, "render")));
++    assert!(!has(&h, "canvas:beforeRendering"), "the frame gives way to the Before render");
++}
++
++/// Side by side and in a wipe, the Before side of an edited photo shows the neutral frame (not the
++/// After, or nothing over the After of a wipe) until its render arrives.
++#[test]
++fn the_before_side_waits_in_a_neutral_frame_in_every_layout() {
++    let (mut h, id, open) = edited_photo_before_render_held(false);
++    for mode in [BeforeAfter::SideBySide, BeforeAfter::TopBottom, BeforeAfter::Split, BeforeAfter::SplitTopBottom] {
++        h.app.ui.before_after = mode;
++        for _ in 0..5 {
++            h.step();
++        }
++        assert!(!before_rendered(&h, id), "{mode:?}: no Before render yet");
++        assert!(has(&h, "canvas:beforeRendering"), "{mode:?}: the Before side is the neutral frame");
++        assert_eq!(count(&h, crate::i18n::tr("Rendering before…")), 1, "{mode:?}: it says why");
++        let frame = h.app.widgets.iter().find(|(w, _)| w == "canvas:beforeRendering").map(|(_, r)| *r).expect("frame");
++        let after = h.app.image_rect.expect("the After view");
++        match mode {
++            // a wipe: the frame covers the Before side of the line only
++            BeforeAfter::Split => assert!(frame.right() <= after.center().x + 1.0, "{mode:?}: {frame:?} left of the line in {after:?}"),
++            BeforeAfter::SplitTopBottom => assert!(frame.bottom() <= after.center().y + 1.0, "{mode:?}: {frame:?} above the line in {after:?}"),
++            // two panes: the frame is in the Before pane, clear of the After view
++            _ => assert!(!frame.intersects(after), "{mode:?}: {frame:?} beside the After view {after:?}"),
++        }
++    }
++    open.set(true);
++    assert!(h.step_until(SETTLE, |h| before_rendered(h, id)), "the Before render lands");
++    h.settle(SETTLE);
++    assert!(!has(&h, "canvas:beforeRendering"), "the frame gives way to the Before render");
++}
++
++/// A Before render that fails says so in the Before view instead of leaving it empty.
++#[test]
++fn a_failed_before_render_says_so() {
++    let (mut h, id, _open) = edited_photo_before_render_held(true);
++    h.app.ui.before_after = BeforeAfter::Original;
++    assert!(h.step_until(SETTLE, |h| h.app.renderer.failure_of(Slot::Before, id).is_some()), "the Before render fails");
++    h.settle(SETTLE);
++    assert!(has(&h, "canvas:beforeRendering"), "the neutral frame stays");
++    assert_eq!(count(&h, crate::i18n::tr("The before view can't be rendered")), 1, "it names the failure");
++    assert_eq!(count(&h, "no decoder for this raw"), 1, "and its reason");
++}
++
++/// A wipe names its sides as side by side does: Before and After under (or, stacked, over) the photo.
++#[test]
++fn a_wipe_labels_before_and_after() {
++    let mut h = demo();
++    ok(&mut h, "ui.set", json!({"view": "detail", "right": "none", "filmstrip": false}));
++    h.settle(SETTLE);
++    let (before, after) = (crate::i18n::tr("Before").to_string(), crate::i18n::tr("After").to_string());
++    let plain = (count(&h, &before), count(&h, &after));
++    for mode in [BeforeAfter::Split, BeforeAfter::SplitTopBottom, BeforeAfter::SideBySide] {
++        h.app.ui.before_after = mode;
++        h.settle(SETTLE);
++        assert_eq!((count(&h, &before), count(&h, &after)), (plain.0 + 1, plain.1 + 1), "{mode:?}: one Before and one After label");
++    }
++}
++
++/// `Y` in Compare (or a click on the bottom bar's Before/After button there) opens the select in the
++/// Detail view with Before and After side by side, as Lightroom Classic's `Y` in Library goes to
++/// Develop's Before / After. The button used to light up and change nothing on screen.
++#[test]
++fn y_in_compare_opens_the_select_in_before_after() {
++    for by_button in [false, true] {
++        let mut h = demo();
++        h.settle(SETTLE);
++        let ids: Vec<u64> = h.app.session.visible_cloned().into_iter().take(2).map(|id| id.0).collect();
++        cmd(&mut h, "library.select", json!({"ids": ids, "active": ids[0]}));
++        let r = cmd(&mut h, "view.compare", json!({}));
++        let select = r["result"]["select"].as_u64().expect("a select");
++        h.settle(SETTLE);
++        assert_eq!(h.app.ui.view, ViewMode::Compare);
++        if by_button {
++            assert!(has(&h, "icon:beforeAfter"), "Compare shows the Before/After button");
++            ok(&mut h, "ui.clickWidget", json!({"id": "icon:beforeAfter"}));
++        } else {
++            ok(&mut h, "ui.key", json!({"key": "Y"}));
++        }
++        h.settle(SETTLE);
++        assert_eq!(h.app.ui.view, ViewMode::Detail, "by_button {by_button}: the Detail view");
++        assert_eq!(h.app.ui.before_after, BeforeAfter::SideBySide, "by_button {by_button}: with Before and After");
++        assert_eq!(h.app.session.active().map(|id| id.0), Some(select), "of the select");
++        assert!(has(&h, "canvas:image"), "the photo is on screen");
++    }
++}
++
++/// `Y`, `Shift`+`Y` and `Alt`+`Y` in a grid open the active photo in the Detail view with that
++/// layout instead of setting it unseen; in the Detail view they still toggle it.
++#[test]
++fn y_in_a_grid_opens_the_detail_view_with_that_layout() {
++    for (params, mode) in [
++        (json!({"key": "Y"}), BeforeAfter::SideBySide),
++        (json!({"key": "Y", "shift": true}), BeforeAfter::Split),
++        (json!({"key": "Y", "alt": true}), BeforeAfter::TopBottom),
++    ] {
++        let mut h = demo();
++        h.settle(SETTLE);
++        let id = h.app.session.visible_cloned()[1];
++        cmd(&mut h, "library.select", json!({"ids": [id.0], "active": id.0}));
++        ok(&mut h, "ui.set", json!({"view": "photoGrid"}));
++        h.settle(SETTLE);
++        ok(&mut h, "ui.key", params.clone());
++        h.settle(SETTLE);
++        assert_eq!(h.app.ui.view, ViewMode::Detail, "{params}: the Detail view");
++        assert_eq!(h.app.ui.before_after, mode, "{params}");
++        assert_eq!(h.app.session.active(), Some(id), "{params}: of the active photo");
++        // in the Detail view the key toggles the layout off again
++        ok(&mut h, "ui.key", params.clone());
++        h.settle(SETTLE);
++        assert_eq!((h.app.ui.view, h.app.ui.before_after), (ViewMode::Detail, BeforeAfter::Off), "{params}: toggled off");
++    }
++}
++
++/// Copy Before's Settings to After gives the photo what the Before view showed: its before look
++/// with the current crop (the Before view always uses it), not the import state's uncropped frame.
++#[test]
++fn copy_before_to_after_keeps_the_crop_shown() {
++    let mut h = demo();
++    let id = h.app.session.visible_cloned()[0];
++    cmd(&mut h, "library.select", json!({"ids": [id.0], "active": id.0}));
++    cmd(&mut h, "develop.set", json!({"control": "light.exposure", "value": 1.5}));
++    cmd(&mut h, "crop.set", json!({"rect": [0.1, 0.1, 0.9, 0.9]}));
++    let photo = h.app.session.catalog.photo(id).expect("photo");
++    let (crop, shown) = (photo.develop.crop, h.app.session.before_settings(photo));
++    cmd(&mut h, "beforeAfter.copyBeforeToAfter", json!({}));
++    let d = h.app.session.catalog.photo(id).expect("photo").develop.clone();
++    assert_eq!(d.crop, crop, "the crop stays");
++    assert_eq!(d.light.exposure, shown.light.exposure, "the before look");
++}
+diff --git a/docs/user/guides/edit-a-photo.md b/docs/user/guides/edit-a-photo.md
+index af268731a..cf21ab142 100644
+--- a/docs/user/guides/edit-a-photo.md
++++ b/docs/user/guides/edit-a-photo.md
+@@ -14,7 +14,7 @@ Double-click a photo in the grid, then press `E` to open the **Edit** panel. Dra
+ 3. Click **Auto** for a first pass, or skip this step and start with the sliders.
+ 4. Open the **Light** section and set **Exposure**, **Contrast**, **Highlights**, **Shadows**, **Whites** and **Blacks**.
+ 5. Open the **Color** section to change **Vibrance** and **Saturation**. Open **Effects** for **Texture**, **Clarity** and **Dehaze**. The panel also has **Detail** and **Optics** sections.
+-6. Check your work against the original. Hold `\` to peek at the original. Press `Y` (**View** > **Before/After Side by Side**) to see before and after side by side.
++6. Check your work against the original. Press `\` (**View** > **Show Original**) to show the original, marked **Before** at the top left of the photo; press `\` again to go back to your edits. Press `Y` (**View** > **Before/After Side by Side**) to see before and after side by side, or `Shift`+`Y` for a split view. Pressed in a grid or in **Compare**, `Y` opens the photo in the **Detail View** with before and after side by side.
+ 7. To go back a step, choose **Edit** > **Undo**. To drop all edits on the photo, click **Reset** at the top of the **Edit** panel.
+ 
+ ## Black and white
+-- 
+2.43.0
+
