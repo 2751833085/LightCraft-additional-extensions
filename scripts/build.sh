@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for tool in git cargo; do
+for tool in git cargo rustc; do
   command -v "$tool" >/dev/null || { echo "error: $tool is not installed" >&2; exit 1; }
 done
 
@@ -57,16 +57,21 @@ echo "==> applying $(ls "$HERE"/patches/*.patch | wc -l | tr -d ' ') patches"
 git -C "$SRC" am --abort >/dev/null 2>&1 || true
 git -C "$SRC" checkout -q --force -B lcx "$UPSTREAM_TAG"
 git -C "$SRC" clean -qfd
+# no 3-way fallback: a patch that no longer applies fails the same way in every work dir
 git -C "$SRC" -c user.name="LightCraft additional extensions" -c user.email="noreply@example.invalid" \
-  am -q --3way "$HERE"/patches/*.patch
+  am -q "$HERE"/patches/*.patch
 
 FONTS="$WORK/craft-fonts"
-if [[ ! -f "$FONTS/fonts/manifest.txt" ]]; then
-  echo "==> craft-fonts $CRAFT_FONTS_REV"
+echo "==> craft-fonts $CRAFT_FONTS_REV"
+if [[ ! -d "$FONTS/.git" ]]; then
   rm -rf "$FONTS"
   git clone -q --no-checkout "$CRAFT_FONTS_REPO" "$FONTS"
-  git -C "$FONTS" checkout -q --detach "$CRAFT_FONTS_REV"
 fi
+if ! git -C "$FONTS" rev-parse -q --verify "$CRAFT_FONTS_REV^{commit}" >/dev/null; then
+  git -C "$FONTS" fetch -q origin "$CRAFT_FONTS_REV"
+fi
+# every run: the pinned revision, with any missing or changed file put back
+git -C "$FONTS" checkout -q --force --detach "$CRAFT_FONTS_REV"
 export CRAFT_FONTS_DIR="$FONTS"
 # fail the build rather than ship a UI whose Chinese is empty boxes
 export CRAFT_FONTS_REQUIRED=1
@@ -75,8 +80,13 @@ cd "$SRC"
 if (( PACKAGE )); then
   case "$(uname -s)" in
     Darwin)
-      arch="$(uname -m)"
-      [[ "$arch" == arm64 ]] && arch=aarch64
+      # the Rust toolchain's own architecture (a shell under Rosetta reports x86_64 on Apple silicon)
+      host="$(rustc -vV | sed -n 's/^host: //p')"
+      case "$host" in
+        aarch64-apple-darwin) arch=aarch64 ;;
+        x86_64-apple-darwin) arch=x86_64 ;;
+        *) echo "error: unexpected Rust host '$host' (expected aarch64- or x86_64-apple-darwin)" >&2; exit 1 ;;
+      esac
       packaging/macos/package.sh --arch "$arch"
       echo "==> done: the .dmg is in $SRC/dist/release (open it and drag LightCraft to Applications)"
       ;;
@@ -90,6 +100,7 @@ if (( PACKAGE )); then
       ;;
   esac
 else
-  cargo build --release -p lightcraft
+  # HEIC/HEIF photos open, as in upstream's release builds
+  cargo build --release --locked -p lightcraft --features lightcraft/heif
   echo "==> done: $SRC/target/release/lightcraft"
 fi
