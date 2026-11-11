@@ -1,0 +1,30 @@
+From f3f5a5afdb2a364a2246ab85d1ca9231725a46cd Mon Sep 17 00:00:00 2001
+From: LightCraft additional extensions <noreply@example.invalid>
+Date: Wed, 11 Nov 2026 09:13:11 +0000
+Subject: [PATCH 2/2] Do not check for official updates at launch
+
+An update would replace this build with the official release, which has no
+module bar; Help > Check for Updates still works when chosen.
+---
+ apps/lightcraft/src/main.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/apps/lightcraft/src/main.rs b/apps/lightcraft/src/main.rs
+index 97479ad6..d864f825 100644
+--- a/apps/lightcraft/src/main.rs
++++ b/apps/lightcraft/src/main.rs
+@@ -364,7 +364,10 @@ fn main() -> eframe::Result {
+                 // HDR display: SDR unless the surface, platform and display all allow HDR
+                 hdr_display::report(cc.wgpu_render_state.as_ref().map(|r| r.target_format));
+                 let mut app = LightcraftApp::new(session, services(cc, app_log_file.as_deref()));
+-                app.set_startup_update_check(true);
++                // LightCraft additional extensions: no update check at launch. An update installs the
++                // official release, which has no module bar; rebuild from a new tag instead
++                // (scripts/build.sh). Help ▸ Check for Updates still asks when chosen.
++                app.set_startup_update_check(false);
+                 if let Some(ui) = prefs {
+                     app.ui = ui;
+                 }
+-- 
+2.43.0
+

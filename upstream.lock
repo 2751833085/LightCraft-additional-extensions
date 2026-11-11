@@ -1,0 +1,9 @@
+# The upstream release the patches in patches/ apply to. scripts/build.sh reads this file.
+# Moving to a newer release: change the tag and commit, re-run scripts/build.sh, fix any patch
+# that no longer applies, and commit the refreshed patches with this file.
+UPSTREAM_REPO=https://github.com/storytold/lightcraft
+UPSTREAM_TAG=v0.20.0
+UPSTREAM_COMMIT=192ff72923c39e6623f2c7ff67ab3a119deb8071
+# storytold/craft-fonts revision upstream's release.yml embeds (Chinese and Japanese UI fonts).
+CRAFT_FONTS_REPO=https://github.com/storytold/craft-fonts
+CRAFT_FONTS_REV=b076417b5880bd4154bd22f00695b1d28c6bea83

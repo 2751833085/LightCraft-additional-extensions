@@ -1,0 +1,1174 @@
+From b99da74c9ee928e533f25e5ee402eb70fdaebc4d Mon Sep 17 00:00:00 2001
+From: LightCraft additional extensions <noreply@example.invalid>
+Date: Wed, 11 Nov 2026 09:11:57 +0000
+Subject: [PATCH 1/2] Module bar (Library | Develop | Print | Export) and a
+ full-window Print module
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Library and Develop map onto the photo grid and the detail view with the
+Edit panel; Print shows the print settings and page preview in the window,
+with Photo Size > Size by long edge (default 10 in) laying out one centred
+cell per photo through the print.* commands; Export opens the Export dialog.
+Module keys follow Lightroom Classic (Cmd+Alt+1/2/6). Print labels get their
+own translation context (zh-Hans: 纸张, 纵向/横向) and the print settings are
+translated into Simplified and Traditional Chinese.
+---
+ crates/ui-egui/locales/zh-hans.json       |  73 ++++++-
+ crates/ui-egui/locales/zh-hant.json       |  33 ++-
+ crates/ui-egui/src/app/frame.rs           |  11 +-
+ crates/ui-egui/src/dialogs/print_view.rs  |  47 +++--
+ crates/ui-egui/src/i18n.rs                |   5 +
+ crates/ui-egui/src/menus/menubar.rs       |   8 +
+ crates/ui-egui/src/menus/run.rs           |   3 +
+ crates/ui-egui/src/menus/ui_commands.rs   |   5 +
+ crates/ui-egui/src/panels.rs              |   2 +
+ crates/ui-egui/src/panels/modules.rs      | 242 ++++++++++++++++++++++
+ crates/ui-egui/src/panels/print_module.rs | 229 ++++++++++++++++++++
+ crates/ui-egui/src/panels/topbar.rs       |  13 +-
+ crates/ui-egui/src/state.rs               |   4 +
+ crates/ui-egui/src/state/settings.rs      |   7 +
+ crates/ui-egui/src/tests.rs               |   1 +
+ crates/ui-egui/src/tests/modules.rs       | 186 +++++++++++++++++
+ 16 files changed, 849 insertions(+), 20 deletions(-)
+ create mode 100644 crates/ui-egui/src/panels/modules.rs
+ create mode 100644 crates/ui-egui/src/panels/print_module.rs
+ create mode 100644 crates/ui-egui/src/tests/modules.rs
+
+diff --git a/crates/ui-egui/locales/zh-hans.json b/crates/ui-egui/locales/zh-hans.json
+index ca13d782..328b1e5e 100644
+--- a/crates/ui-egui/locales/zh-hans.json
++++ b/crates/ui-egui/locales/zh-hans.json
+@@ -2425,5 +2425,76 @@
+   "Start the app with --control 7980 (or LIGHTCRAFT_CONTROL_PORT), then lightcraft-cli mcp --connect attaches one to it.": "先以 --control 7980 (或 LIGHTCRAFT_CONTROL_PORT) 启动应用，lightcraft-cli mcp --connect 即可将一个智能体接入其中。",
+   "Welcome": "欢迎",
+   "Next": "下一步",
+-  "Get Started": "开始使用"
++  "Get Started": "开始使用",
++  "module|Library": "图库",
++  "module|Develop": "修改照片",
++  "module|Print": "打印",
++  "module|Export": "导出",
++  "print|Paper": "纸张",
++  "print|Portrait": "纵向",
++  "print|Landscape": "横向",
++  "print|Grid": "网格",
++  "print|Size": "尺寸",
++  "Photo Size": "照片尺寸",
++  "Size by long edge": "按长边设定尺寸",
++  "Long edge": "长边",
++  "Print size": "打印尺寸",
++  "Shrunk to fit the printable area of the paper": "纸张可打印区域放不下，已等比缩小",
++  "Each photo prints centred on its own page at its own aspect ratio. The photo itself is not changed.": "每张照片单独一页、居中打印，保持照片自身比例；照片本身不会被修改。",
++  "Print to PDF…": "打印到 PDF…",
++  "LightCraft prints to a PDF file: open it in a PDF viewer or PhotoCraft to send it to the printer.": "LightCraft 的打印输出为 PDF 文件：用 PDF 阅读器或 PhotoCraft 打开后送打印机。",
++  "Select the photos to print in Library first.": "请先在图库中选择要打印的照片。",
++  "More layouts: turn off Size by long edge": "更多版式：关闭“按长边设定尺寸”",
++  "16 bits per channel": "每通道 16 位",
++  "Add Cell": "添加单元格",
++  "Add a cell": "添加单元格",
++  "Auto Layout": "自动布局",
++  "Black Point Compensation": "黑场补偿",
++  "Cells": "单元格",
++  "Clear Layout": "清除版面",
++  "Clear Photo": "清除照片",
++  "Click a cell to move, resize or arrange it": "单击单元格可移动、调整大小或排列",
++  "Contact": "联系表",
++  "Crop Marks": "裁切标记",
++  "Custom size": "自定义尺寸",
++  "Cut Guides": "裁切参考线",
++  "Delete Cell": "删除单元格",
++  "Gap": "间隙",
++  "Grid size": "网格大小",
++  "Image Cells": "图像单元格",
++  "Image Settings": "图像设置",
++  "Inner Stroke": "内描边",
++  "Intent": "渲染方式",
++  "Keep Square": "保持正方形",
++  "Layout Style": "版面样式",
++  "Managed by Printer (Adobe RGB)": "由打印机管理（Adobe RGB）",
++  "Managed by Printer (sRGB)": "由打印机管理（sRGB）",
++  "Media": "介质",
++  "New Page": "新建页面",
++  "One photo fills each page inside the margins.": "每页一张照片，填满边距以内的区域。",
++  "Package": "图片包",
++  "Page": "页面",
++  "Page Bleed": "页面出血",
++  "Page Grid": "页面网格",
++  "Page Info": "页面信息",
++  "Page Margins": "页面边距",
++  "Page Numbers": "页码",
++  "Page Options": "页面选项",
++  "Page Setup": "页面设置",
++  "Photo Border": "照片边框",
++  "Print Job": "打印作业",
++  "Resolution": "分辨率",
++  "Rotate to Fit": "旋转以适合",
++  "Rulers, Grid & Guides": "标尺、网格和参考线",
++  "Show Rulers": "显示标尺",
++  "Single": "单张",
++  "Snap": "对齐",
++  "Spacing": "间距",
++  "Template name": "模板名称",
++  "This page setup is not valid": "此页面设置无效",
++  "Units": "单位",
++  "Use Active Photo": "使用当前照片",
++  "Zoom to Fill Frame": "缩放以填充",
++  "cells overlap": "单元格重叠",
++  "current edits": "当前编辑"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant.json b/crates/ui-egui/locales/zh-hant.json
+index f3dfc422..fa558f75 100644
+--- a/crates/ui-egui/locales/zh-hant.json
++++ b/crates/ui-egui/locales/zh-hant.json
+@@ -2426,5 +2426,36 @@
+   "Start the app with --control 7980 (or LIGHTCRAFT_CONTROL_PORT), then lightcraft-cli mcp --connect attaches one to it.": "先以 --control 7980 (或 LIGHTCRAFT_CONTROL_PORT) 啟動應用程式，lightcraft-cli mcp --connect 即可將一個代理程式連接到其中。",
+   "Welcome": "歡迎",
+   "Next": "下一步",
+-  "Get Started": "開始使用"
++  "Get Started": "開始使用",
++  "module|Library": "圖庫",
++  "module|Develop": "修改相片",
++  "module|Print": "列印",
++  "module|Export": "轉存",
++  "print|Paper": "紙張",
++  "print|Portrait": "直向",
++  "print|Landscape": "橫向",
++  "print|Grid": "格點",
++  "print|Size": "尺寸",
++  "Photo Size": "相片尺寸",
++  "Size by long edge": "依長邊設定尺寸",
++  "Long edge": "長邊",
++  "Print size": "列印尺寸",
++  "Shrunk to fit the printable area of the paper": "紙張可列印區域放不下，已等比縮小",
++  "Each photo prints centred on its own page at its own aspect ratio. The photo itself is not changed.": "每張相片獨立一頁、置中列印，保持相片本身比例；相片本身不會被修改。",
++  "Print to PDF…": "列印為 PDF…",
++  "LightCraft prints to a PDF file: open it in a PDF viewer or PhotoCraft to send it to the printer.": "LightCraft 的列印輸出為 PDF 檔案：以 PDF 檢視器或 PhotoCraft 開啟後送至印表機。",
++  "Select the photos to print in Library first.": "請先在圖庫中選取要列印的相片。",
++  "More layouts: turn off Size by long edge": "更多版面：關閉「依長邊設定尺寸」",
++  "Page Setup": "版面設定",
++  "Print Job": "列印工作",
++  "Resolution": "解析度",
++  "Intent": "演算比對色彩",
++  "Black Point Compensation": "黑點補償",
++  "Managed by Printer (Adobe RGB)": "由印表機管理（Adobe RGB）",
++  "Managed by Printer (sRGB)": "由印表機管理（sRGB）",
++  "16 bits per channel": "每色版 16 位元",
++  "Media": "媒體",
++  "Layout Style": "版面樣式",
++  "Single": "單張",
++  "Image Settings": "影像設定"
+ }
+diff --git a/crates/ui-egui/src/app/frame.rs b/crates/ui-egui/src/app/frame.rs
+index 66e377a9..00872156 100644
+--- a/crates/ui-egui/src/app/frame.rs
++++ b/crates/ui-egui/src/app/frame.rs
+@@ -470,12 +470,19 @@ impl LightcraftApp {
+         }
+         // Order matters: earlier panels take the full edge (top bar spans the window; the tool strip,
+         // right panels and left panel run to the bottom; the bottom bar sits between them).
++        // a view or panel command run in the Print module leaves it, before the bar draws
++        panels::modules::before_frame(self);
+         panels::topbar::show(self, ui);
+         panels::library_problem::banner(self, ui);
+-        panels::strip::show(self, ui);
+         // filled: the gaps the dock leaves between its panes show chrome, not the dark clear colour
+         let chrome = theme::Tokens::get(&ctx).chrome;
+-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(chrome)).show(ui, |ui| docking::show(self, ui));
++        if panels::modules::print_active(self) {
++            // the Print module fills the window below the top bar (no tool strip, no dock)
++            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(chrome)).show(ui, |ui| panels::print_module::show(self, ui));
++        } else {
++            panels::strip::show(self, ui);
++            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(chrome)).show(ui, |ui| docking::show(self, ui));
++        }
+         self.lights_out(&ctx);
+         panels::second::show(self, &ctx);
+         if notice_blocks {
+diff --git a/crates/ui-egui/src/dialogs/print_view.rs b/crates/ui-egui/src/dialogs/print_view.rs
+index fda115e6..f4f90a8e 100644
+--- a/crates/ui-egui/src/dialogs/print_view.rs
++++ b/crates/ui-egui/src/dialogs/print_view.rs
+@@ -67,16 +67,25 @@ fn patch(app: &mut LightcraftApp, ctx: &egui::Context, params: Value) {
+     run(app, ctx, "print.set", params);
+ }
+ 
+-fn heading(ui: &mut Ui, t: &Tokens, text: &str) {
++/// The translation context of the print settings' labels: "Paper" is 纸张 here, not the 纸白
++/// (paper white) of soft proofing, and the orientations are 纵向 / 横向.
++pub(crate) const PRINT_CONTEXT: &str = "print";
++
++/// A print settings label in the UI language ([`PRINT_CONTEXT`]).
++pub(crate) fn ptr(text: &str) -> &str {
++    crate::i18n::tr_ctx(PRINT_CONTEXT, text)
++}
++
++pub(crate) fn heading(ui: &mut Ui, t: &Tokens, text: &str) {
+     ui.add_space(8.0);
+-    ui.label(egui::RichText::new(crate::i18n::tr(text)).font(t.semibold(12.0)).color(t.text));
++    ui.label(egui::RichText::new(ptr(text)).font(t.semibold(12.0)).color(t.text));
+     ui.add_space(2.0);
+ }
+ 
+-fn row<R>(ui: &mut Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
++pub(crate) fn row<R>(ui: &mut Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+     ui.horizontal(|ui| {
+         ui.allocate_ui_with_layout(vec2(86.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+-            ui.label(egui::RichText::new(crate::i18n::tr(label)).color(t.text_label));
++            ui.label(egui::RichText::new(ptr(label)).color(t.text_label));
+         });
+         add(ui)
+     })
+@@ -96,7 +105,7 @@ fn fmt_len(inches: f64, unit: Unit) -> String {
+ }
+ 
+ /// A length field in the ruler's unit; the new value in inches when it changed.
+-fn length(ui: &mut Ui, id: &str, inches: f64, unit: Unit, min_in: f64, max_in: f64) -> Option<f64> {
++pub(crate) fn length(ui: &mut Ui, id: &str, inches: f64, unit: Unit, min_in: f64, max_in: f64) -> Option<f64> {
+     let mut v = unit.from_inches(inches);
+     let r = ui.add(
+         egui::DragValue::new(&mut v)
+@@ -109,9 +118,9 @@ fn length(ui: &mut Ui, id: &str, inches: f64, unit: Unit, min_in: f64, max_in: f
+     r.changed().then(|| unit.to_inches(v))
+ }
+ 
+-fn check(ui: &mut Ui, id: &str, label: &str, value: bool) -> Option<bool> {
++pub(crate) fn check(ui: &mut Ui, id: &str, label: &str, value: bool) -> Option<bool> {
+     let mut v = value;
+-    let r = ui.checkbox(&mut v, crate::i18n::tr(label));
++    let r = ui.checkbox(&mut v, ptr(label));
+     register(ui, format!("check:{id}"), r.rect);
+     r.changed().then_some(v)
+ }
+@@ -120,7 +129,7 @@ fn choice<V: PartialEq + Copy>(ui: &mut Ui, id: &str, options: &[(V, &str)], cur
+     let mut out = None;
+     ui.spacing_mut().item_spacing.x = 3.0;
+     for (i, (v, l)) in options.iter().enumerate() {
+-        if text_button(ui, &format!("{id}-{i}"), l, current == *v).clicked() && current != *v {
++        if text_button(ui, &format!("{id}-{i}"), ptr(l), current == *v).clicked() && current != *v {
+             out = Some(*v);
+         }
+     }
+@@ -312,7 +321,7 @@ fn page_section(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, st: &PrintSett
+     }
+ }
+ 
+-fn settings(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, pu: &mut PrintUi, st: &PrintSettings, photos: usize) {
++pub(crate) fn settings(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, pu: &mut PrintUi, st: &PrintSettings, photos: usize) {
+     let ctx = ui.ctx().clone();
+     let l = &st.layout;
+     let unit = st.guides.units;
+@@ -444,6 +453,18 @@ fn settings(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, pu: &mut PrintUi,
+         }
+     }
+ 
++    page_setup_section(app, ui, t, st);
++
++    page_section(app, ui, t, st);
++
++    print_job_section(app, ui, t, st);
++}
++
++/// Page Setup: the paper, its orientation and the margins.
++pub(crate) fn page_setup_section(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, st: &PrintSettings) {
++    let ctx = ui.ctx().clone();
++    let l = &st.layout;
++    let unit = st.guides.units;
+     heading(ui, t, "Page Setup");
+     row(ui, t, "Paper", |ui| {
+         let current = current_paper(&l.page.paper);
+@@ -486,9 +507,11 @@ fn settings(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, pu: &mut PrintUi,
+             }
+         });
+     }
++}
+ 
+-    page_section(app, ui, t, st);
+-
++/// Print Job: the resolution, colour management, print adjustment, sharpening and depth.
++pub(crate) fn print_job_section(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, st: &PrintSettings) {
++    let ctx = ui.ctx().clone();
+     heading(ui, t, "Print Job");
+     row(ui, t, "Resolution", |ui| {
+         let mut ppi = st.job.ppi;
+@@ -612,7 +635,7 @@ impl Sheet {
+     }
+ }
+ 
+-fn preview(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, pu: &mut PrintUi, st: &PrintSettings, ids: &[PhotoId], pages: usize) {
++pub(crate) fn preview(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, pu: &mut PrintUi, st: &PrintSettings, ids: &[PhotoId], pages: usize) {
+     // room for the page buttons and, for a package, the selected cell's row (which may wrap)
+     let footer = if st.layout.style.is_package() { 104.0 } else { 44.0 };
+     let size = vec2(ui.available_width(), (ui.available_height() - footer).max(120.0));
+diff --git a/crates/ui-egui/src/i18n.rs b/crates/ui-egui/src/i18n.rs
+index c9e0e6ae..b09ac7e6 100644
+--- a/crates/ui-egui/src/i18n.rs
++++ b/crates/ui-egui/src/i18n.rs
+@@ -232,6 +232,11 @@ pub fn tr(source: &str) -> &str {
+     tr_in(language(), source)
+ }
+ 
++/// [`tr`] in a context: the catalog's `"<context>|<source>"` entry, else the plain message.
++pub fn tr_ctx<'a>(context: &str, source: &'a str) -> &'a str {
++    tr_ctx_in(language(), context, source)
++}
++
+ /// [`tr`] for a message whose translation depends on where it appears: a catalog entry keyed
+ /// `"<context>|<source>"` wins, else the plain message. A language adds the contextual entry only
+ /// where its shared translation reads wrongly there (Japanese はい / いいえ as a rule's value).
+diff --git a/crates/ui-egui/src/menus/menubar.rs b/crates/ui-egui/src/menus/menubar.rs
+index b73729a9..f3f4fbd0 100644
+--- a/crates/ui-egui/src/menus/menubar.rs
++++ b/crates/ui-egui/src/menus/menubar.rs
+@@ -294,6 +294,11 @@ const LAYOUT: &[(&str, &[&str])] = &[
+     (
+         "Window",
+         &[
++            "module.library",
++            "module.develop",
++            "module.print",
++            "module.export",
++            "---",
+             "panel.edit",
+             "panel.crop",
+             "panel.remove",
+@@ -395,6 +400,9 @@ pub fn checked(app: &LightcraftApp, id: &str) -> Option<bool> {
+         // Every language's command is checked when it is the active one.
+         _ if crate::menus::language_from_command(id).is_some() => Some(crate::menus::language_from_command(id) == Some(u.language)),
+         "develop.autoSync" => Some(app.session.auto_sync),
++        _ if crate::panels::modules::Module::from_command(id).is_some() => {
++            Some(crate::panels::modules::Module::from_command(id) == Some(crate::panels::modules::current(app)))
++        }
+         "view.photoCounts" => Some(u.show_counts),
+         "view.secondWindow" => Some(u.second_window),
+         "view.photoGrid" => Some(u.view == ViewMode::PhotoGrid),
+diff --git a/crates/ui-egui/src/menus/run.rs b/crates/ui-egui/src/menus/run.rs
+index 9791f0ca..f4156c5b 100644
+--- a/crates/ui-egui/src/menus/run.rs
++++ b/crates/ui-egui/src/menus/run.rs
+@@ -146,6 +146,9 @@ fn theme_command(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
+ 
+ /// Handle UI commands; `None` means "not a UI command — send it to the engine".
+ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
++    if let Some(module) = crate::panels::modules::Module::from_command(id) {
++        return Some(crate::panels::modules::switch(app, module));
++    }
+     if matches!(id, "ui.dock" | "ui.dock.reset") {
+         return Some(crate::docking::command(app, id == "ui.dock.reset", p));
+     }
+diff --git a/crates/ui-egui/src/menus/ui_commands.rs b/crates/ui-egui/src/menus/ui_commands.rs
+index f4398d28..73863776 100644
+--- a/crates/ui-egui/src/menus/ui_commands.rs
++++ b/crates/ui-egui/src/menus/ui_commands.rs
+@@ -210,6 +210,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
+     ("view.focusSearch", "Find…", Some("Cmd+F"), "Edit"),
+     ("dialog.export", "Export…", None, "File"),
+     ("dialog.print", "Print…", Some("Cmd+P"), "File"),
++    // the module bar (`crate::panels::modules`), on Lightroom Classic's module keys
++    ("module.library", "Library", Some("Cmd+Alt+1"), "Window"),
++    ("module.develop", "Develop", Some("Cmd+Alt+2"), "Window"),
++    ("module.print", "Print", Some("Cmd+Alt+6"), "Window"),
++    ("module.export", "Export", None, "Window"),
+     ("app.print", "Print to PDF", None, ""),
+     ("dialog.contactSheet", "Contact Sheet PDF…", None, "File"),
+     ("app.contactSheet", "Export Contact Sheet PDF", None, ""),
+diff --git a/crates/ui-egui/src/panels.rs b/crates/ui-egui/src/panels.rs
+index ed9c45fb..92bfa4d6 100644
+--- a/crates/ui-egui/src/panels.rs
++++ b/crates/ui-egui/src/panels.rs
+@@ -19,10 +19,12 @@ pub mod left;
+ pub mod library_problem;
+ pub mod mask_effects;
+ pub mod masking;
++pub mod modules;
+ pub mod notices;
+ pub mod people;
+ pub mod person;
+ pub mod presets;
++pub mod print_module;
+ pub mod profiles;
+ pub mod right;
+ pub mod second;
+diff --git a/crates/ui-egui/src/panels/modules.rs b/crates/ui-egui/src/panels/modules.rs
+new file mode 100644
+index 00000000..1e70d6d1
+--- /dev/null
++++ b/crates/ui-egui/src/panels/modules.rs
+@@ -0,0 +1,242 @@
++//! The module bar (LightCraft additional extensions): Library | Develop | Print | Export at the
++//! right of the top bar, the way Lightroom Classic switches modules.
++//!
++//! The modules map onto what the app already has, and the way each works stays Lightroom's:
++//! Library is the photo grid with the left panel, Develop the detail view with the Edit panel,
++//! Print fills the window with the print settings and the page preview
++//! ([`crate::panels::print_module`]) and Export opens the Export dialog. The engine, the panels'
++//! content and the library are not changed.
++
++use egui::{Rect, Sense, pos2, vec2};
++use serde_json::{Value, json};
++
++use crate::LightcraftApp;
++use crate::state::{Dialog, RightPanel, ViewMode};
++use crate::theme::Tokens;
++use crate::widgets::register;
++
++/// The translation context of the module names: Develop reads 修改照片 here, not the 编辑 it
++/// reads elsewhere.
++pub const MODULE_CONTEXT: &str = "module";
++
++/// A module of the bar.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Module {
++    Library,
++    Develop,
++    Print,
++    Export,
++}
++
++impl Module {
++    pub const ALL: [Module; 4] = [Module::Library, Module::Develop, Module::Print, Module::Export];
++
++    /// The id used for the bar's widgets (`button:module-<id>`) and its command (`module.<id>`).
++    pub fn id(self) -> &'static str {
++        match self {
++            Module::Library => "library",
++            Module::Develop => "develop",
++            Module::Print => "print",
++            Module::Export => "export",
++        }
++    }
++
++    /// The English name, the key of its translation in [`MODULE_CONTEXT`].
++    pub fn label(self) -> &'static str {
++        match self {
++            Module::Library => "Library",
++            Module::Develop => "Develop",
++            Module::Print => "Print",
++            Module::Export => "Export",
++        }
++    }
++
++    /// The command that switches to the module.
++    pub fn command(self) -> &'static str {
++        match self {
++            Module::Library => "module.library",
++            Module::Develop => "module.develop",
++            Module::Print => "module.print",
++            Module::Export => "module.export",
++        }
++    }
++
++    /// The module a `module.*` command switches to.
++    pub fn from_command(id: &str) -> Option<Module> {
++        Module::ALL.into_iter().find(|m| m.command() == id)
++    }
++
++    /// The name shown on the bar, in the UI language.
++    pub fn name(self) -> &'static str {
++        crate::i18n::tr_ctx(MODULE_CONTEXT, self.label())
++    }
++}
++
++/// What the module bar remembers between frames (never saved: the app opens where Lightroom's
++/// views left it, and the Print module is left on quit).
++#[derive(Clone, Debug, Default)]
++pub struct ModuleState {
++    /// The Print module fills the window.
++    pub print: bool,
++    /// The view and right panel when the Print module opened: a view or panel command run from
++    /// it (a shortcut, a menu) leaves the Print module for what it asked for.
++    pub print_from: Option<(ViewMode, RightPanel)>,
++    /// What the long-edge print layout was last built for ([`crate::panels::print_module`]).
++    pub long_edge_built: Option<String>,
++    /// The last long-edge layout had to shrink photos to fit the printable area.
++    pub long_edge_scaled: bool,
++    /// The last long-edge layout could not be built: why.
++    pub long_edge_error: Option<String>,
++}
++
++/// Whether the Print module fills the window this frame.
++pub fn print_active(app: &LightcraftApp) -> bool {
++    app.ui.modules.print
++}
++
++/// The module the window is showing.
++pub fn current(app: &LightcraftApp) -> Module {
++    if matches!(app.ui.dialog, Some(Dialog::Export { .. })) {
++        Module::Export
++    } else if app.ui.modules.print {
++        Module::Print
++    } else if matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid | ViewMode::People) {
++        Module::Library
++    } else {
++        Module::Develop
++    }
++}
++
++/// Once a frame, before anything draws: a view or right-panel change made while the Print module
++/// was open (a shortcut such as G or D, a menu item) leaves the Print module.
++pub fn before_frame(app: &mut LightcraftApp) {
++    let m = &mut app.ui.modules;
++    if m.print && m.print_from.is_some_and(|from| from != (app.ui.view, app.ui.right)) {
++        m.print = false;
++        m.print_from = None;
++    }
++}
++
++/// Switch to `module` (the `module.*` commands and the bar's buttons).
++pub fn switch(app: &mut LightcraftApp, module: Module) -> Result<Value, String> {
++    match module {
++        Module::Library => {
++            leave_print(app);
++            if !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
++                app.ui.view = ViewMode::PhotoGrid;
++            }
++            app.ui.left_panel = true;
++            // the develop tools belong to Develop; Info and Keywords stay beside the grid
++            if app.ui.right.is_edit_tool() {
++                end_tool(app);
++                app.ui.right = RightPanel::None;
++            }
++        }
++        Module::Develop => {
++            leave_print(app);
++            if !matches!(app.ui.view, ViewMode::Detail | ViewMode::Reference) {
++                app.ui.view = ViewMode::Detail;
++            }
++            // an edit tool already open (Crop, Masking, Remove…) stays; anything else shows Edit
++            if !app.ui.right.is_edit_tool() {
++                end_tool(app);
++                app.ui.right = RightPanel::Edit;
++            }
++        }
++        Module::Print => {
++            if !app.ui.modules.print {
++                end_tool(app);
++                app.ui.print = Default::default();
++                app.ui.modules.print = true;
++                app.ui.modules.print_from = Some((app.ui.view, app.ui.right));
++                // built again for the photos selected now
++                app.ui.modules.long_edge_built = None;
++            }
++        }
++        Module::Export => return app.run("dialog.export", json!({})),
++    }
++    Ok(json!({"module": module.id()}))
++}
++
++fn leave_print(app: &mut LightcraftApp) {
++    app.ui.modules.print = false;
++    app.ui.modules.print_from = None;
++}
++
++/// End a tool in use the way a panel change does (the white-balance picker stays armed).
++fn end_tool(app: &mut LightcraftApp) {
++    if app.ui.tool != "wbPicker" {
++        app.ui.tool.clear();
++    }
++    let _ = app.session.end_interaction();
++}
++
++/// Horizontal padding inside a module button, points.
++const PAD: f32 = 10.0;
++/// Room between two module buttons, points.
++const GAP: f32 = 2.0;
++/// Height of a module button, points.
++const HEIGHT: f32 = 26.0;
++
++fn font(t: &Tokens) -> egui::FontId {
++    t.semibold(13.0)
++}
++
++/// The width the bar takes, to plan the top bar before drawing it.
++pub fn bar_width(ui: &egui::Ui) -> f32 {
++    let t = Tokens::get(ui.ctx());
++    Module::ALL.iter().map(|m| button_width(ui, &t, *m)).sum::<f32>() + GAP * (Module::ALL.len() as f32 - 1.0)
++}
++
++fn button_width(ui: &egui::Ui, t: &Tokens, m: Module) -> f32 {
++    ui.painter().layout_no_wrap(m.name().to_string(), font(t), t.text).size().x + 2.0 * PAD
++}
++
++/// The tooltip of a module button: its name and the key it is bound to now.
++fn tip(app: &LightcraftApp, ui: &egui::Ui, m: Module) -> String {
++    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
++    match crate::shortcuts::shortcut_of(&app.ui.settings.keymap, m.command()) {
++        Some(sc) => format!("{} ({})", m.name(), crate::menubar::shortcut_text(sc, mac)),
++        None => m.name().to_string(),
++    }
++}
++
++/// Draw the bar with its right edge at `right`, centred on `cy`; returns its left edge.
++pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, right: f32, cy: f32) -> f32 {
++    let t = Tokens::get(ui.ctx());
++    let active = current(app);
++    let widths: Vec<f32> = Module::ALL.iter().map(|m| button_width(ui, &t, *m)).collect();
++    let total = widths.iter().sum::<f32>() + GAP * (widths.len() as f32 - 1.0);
++    let left = right - total;
++    register(ui, "region:moduleBar", Rect::from_min_size(pos2(left, cy - HEIGHT / 2.0), vec2(total, HEIGHT)));
++    let mut x = left;
++    let mut clicked = None;
++    for (m, w) in Module::ALL.iter().copied().zip(widths) {
++        let r = Rect::from_min_size(pos2(x, cy - HEIGHT / 2.0), vec2(w, HEIGHT));
++        let resp = ui.interact(r, egui::Id::unique(("module-bar", m.id())), Sense::click());
++        let on = m == active;
++        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, m.name()));
++        let resp = resp.on_hover_text(tip(app, ui, m));
++        register(ui, format!("button:module-{}", m.id()), r);
++        let painter = ui.painter();
++        if on {
++            painter.rect_filled(r, 4.0, t.pressed);
++            let line = Rect::from_min_max(pos2(r.left() + PAD, r.bottom() - 2.0), pos2(r.right() - PAD, r.bottom()));
++            painter.rect_filled(line, 1.0, t.accent);
++        } else if resp.hovered() {
++            painter.rect_filled(r, 4.0, t.hover);
++        }
++        let colour = if on || resp.hovered() { t.text } else { t.text_dim };
++        painter.text(r.center(), egui::Align2::CENTER_CENTER, m.name(), font(&t), colour);
++        if resp.clicked() {
++            clicked = Some(m);
++        }
++        x += w + GAP;
++    }
++    if let Some(m) = clicked
++        && let Err(e) = app.run(m.command(), json!({}))
++    {
++        app.toast_error(ui.ctx(), e);
++    }
++    left
++}
+diff --git a/crates/ui-egui/src/panels/print_module.rs b/crates/ui-egui/src/panels/print_module.rs
+new file mode 100644
+index 00000000..493a9b73
+--- /dev/null
++++ b/crates/ui-egui/src/panels/print_module.rs
+@@ -0,0 +1,229 @@
++//! The Print module (LightCraft additional extensions): the module bar's Print fills the window
++//! with the page preview in the middle and the print settings on the right, the way Lightroom
++//! Classic's Print module is laid out.
++//!
++//! Photo Size ▸ Size by long edge (on by default, 10 in): each selected photo prints on its own
++//! page, centred, at the chosen long edge and its own cropped aspect ratio. Only the print layout
++//! changes (through the `print.*` commands, a Custom Package of one cell per page); the photo, its
++//! edits and the library are not touched. Turned off, the print layout styles (Single, Contact,
++//! Package, Custom) and every other print setting of the Print dialog are shown instead.
++
++use egui::{RichText, Ui};
++use lightcraft_catalog::PhotoId;
++use lightcraft_engine::print::layout::{self, Style, Unit};
++use serde_json::json;
++
++use crate::LightcraftApp;
++use crate::print_view::{self, check, heading, length, ptr, row};
++use crate::theme::Tokens;
++use crate::widgets::{register, text_button};
++
++/// Width of the settings column, points.
++const SETTINGS_W: f32 = 330.0;
++/// The long edge a photo can be given, inches.
++pub const MIN_LONG_EDGE_IN: f64 = 1.0;
++pub const MAX_LONG_EDGE_IN: f64 = layout::MAX_PAGE_IN;
++/// Long edges offered as buttons, inches.
++const QUICK_SIZES: [f64; 6] = [5.0, 6.0, 8.0, 10.0, 12.0, 16.0];
++
++/// The size, inches, of a photo `photo_w` x `photo_h` (any unit) printed with its long edge at
++/// `long_edge` in an area `area_w` x `area_h` in: `(width, height, shrunk)`, `shrunk` when the
++/// area could not take it and it was scaled down, aspect ratio kept. `None` for sizes that are
++/// not positive and finite, or a result smaller than a print cell can be.
++pub fn cell_size(photo_w: f64, photo_h: f64, long_edge: f64, area_w: f64, area_h: f64) -> Option<(f64, f64, bool)> {
++    let ok = |v: f64| v.is_finite() && v > 0.0;
++    if !(ok(photo_w) && ok(photo_h) && ok(long_edge) && ok(area_w) && ok(area_h)) {
++        return None;
++    }
++    let (w, h) = if photo_w >= photo_h { (long_edge, long_edge * photo_h / photo_w) } else { (long_edge * photo_w / photo_h, long_edge) };
++    let scale = (area_w / w).min(area_h / h).min(1.0);
++    let (w, h) = (w * scale, h * scale);
++    (w >= layout::MIN_CELL_IN && h >= layout::MIN_CELL_IN).then_some((w, h, scale < 1.0 - 1e-9))
++}
++
++/// Photo `id`'s size as it prints: the developed size, its crop and rotation included.
++fn photo_size(app: &LightcraftApp, id: PhotoId) -> Option<(f64, f64)> {
++    let p = app.session.catalog.photo(id)?;
++    let (w, h) = lightcraft_pipeline::native_output_size(p.width.max(1) as usize, p.height.max(1) as usize, &p.develop);
++    (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then_some((w, h))
++}
++
++/// The photos the Print module prints: the selection, at most a layout's pages.
++fn print_photos(app: &LightcraftApp) -> Vec<PhotoId> {
++    let mut ids = app.session.targets(&json!({})).unwrap_or_default();
++    ids.truncate(layout::MAX_PAGES as usize);
++    ids
++}
++
++/// Keep the print layout one centred long-edge cell per photo while Size by long edge is on:
++/// built again when the photos, their crops, the long edge or the printable area change.
++pub fn sync_long_edge(app: &mut LightcraftApp) {
++    if !app.ui.settings.print_by_long_edge {
++        return;
++    }
++    let long = app.ui.settings.print_long_edge_in.clamp(MIN_LONG_EDGE_IN, MAX_LONG_EDGE_IN);
++    let ids = print_photos(app);
++    let area = match app.session.print.layout.printable() {
++        Ok(area) => area,
++        Err(e) => {
++            app.ui.modules.long_edge_error = Some(e);
++            app.ui.modules.long_edge_built = None;
++            return;
++        }
++    };
++    let sizes: Vec<(PhotoId, Option<(f64, f64)>)> = ids.iter().map(|id| (*id, photo_size(app, *id))).collect();
++    let mut key = format!("{long:.4}|{:.4},{:.4},{:.4},{:.4}|", area.x, area.y, area.w, area.h);
++    for (id, size) in &sizes {
++        let (w, h) = size.unwrap_or_default();
++        key.push_str(&format!("{}:{:.1}x{:.1};", id.0, w, h));
++    }
++    let laid_out = app.session.print.layout.style == Style::CustomPackage;
++    if laid_out && app.ui.modules.long_edge_built.as_deref() == Some(key.as_str()) {
++        return;
++    }
++    match build(app, &sizes, long, area) {
++        Ok(shrunk) => {
++            app.ui.modules.long_edge_scaled = shrunk;
++            app.ui.modules.long_edge_error = None;
++        }
++        Err(e) => {
++            app.ui.modules.long_edge_scaled = false;
++            app.ui.modules.long_edge_error = Some(e);
++        }
++    }
++    // built (or failed) for this: not tried again every frame
++    app.ui.modules.long_edge_built = Some(key);
++}
++
++/// Lay the photos out, one centred cell per page; whether any had to shrink to fit.
++fn build(app: &mut LightcraftApp, sizes: &[(PhotoId, Option<(f64, f64)>)], long: f64, area: layout::Rect) -> Result<bool, String> {
++    app.run("print.set", json!({"layout": {"style": "customPackage"}, "image": {"zoomToFill": false, "rotateToFit": false}}))?;
++    app.run("print.layout.clear", json!({}))?;
++    let mut shrunk = false;
++    let mut page = 0u32;
++    for (id, size) in sizes {
++        let Some((w, h, small)) = size.and_then(|(pw, ph)| cell_size(pw, ph, long, area.w, area.h)) else { continue };
++        shrunk |= small;
++        if page > 0 {
++            app.run("print.layout.newPage", json!({}))?;
++        }
++        let added = app.run("print.cell.add", json!({"width": w, "height": h}))?;
++        let cell = added["id"].as_u64().ok_or("print.cell.add returned no cell")?;
++        app.run("print.cell.page", json!({"id": cell, "page": page}))?;
++        app.run("print.cell.move", json!({"id": cell, "x": area.x + (area.w - w) / 2.0, "y": area.y + (area.h - h) / 2.0}))?;
++        app.run("print.cell.photo", json!({"id": cell, "photo": id.0}))?;
++        page += 1;
++    }
++    Ok(shrunk)
++}
++
++fn fmt_len(inches: f64, unit: Unit) -> String {
++    let decimals = if unit == Unit::Points { 0 } else { 2 };
++    format!("{:.*} {}", decimals, unit.from_inches(inches), unit.label())
++}
++
++/// Photo Size: Size by long edge, the long edge, and what the first photo prints at.
++fn size_section(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, ids: &[PhotoId]) {
++    heading(ui, t, "Photo Size");
++    if let Some(v) = check(ui, "printByLongEdge", "Size by long edge", app.ui.settings.print_by_long_edge) {
++        app.ui.settings.print_by_long_edge = v;
++        app.ui.modules.long_edge_built = None;
++    }
++    if !app.ui.settings.print_by_long_edge {
++        return;
++    }
++    let unit = app.session.print.guides.units;
++    let current = app.ui.settings.print_long_edge_in;
++    row(ui, t, "Long edge", |ui| {
++        if let Some(v) = length(ui, "printLongEdge", current, unit, MIN_LONG_EDGE_IN, MAX_LONG_EDGE_IN) {
++            app.ui.settings.print_long_edge_in = v;
++        }
++    });
++    ui.horizontal_wrapped(|ui| {
++        ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
++        for inches in QUICK_SIZES {
++            let on = (current - inches).abs() < 1e-6;
++            if text_button(ui, &format!("printLongEdge-{inches}"), &format!("{inches} in"), on).clicked() {
++                app.ui.settings.print_long_edge_in = inches;
++            }
++        }
++    });
++    let area = app.session.print.layout.printable().ok();
++    if let (Some(first), Some(area)) = (ids.first(), area)
++        && let Some((pw, ph)) = photo_size(app, *first)
++        && let Some((w, h, _)) = cell_size(pw, ph, app.ui.settings.print_long_edge_in, area.w, area.h)
++    {
++        row(ui, t, "Print size", |ui| {
++            let r = ui.label(RichText::new(format!("{} × {}", fmt_len(w, unit), fmt_len(h, unit))).color(t.text));
++            register(ui, "label:printSize", r.rect);
++        });
++    }
++    if app.ui.modules.long_edge_scaled {
++        ui.label(RichText::new(ptr("Shrunk to fit the printable area of the paper")).color(t.caution));
++    }
++    if let Some(e) = app.ui.modules.long_edge_error.clone() {
++        ui.label(RichText::new(e).color(t.caution));
++    }
++    ui.label(
++        RichText::new(ptr("Each photo prints centred on its own page at its own aspect ratio. The photo itself is not changed.")).color(t.text_dim),
++    );
++    ui.label(RichText::new(ptr("More layouts: turn off Size by long edge")).color(t.text_dim));
++}
++
++/// Print to PDF, and what it makes.
++fn print_button(app: &mut LightcraftApp, ui: &mut Ui, t: &Tokens, ids: &[PhotoId]) {
++    let enabled = !ids.is_empty() && app.export.is_none();
++    ui.add_enabled_ui(enabled, |ui| {
++        if text_button(ui, "printModulePdf", "Print to PDF…", false).clicked()
++            && let Err(e) = app.run("app.print", json!({}))
++        {
++            app.toast_error(ui.ctx(), e);
++        }
++    });
++    ui.label(RichText::new(ptr("LightCraft prints to a PDF file: open it in a PDF viewer or PhotoCraft to send it to the printer.")).color(t.text_dim));
++}
++
++/// The module: the settings column on the right, the page preview filling the rest.
++pub fn show(app: &mut LightcraftApp, ui: &mut Ui) {
++    let t = Tokens::get(ui.ctx());
++    sync_long_edge(app);
++    let ids = print_photos(app);
++    let mut pu = std::mem::take(&mut app.ui.print);
++    let st = app.session.print.clone();
++    let pages = st.layout.page_count(ids.len());
++    pu.page = pu.page.min(pages.saturating_sub(1));
++    if pu.selected.is_some_and(|c| st.layout.cell(c).is_none_or(|c| c.page as usize != pu.page)) {
++        pu.selected = pu.selected.filter(|c| st.layout.cell(*c).is_some());
++    }
++    egui::Panel::right("print_module_settings")
++        .exact_size(SETTINGS_W)
++        .resizable(false)
++        .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin { left: 12, right: 8, top: 8, bottom: 8 }))
++        .show(ui, |ui| {
++            register(ui, "panel:printModule", ui.max_rect());
++            egui::ScrollArea::vertical().id_salt("print-module-settings").auto_shrink([false, false]).show(ui, |ui| {
++                ui.set_width(SETTINGS_W - 34.0);
++                ui.spacing_mut().item_spacing.y = 5.0;
++                size_section(app, ui, &t, &ids);
++                if app.ui.settings.print_by_long_edge {
++                    print_view::page_setup_section(app, ui, &t, &st);
++                    print_view::print_job_section(app, ui, &t, &st);
++                } else {
++                    print_view::settings(app, ui, &t, &mut pu, &st, ids.len());
++                }
++                ui.add_space(14.0);
++                print_button(app, ui, &t, &ids);
++                ui.add_space(8.0);
++            });
++        });
++    egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.chrome).inner_margin(12)).show(ui, |ui| {
++        if ids.is_empty() {
++            ui.centered_and_justified(|ui| {
++                ui.label(RichText::new(ptr("Select the photos to print in Library first.")).color(t.text_dim));
++            });
++        } else {
++            print_view::preview(app, ui, &t, &mut pu, &st, &ids, pages);
++        }
++    });
++    app.ui.print = pu;
++}
+diff --git a/crates/ui-egui/src/panels/topbar.rs b/crates/ui-egui/src/panels/topbar.rs
+index 407fc5f0..fd7d826a 100644
+--- a/crates/ui-egui/src/panels/topbar.rs
++++ b/crates/ui-egui/src/panels/topbar.rs
+@@ -8,6 +8,9 @@ use crate::icons::{Icon, paint};
+ use crate::theme::Tokens;
+ use crate::widgets::{icon_button, register};
+ 
++/// Room between the appearance icon's centre and the module bar's right edge, points.
++const MODULE_GAP: f32 = 26.0;
++
+ /// The bar doubles as the window's title bar: dragging its empty space moves the window and a
+ /// double-click acts as the system setting says. Made before the bar's widgets so they win the click.
+ fn window_handle(ui: &mut egui::Ui, bar: Rect) {
+@@ -45,9 +48,11 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+             // traffic lights' room, and full screen gives that room back. Centring on `full` moved
+             // the field, and changed its width, every time that room changed (issue #2365).
+             let bar = Rect::from_min_max(pos2(full.left() - left as f32, full.top()), pos2(full.right() + 12.0, full.bottom()));
+-            // The field stops short of the filter icon and the seven icons on the right; centred,
+-            // it is twice the room between the window's centre and them.
+-            let mut sw = 640.0f32.min(2.0 * (full.right() - 310.0 - bar.center().x)).max(190.0);
++            // The field stops short of the filter icon, the icons on the right and the module bar
++            // left of them (the Export icon gives its place to the bar's Export); centred, it is
++            // twice the room between the window's centre and them.
++            let reserve = 310.0 - 40.0 + crate::panels::modules::bar_width(ui) + MODULE_GAP;
++            let mut sw = 640.0f32.min(2.0 * (full.right() - reserve - bar.center().x)).max(190.0);
+             if !app.native_menu {
+                 // leave room for the in-window menus left of the (centred) search field
+                 let menus_right = full.left() + 140.0 + crate::menubar::bar_width(ui) + 24.0;
+@@ -63,6 +68,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+             filter_button(app, ui, &t, sr);
+             let x = right_icons(app, ui, &t, full);
+             appearance_button(app, ui, &t, full, x);
++            crate::panels::modules::show(app, ui, x - MODULE_GAP, full.center().y);
+         });
+     if let Some(slot) = slot {
+         ui.ctx().layer_painter(ui.layer_id()).set(slot, egui::Shape::rect_filled(panel.response.rect, 0.0, t.chrome));
+@@ -185,7 +191,6 @@ fn right_icons(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, full: Rec
+         ("discord", Icon::Chat, "Join the ArtCraft community on Discord", "app.discord"),
+         ("cloud", Icon::Cloud, cloud_tip, ""),
+         ("help", Icon::Help, "Keyboard shortcuts", "app.shortcuts"),
+-        ("share", Icon::Share, "Export", "dialog.export"),
+         ("import", Icon::Plus, import_tip.as_str(), "file.addPhotos"),
+         ("bell", Icon::Bell, "Activity", "panel.activity"),
+     ] {
+diff --git a/crates/ui-egui/src/state.rs b/crates/ui-egui/src/state.rs
+index 37a8c2d4..673f3a08 100644
+--- a/crates/ui-egui/src/state.rs
++++ b/crates/ui-egui/src/state.rs
+@@ -381,6 +381,9 @@ pub struct UiState {
+     /// The Print dialog's page, selection and drag.
+     #[serde(skip)]
+     pub print: crate::print_view::PrintUi,
++    /// The module bar's state (Library | Develop | Print | Export, `crate::panels::modules`).
++    #[serde(skip)]
++    pub modules: crate::panels::modules::ModuleState,
+ }
+ 
+ impl Default for UiState {
+@@ -531,6 +534,7 @@ impl Default for UiState {
+             status: String::new(),
+             dialog: None,
+             print: Default::default(),
++            modules: Default::default(),
+         }
+     }
+ }
+diff --git a/crates/ui-egui/src/state/settings.rs b/crates/ui-egui/src/state/settings.rs
+index 62b50557..8e3a5222 100644
+--- a/crates/ui-egui/src/state/settings.rs
++++ b/crates/ui-egui/src/state/settings.rs
+@@ -207,6 +207,11 @@ pub struct AppSettings {
+     /// profiles changes it). A value this version doesn't read asks again.
+     #[serde(deserialize_with = "lenient")]
+     pub lens_database: lightcraft_engine::lensfun_download::Offer,
++    /// Print module ▸ Photo Size: each photo prints at [`Self::print_long_edge_in`] along its long
++    /// edge, centred on its own page (off: the print layout styles decide).
++    pub print_by_long_edge: bool,
++    /// The long edge a photo prints at, inches (Print module ▸ Photo Size).
++    pub print_long_edge_in: f64,
+ }
+ 
+ /// Where File ▸ Import Lightroom Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
+@@ -260,6 +265,8 @@ impl Default for AppSettings {
+             loupe_info: LoupeInfo::default(),
+             lightroom_import: LightroomImport::Ask,
+             lens_database: Default::default(),
++            print_by_long_edge: true,
++            print_long_edge_in: 10.0,
+         }
+     }
+ }
+diff --git a/crates/ui-egui/src/tests.rs b/crates/ui-egui/src/tests.rs
+index f801ee84..f0d647c0 100644
+--- a/crates/ui-egui/src/tests.rs
++++ b/crates/ui-egui/src/tests.rs
+@@ -72,6 +72,7 @@ pub(super) mod panels;
+ mod preset_favorites;
+ mod preset_import;
+ mod preview_limit;
++mod modules;
+ mod print;
+ mod profile_menu;
+ mod profiles_layout;
+diff --git a/crates/ui-egui/src/tests/modules.rs b/crates/ui-egui/src/tests/modules.rs
+new file mode 100644
+index 00000000..12064809
+--- /dev/null
++++ b/crates/ui-egui/src/tests/modules.rs
+@@ -0,0 +1,186 @@
++//! The module bar (Library | Develop | Print | Export) and the Print module's Size by long edge,
++//! driven through the control channel as a person clicks them.
++
++use std::time::Duration;
++
++use serde_json::{Value, json};
++
++use crate::headless::Headless;
++use crate::panels::modules::{self, Module};
++use crate::panels::print_module::cell_size;
++use crate::state::{Dialog, RightPanel, ViewMode};
++use crate::{LightcraftApp, Services};
++use lightcraft_engine::print::layout::{Orientation, Style};
++
++const T: Duration = Duration::from_secs(30);
++
++fn demo() -> Headless {
++    let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services::default());
++    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
++    h.settle(T);
++    h
++}
++
++fn has(h: &Headless, id: &str) -> bool {
++    h.app.widgets.iter().any(|(w, _)| w == id)
++}
++
++fn click(h: &mut Headless, id: &str) {
++    let r = h.request("ui.clickWidget", json!({"id": id}), T);
++    assert_eq!(r["ok"], true, "{id}: {r}");
++    h.settle(T);
++}
++
++fn cmd(h: &mut Headless, id: &str, params: Value) -> Value {
++    let r = h.request("engine.execute", json!({"command": id, "params": params}), T);
++    assert_eq!(r["ok"], true, "{id}: {r}");
++    h.settle(T);
++    r["result"].clone()
++}
++
++/// Select the first `n` visible photos.
++fn select(h: &mut Headless, n: usize) -> Vec<u64> {
++    let ids: Vec<u64> = h.app.session.visible_cloned().into_iter().take(n).map(|id| id.0).collect();
++    assert_eq!(ids.len(), n, "the demo library has {n} photos");
++    cmd(h, "library.select", json!({"ids": ids}));
++    ids
++}
++
++#[test]
++fn the_bar_is_in_the_top_bar_and_switches_the_four_modules() {
++    let mut h = demo();
++    for m in Module::ALL {
++        assert!(has(&h, &format!("button:module-{}", m.id())), "{m:?} is on the bar");
++    }
++    assert!(!has(&h, "icon:share"), "the bar's Export replaces the Export icon");
++
++    click(&mut h, "button:module-library");
++    assert_eq!(modules::current(&h.app), Module::Library);
++    assert_eq!(h.app.ui.view, ViewMode::PhotoGrid);
++    assert!(h.app.ui.left_panel, "Library shows the left panel");
++
++    click(&mut h, "button:module-develop");
++    assert_eq!(modules::current(&h.app), Module::Develop);
++    assert_eq!(h.app.ui.view, ViewMode::Detail);
++    assert_eq!(h.app.ui.right, RightPanel::Edit, "Develop opens the Edit panel");
++    // clicking it again keeps Edit open (the panel command would toggle it off)
++    click(&mut h, "button:module-develop");
++    assert_eq!(h.app.ui.right, RightPanel::Edit);
++
++    click(&mut h, "button:module-print");
++    assert_eq!(modules::current(&h.app), Module::Print);
++    assert!(has(&h, "panel:printModule") && has(&h, "print:page"), "the Print module fills the window");
++    assert!(!has(&h, "panel:right_panel"), "no dock while printing");
++
++    click(&mut h, "button:module-export");
++    assert!(matches!(h.app.ui.dialog, Some(Dialog::Export { .. })), "Export opens the Export dialog");
++    assert_eq!(modules::current(&h.app), Module::Export);
++}
++
++#[test]
++fn the_module_commands_have_lightroom_classic_keys_and_menu_items() {
++    for (id, key) in [("module.library", Some("Cmd+Alt+1")), ("module.develop", Some("Cmd+Alt+2")), ("module.print", Some("Cmd+Alt+6")), ("module.export", None)]
++    {
++        let c = crate::menus::ui_commands().find(|c| c.0 == id).unwrap_or_else(|| panic!("{id} is a UI command"));
++        assert_eq!(c.2, key, "{id}");
++        assert_eq!(c.3, "Window", "{id}");
++    }
++    let mut h = demo();
++    cmd(&mut h, "module.print", json!({}));
++    assert_eq!(crate::menubar::checked(&h.app, "module.print"), Some(true));
++    assert_eq!(crate::menubar::checked(&h.app, "module.library"), Some(false));
++}
++
++#[test]
++fn a_view_command_leaves_the_print_module() {
++    let mut h = demo();
++    select(&mut h, 1);
++    cmd(&mut h, "module.print", json!({}));
++    assert!(modules::print_active(&h.app));
++    // G in Lightroom: the grid
++    cmd(&mut h, "view.photoGrid", json!({}));
++    assert!(!modules::print_active(&h.app), "a view change leaves Print");
++    assert_eq!(modules::current(&h.app), Module::Library);
++    assert!(!has(&h, "panel:printModule"), "the Print module is gone");
++}
++
++#[test]
++fn a_long_edge_cell_keeps_the_aspect_ratio_and_shrinks_only_to_fit() {
++    // 3:2 landscape at 10 in in a landscape Letter's printable area (10.5 × 8)
++    let (w, h, shrunk) = cell_size(6000.0, 4000.0, 10.0, 10.5, 8.0).unwrap();
++    assert!((w - 10.0).abs() < 1e-9 && (h - 20.0 / 3.0).abs() < 1e-9 && !shrunk, "{w} × {h}");
++    // portrait photo: the height is the long edge
++    let (w, h, _) = cell_size(4000.0, 6000.0, 10.0, 8.0, 10.5).unwrap();
++    assert!((h - 10.0).abs() < 1e-9 && (w - 20.0 / 3.0).abs() < 1e-9, "{w} × {h}");
++    // the same landscape photo on a portrait Letter (8 × 10.5): shrunk to the width, ratio kept
++    let (w, h, shrunk) = cell_size(6000.0, 4000.0, 10.0, 8.0, 10.5).unwrap();
++    assert!((w - 8.0).abs() < 1e-9 && (h - 16.0 / 3.0).abs() < 1e-9 && shrunk, "{w} × {h}");
++    assert!(cell_size(0.0, 4000.0, 10.0, 8.0, 10.5).is_none());
++    assert!(cell_size(6000.0, 4000.0, f64::NAN, 8.0, 10.5).is_none());
++}
++
++#[test]
++fn size_by_long_edge_centres_each_photo_on_its_own_page_without_changing_it() {
++    let mut h = demo();
++    let ids = select(&mut h, 2);
++    let develop_before: Vec<_> =
++        ids.iter().map(|id| h.app.session.catalog.photo(lightcraft_catalog::PhotoId(*id)).unwrap().develop.clone()).collect();
++    assert!(h.app.ui.settings.print_by_long_edge, "on by default");
++    assert_eq!(h.app.ui.settings.print_long_edge_in, 10.0, "10 in by default");
++    cmd(&mut h, "print.set", json!({"layout": {"page": {"orientation": "landscape"}}}));
++    click(&mut h, "button:module-print");
++    let layout = h.app.session.print.layout.clone();
++    assert_eq!(layout.page.orientation, Orientation::Landscape);
++    assert_eq!(layout.style, Style::CustomPackage);
++    assert_eq!(layout.cells.len(), 2, "one cell per photo");
++    assert_eq!(layout.pages, 2, "each on its own page");
++    let area = layout.printable().unwrap();
++    for (cell, id) in layout.cells.iter().zip(&ids) {
++        assert_eq!(cell.photo, Some(*id));
++        let r = cell.rect;
++        let p = h.app.session.catalog.photo(lightcraft_catalog::PhotoId(*id)).unwrap();
++        let (pw, ph) = lightcraft_pipeline::native_output_size(p.width as usize, p.height as usize, &p.develop);
++        let (ew, eh, _) = cell_size(pw, ph, 10.0, area.w, area.h).unwrap();
++        assert!((r.w - ew).abs() < 1e-6 && (r.h - eh).abs() < 1e-6, "cell {r:?} for {pw} × {ph}");
++        assert!((r.w.max(r.h) - 10.0).abs() < 1e-6 || h.app.ui.modules.long_edge_scaled, "10 in long edge unless shrunk: {r:?}");
++        assert!((r.x + r.w / 2.0 - (area.x + area.w / 2.0)).abs() < 1e-6, "centred across: {r:?}");
++        assert!((r.y + r.h / 2.0 - (area.y + area.h / 2.0)).abs() < 1e-6, "centred down: {r:?}");
++    }
++    // a new long edge lays the pages out again
++    h.app.ui.settings.print_long_edge_in = 6.0;
++    h.settle(T);
++    let r = h.app.session.print.layout.cells[0].rect;
++    assert!((r.w.max(r.h) - 6.0).abs() < 1e-6, "{r:?}");
++    let develop_after: Vec<_> =
++        ids.iter().map(|id| h.app.session.catalog.photo(lightcraft_catalog::PhotoId(*id)).unwrap().develop.clone()).collect();
++    assert_eq!(develop_before, develop_after, "printing never edits the photo");
++}
++
++#[test]
++fn turning_size_by_long_edge_off_shows_every_print_layout_style() {
++    let mut h = demo();
++    select(&mut h, 1);
++    click(&mut h, "button:module-print");
++    assert!(has(&h, "drag:printLongEdge") && !has(&h, "button:printStyle-0"));
++    click(&mut h, "check:printByLongEdge");
++    assert!(!h.app.ui.settings.print_by_long_edge);
++    assert!(has(&h, "button:printStyle-0"), "the layout styles are back");
++    assert!(has(&h, "button:printModulePdf"), "Print to PDF stays");
++}
++
++#[test]
++fn chinese_names_follow_lightroom_classic() {
++    use crate::i18n::{Locale, set_language};
++    set_language(Locale::ZhHans);
++    assert_eq!(Module::Library.name(), "图库");
++    assert_eq!(Module::Develop.name(), "修改照片");
++    assert_eq!(Module::Print.name(), "打印");
++    assert_eq!(Module::Export.name(), "导出");
++    assert_eq!(crate::print_view::ptr("Portrait"), "纵向", "a page orientation, not a portrait profile");
++    assert_eq!(crate::print_view::ptr("Paper"), "纸张");
++    assert_eq!(crate::i18n::tr("Portrait"), "人像", "elsewhere the plain translation stays");
++    set_language(Locale::ZhHant);
++    assert_eq!(Module::Develop.name(), "修改相片");
++    set_language(Locale::En);
++    assert_eq!(Module::Develop.name(), "Develop");
++}
+-- 
+2.43.0
+
