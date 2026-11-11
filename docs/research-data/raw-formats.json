@@ -1,0 +1,2896 @@
+{
+ "research": {
+  "formats": {
+   "summary": "结论：在 c2e9c45 版本上，LightCraft 能原生解码并完整编辑理光 GR 系列 DNG，以及理光时代宾得机身的 PEF/DNG（K-3 Mark III、K-1、K-70、KF、KP、645Z、K-1 Mark II 的 DNG 都有真实样张测试）。Phase One IIQ（以及 Leaf MOS、Mamiya DM 的 MOS）和 Sigma X3F（包括 DP2 Quattro）都没有传感器解码器，只能以 preview_only（仅预览）方式导入。\n完整链路是：导入扩展名列表已包含 iiq/x3f → lightcraft_raw::probe 把 X3F 按 `FOVb` 魔数识别为 RawFormat::X3f，IIQ 则只能靠通用的 TIFF 结构规则（thumbnail_shell、CFA 标记、IFD0 里没有图像等）识别为 OtherTiff → decode_with 对这两种格式都返回 Unsupported → 引擎回退到内嵌预览，并给照片打上 preview_only 标记。\npreview_only 照片实际编辑的是相机内嵌的 8 位 JPEG，按非 raw 图像处理：白平衡用相对刻度，AI Denoise 不可用，“去除热像素”被隐藏，Convert to DNG 会失败，导出分辨率最多等于内嵌预览的尺寸。普通降噪滑块仍可用。网格缩略图、放大视图和编辑/信息面板都有“Preview only”提示。\nX3F 的预览不是通过解析 X3F 目录取得的，而是在整个文件里按字节扫描，取其中最大的完整三通道 DCT JPEG。IIQ 先查 TIFF 指针和 maker note，找不到再扫描，还找不到就直接用 IFD0 的小 RGB 缩略图，此时目录里记录的尺寸就是缩略图尺寸。代码注释里提到过“一个 150 MP 文件显示成 296x220”。\n这两条预览路径只在合成测试文件上验证过。语料清单 RAW_SAMPLES 里没有任何 X3F 或 IIQ 真实样张，coverage.tsv 中的 “preview” 状态也只是 coverage.py 里的静态格式规则，不是实测结果。DP2 Quattro 根本不在 Adobe 机型列表里，所以在覆盖表中完全没有条目。\n另外，X3F 在 LightCraft 中读不到任何元数据（相机型号、ISO、拍摄时间），因为 meta 容器嗅探没有 X3F 分支。\n宾得 PEF 文件本身不带色彩矩阵，所以颜色靠逐张拟合相机 JPEG，白平衡用相对刻度。同一台机器拍 DNG 则使用文件自带矩阵，白平衡按开尔文。因此建议宾得机身拍 DNG。\n3 通道 LinearRaw DNG（第三方工具从 Foveon 文件转换出来的就是这种）在代码层面可以解码并走完整的 raw 编辑流程，但 AI Denoise 只接受 Bayer 马赛克，对它不可用，而且仓库里没有真实的 Foveon 转换 DNG 做过验证。\n解码器是写死的 match 分发，没有插件注册机制。不过引擎的 file_probe、file_loader、preview_loader 三个钩子可以替换，可以在不改动核心 crate 的前提下拦截 .x3f/.iiq。代价是降噪、DNG 转换等直接调用 lightcraft_raw 的路径会绕过这些钩子。\n本次核实最后两条推断用的 exiftool.org 外部文档时被会话网络拦截了（该域名需要在会话网络设置中放行），所以“真实 Quattro X3F 或 IIQ 文件里有没有大尺寸 JPEG”仍是待验证问题。",
+   "claims": [
+    {
+     "id": "F1",
+     "claim": "导入扩展名白名单已包含 iiq、x3f、mos、pef、dng 等；注释说明它包括 preview-only raw，能否解码由文件 probe 决定。也就是说文件能被发现、能被导入，不等于能原生编辑。",
+     "evidence": [
+      "crates/engine/src/import/files.rs:12-21（EXTENSIONS，第 20 行 \"iiq\", \"crw\", \"mrw\", \"x3f\", \"kdc\", \"mos\"…）",
+      "crates/engine/src/tests/import.rs:2421-2456（folder_import_picks_up_undecodable_raw_containers_as_preview_only：c.x3f、d.iiq、f.mos 全部导入为 preview_only）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F2",
+     "claim": "codecs::sniff 把 `FOVb`（X3F）归为 RawOther。像 IIQ 这类以 II*\\0 开头的 TIFF，只有 tiff_is_raw 找到 DNGVersion、CFA/LinearRaw photometric 或 raw 专用压缩值时才算 raw；IFD0 只是 RGB 缩略图的 IIQ 会被判成普通 Tiff。但引擎 probe_bytes 先调用 lightcraft_raw::probe，codecs 的 sniff 只是兜底。",
+     "evidence": [
+      "crates/codecs/src/sniff.rs:114-116",
+      "crates/codecs/src/sniff.rs:126-128",
+      "crates/codecs/src/sniff.rs:166-220（tiff_is_raw）",
+      "crates/engine/src/files/probe.rs:134（if lightcraft_raw::probe(bytes).is_some()）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F3",
+     "claim": "RawFormat 枚举里有 X3f 变体，但 IIQ 没有自己的变体，只是 OtherTiff 注释里的一项（\"3FR, IIQ, ERF, KDC, DCR, MOS\"）。is_supported 不包括 X3f 和 OtherTiff。decode_with 对 OtherTiff 返回 Unsupported(other_tiff_reason)，对 X3f 落到兜底分支，返回 \"X3f files are not decoded yet\"。crates/raw/src/vendor/ 下没有 x3f、iiq、phaseone、leaf 模块，全仓库 grep `IIII`、`SECd`、`IMA2`、`CAMF` 均无结果。",
+     "evidence": [
+      "crates/raw/src/lib.rs:124-125（X3f），136-137（OtherTiff 注释）",
+      "crates/raw/src/lib.rs:142-162（is_supported）",
+      "crates/raw/src/lib.rs:417-437（decode_with；435 OtherTiff，436 兜底分支）",
+      "crates/raw/src/tests.rs:260-267（probe FOVb → X3f，!is_supported，decode → Unsupported 含 \"X3f\"）",
+      "ls crates/raw/src/vendor：arw…srw，没有 x3f/iiq"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F4",
+     "claim": "IIQ 的识别没有任何 Phase One 专用逻辑，完全依赖通用结构规则：has_raw_ifd（CFA photometric、压缩值 99/65535 等）、thumbnail_shell（IFD0 是小 RGB 图，同时 SubIFD 或 Exif PixelX/YDimension 声明的尺寸至少大 4 倍，且文件里有足够的游离字节）、is_preview_container、is_leaf_mosaic（Leaf 0x8606）。真实 IIQ 如果一条都不满足，lightcraft_raw::probe 返回 None，文件会被当成小尺寸普通 TIFF 图像导入。文档说这个 bug 已修复，但仓库里没有真实 IIQ 样张可以证明。",
+     "evidence": [
+      "crates/raw/src/lib.rs:244-249（OtherTiff 判定）",
+      "crates/raw/src/lib.rs:255-262（LEAF_DATA 0x8606、is_leaf_mosaic）",
+      "crates/raw/src/lib.rs:272-281（has_raw_ifd）",
+      "crates/raw/src/lib.rs:311-351（thumbnail_shell）",
+      "crates/engine/src/files/tests.rs:1553-1564（合成 \"IMG_0001.IIQ\" 外壳 → preview_only，注释 \"a 150 MP file renders 296x220\"）",
+      "docs/whats-new.md:2050-2052（文档声称 IIQ 不再按缩略图大小的普通图像打开）",
+      "grep x3f/iiq xtask/src/raw_samples.rs：无结果"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F5",
+     "claim": "失败后的回退流程：probe_bytes 调 probe_info，拿到 Unsupported 后 preview_reason 返回 Ok(why)，再用 embedded_preview_size 取内嵌预览尺寸，写入 ProbeInfo { kind: Raw, preview_only: Some(why), 宽高 = 预览尺寸 }。没有预览时导入直接失败，报 \"unsupported raw (...) without an embedded preview\"。渲染时 load_bytes_now 走 load_embedded_preview，返回 SourceInfo::default()（raw=false），并且总是取最大的那张 JPEG。",
+     "evidence": [
+      "crates/engine/src/files/probe.rs:130-157",
+      "crates/engine/src/files/probe.rs:242-250（preview_reason）",
+      "crates/engine/src/files/load.rs:95-103",
+      "crates/engine/src/files/preview.rs:57-80（embedded_preview_size、load_embedded_preview）",
+      "crates/engine/src/media/source.rs:395-398（ProbeInfo.preview_only 文档）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F6",
+     "claim": "X3F（包括 Quattro）的内嵌预览提取：不解析 X3F 目录，preview_covering 对 Crw、Mrw、X3f 直接调用 scan_for_jpeg。扫描在整个文件中找 d8 ff 起始，逐段遍历 JPEG marker，只接受 3 分量的 baseline/progressive DCT JPEG（lossless/arithmetic 一律拒绝），取最大的一张，并受 8 倍文件大小的预算限制。没有任何 Quattro 专用代码；测试只用了 `FOVb\\x02\\0\\x02\\0` 加合成 JPEG。若扫描找不到 JPEG，因为 X3F 被嗅探为 RawOther 而不是 Tiff，也没有“文件本身作替身”的兜底，导入会失败。",
+     "evidence": [
+      "crates/raw/src/preview.rs:289-291",
+      "crates/raw/src/preview.rs:397-450（walk_jpeg，433 行拒绝 lossless/arithmetic）",
+      "crates/raw/src/preview.rs:452-516（scan_for_jpeg / scan_with_budget，502 行只收 3 分量）",
+      "crates/raw/src/preview/tests.rs:568-595（合成 FOVb 容器测试）",
+      "crates/engine/src/files/preview.rs:16-27（只有 sniff==Tiff 才把文件本身当替身）",
+      "crates/engine/src/files/probe.rs:139"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F7",
+     "claim": "X3F 在 LightCraft 中拿不到任何文件元数据：lightcraft_meta::embedded 只处理 PSD、RAF、MRW、CR3、HEIF、JPEG、PNG、WebP 和 TIFF，X3F 返回空。所以相机型号、ISO、拍摄时间都为空，拍摄时间退回到文件修改时间；方向优先用内嵌 JPEG 自带的 EXIF orientation，没有就按 Normal。",
+     "evidence": [
+      "crates/meta/src/container.rs:33-81",
+      "crates/engine/src/files/probe.rs:131-133、140-155（preview-only 分支只用整文件 extract 的 meta）",
+      "crates/engine/src/files/preview.rs:4-10（preview_orientation）",
+      "crates/engine/src/media/source.rs:378-382（file_modified 作为无拍摄日期时的回退）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F8",
+     "claim": "IIQ 的预览提取：解析 TIFF，在所有 IFD 和 maker note 中找 JPEGInterchangeFormat、压缩值 6/7 的单块图像，以及 undefined 类型标签里的 JPEG；格式不受支持时再全文件扫描 JPEG；仍然没有，就把整个 IIQ 当 TIFF 解码，即显示 IFD0 的缩小 RGB 图，目录记录的宽高也是这个缩略图的尺寸，导出同样受限。没有解析 Phase One 私有块。",
+     "evidence": [
+      "crates/raw/src/preview.rs:197-232（candidates）",
+      "crates/raw/src/preview.rs:293-324（IFD + maker note 候选，323-324 行对未支持格式回退 scan_for_jpeg）",
+      "crates/engine/src/files/preview.rs:16-27",
+      "crates/engine/src/files/tests.rs:1559-1564（宽高等于 IFD0 的 24x16，embedded_preview_srgb 返回 IFD0 图像）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F9",
+     "claim": "preview-only 照片能做什么：develops_raw() 为 false，按渲染图（JPEG）处理，SourceInfo 和默认 DevelopSettings 都是非 raw 的；编辑面板全部可用，但白平衡是相对刻度；AI Denoise 显示为 NotApplicable；“去除热像素”被隐藏；普通降噪（Luminance/Color 等 6 个滑块）仍启用；XMP crs 目标为 Rendered；Convert to DNG 因 lightcraft_raw::decode 失败而报错；导出分辨率不超过内嵌预览。UI 上有网格角标、放大视图提示条（\"Preview only — editing the camera's embedded JPEG\"）、编辑/信息面板提示及 Reload from Disk 按钮；catalog.query 和 photo.inspect 会返回 previewOnly；升级版本后会在后台重新检查。",
+     "evidence": [
+      "crates/catalog/src/model.rs:313-318（preview_only 文档），447-449（develops_raw）",
+      "crates/engine/src/files/tests.rs:1486-1500（rendered like the JPEG it is；render_job ok；previewOnly 暴露给 agent）",
+      "crates/ui-egui/src/panels/edit.rs:43、59、83-90、301-305、307-310、312",
+      "crates/engine/src/denoise/products.rs:25-27（eligible 需要 develops_raw）",
+      "crates/engine/src/crs.rs:44-46",
+      "crates/engine/src/cmd/convert.rs:38",
+      "crates/ui-egui/src/panels/grid.rs:801-803、942-953；crates/ui-egui/src/panels/detail/info.rs:224-235；crates/ui-egui/src/widgets.rs:221-262",
+      "crates/catalog/src/model.rs:440-444；crates/engine/src/cmd/recheck.rs:50"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F10",
+     "claim": "理光 GR DNG 走通用 DNG 路径：IFD0 有 DNG_VERSION 即判为 Dng，代码里没有理光专用逻辑。各机型状态：GR（4:3 样张）、GR II、GR IIIx 有固定传感器哈希且通过相机 JPEG 比对（r>0.6），为 verified；GR III 只在通用语料测试里解码成功，没有固定哈希，也没有 JPEG 比对；GR III HDF、GR IIIx HDF、GR IV、GR IV Monochrome、GR Digital I–IV、GX100 为 unverified（按格式规则推定）；GX200 只固定了哈希。GXR 有一点文档与代码不一致：coverage.tsv 里 5 个 GXR 镜头单元条目都是 unverified，但语料里有 dng-ricoh-gxr.dng 并固定了哈希（预览方向与传感器不一致，所以没做 JPEG 比对）。",
+     "evidence": [
+      "crates/raw/src/lib.rs:198-201（DNG_VERSION → Dng）",
+      "grep -i ricoh crates：只有 lib.rs:225 和测试命中",
+      "crates/raw/tests/it/canon_pentax_corpus.rs:1-10、145-149",
+      "xtask/src/raw_samples.rs:619-621（GR III，14bit 3:2）、2107-2108（GR 12bit 4:3）、1912-1913（GR IIIx）、1922-1923（GXR）",
+      "crates/raw/tests/it/corpus.rs:28-105（corpus_raw_decodes 只检查能否解码）",
+      "docs/raw/coverage.tsv:1081-1099"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F11",
+     "claim": "GR DNG 的颜色和裁切：使用文件自带色彩矩阵（不是 fallback），所以不做 JPEG 色彩拟合，白平衡用开尔文。若 DNG 配置文件里没有色调曲线（或是恒等曲线），会把色调和色度曲线拟合到内嵌相机 JPEG（dng_tone_eligible / fit_dng_tone）。file_local_look 的整套 JPEG 外观拟合只针对 ARW/NEF/PEF 等，不包括 DNG。裁切模式与画幅比例只靠通用的 DefaultCropOrigin/Size，没有理光 maker note 裁切解析；需要用真实 GR III/IV 裁切模式样张确认机身是否把裁切写进 DefaultCrop。",
+     "evidence": [
+      "crates/engine/src/camera_preview/colour.rs:17-34（file_local_look 不含 Dng）、48-71、88-91（dng_tone_eligible）",
+      "crates/engine/src/camera_preview/look_fit.rs:204-209（fit_dng_tone）",
+      "crates/raw/src/dng.rs:340-358（DefaultCrop）",
+      "crates/raw/src/lib.rs:441-447（RawInfo::developed_size 用 crop）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F12",
+     "claim": "理光时代宾得机身：probe 把 Make 以 PENTAX 或 RICOH 开头、且有 CFA 或 Exif CFAPattern 的 TIFF 识别为 Pef。语料中有真实样张：K-3 Mark III PEF、K-1 PEF、K-70 PEF、KF PEF 通过 JPEG 比对；KP DNG、645Z DNG、K-1 Mark II DNG 通过；K-3 Mark III Monochrome DNG 只固定哈希。coverage.tsv 里 K-1 II 显示 unverified，这是机型名 \"K-1 II (* see note)\" 匹配失败造成的文档缺陷，语料里其实有该机 DNG。已知限制：没有区域标签的 PEF 会丢掉边缘行（#1271，点名 KP、KF、K-3 III、K-1 II、645Z 等）；像素偏移的多帧不会合成（crates/raw/src 中 grep pixel shift 无结果）。",
+     "evidence": [
+      "crates/raw/src/lib.rs:203-227（pentax_raw、Make PENTAX|RICOH → Pef）",
+      "crates/raw/tests/it/canon_pentax_corpus.rs:124-161",
+      "xtask/src/raw_samples.rs:1892-1893（dng-pentax-k-1-mark-ii.dng）、1957-1958（pef-pentax-k-3-mark-iii.pef）",
+      "docs/raw/coverage.tsv:1013、1021、1028-1029、1032、1034、1046",
+      "docs/raw-parity.md:163-164"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F13",
+     "claim": "宾得 PEF 文件不带色彩矩阵，内置的光谱矩阵和开尔文预设里也没有 Pentax/Ricoh 条目。所以 PEF 的颜色来自逐张拟合相机 JPEG，白平衡是相对刻度（6500K/0 表示原样）；拟合被拒时退回中性矩阵，颜色会偏淡。同一机身拍 DNG 则使用文件矩阵，白平衡按开尔文。另外 PEF 导入时要读整个文件来探测头信息。",
+     "evidence": [
+      "crates/catalog/src/model.rs:349-364（relative_wb_format 含 PEF；relative_wb_camera）",
+      "crates/engine/src/camera_preview.rs:1-3（无矩阵格式从 JPEG 估计外观）",
+      "grep -i pentax/ricoh crates/raw/src/spectral*.rs、kelvin_presets.rs、kelvin_builtin.rs：无结果；assets/camera-profiles 里没有宾得/理光配置",
+      "crates/raw/src/sparse.rs:295-300（PEF 走 Whole：其 header probe 需读取样本）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F14",
+     "claim": "Phase One / Leaf / Mamiya 的覆盖状态：Phase One IQ140/150/160/180、IQ250/260/280、IQ3 50/60/80/100MP（含 Trichromatic）、IQ4 150MP（含 Achromatic）、P 40+、P 65+ 的 IIQ 为 preview；P20 到 P45+ 的 TIF 为 unsupported（不导入）；Leaf Credo IIQ 和 Aptus/Valeo/AFi MOS、Mamiya DM 系列 MOS 为 preview；Mamiya M18/M22/M31 TIF 为 unsupported；只有 Mamiya ZD 的 MEF 是 verified。这里的 preview 是 coverage.py 的静态格式规则，没有实测，语料里也没有 IIQ/MOS 样张。",
+     "evidence": [
+      "docs/raw/coverage.tsv:566-587、668-676、1053-1080",
+      "docs/raw/coverage.py:105-106（e in (\"3FR\",\"FFF\",\"IIQ\",\"MOS\",\"KDC\",\"X3F\",…) → preview）",
+      "docs/raw-parity.md:101、176",
+      "crates/raw/tests/it/corpus.rs:1554（corpus_mamiya_mef）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F15",
+     "claim": "Sigma 的覆盖状态：DP1、DP1s、DP2、SD9、SD10、SD14 的 X3F 为 preview（同样是静态规则）；fp、fp L 的 DNG 为 verified；BF 的 DNG 为 unverified。DP2 Quattro 以及所有 Quattro、Merrill 机型在 adobe-cameras.tsv、coverage.tsv、evidence.tsv 中都没有条目（grep \"Quattro\" 计数为 0），所以项目的覆盖统计根本没把 DP2 Quattro 算进去。raw-parity 里 Foveon 一行标的是：Lightroom 支持老机型，LightCraft 为 ⬜。",
+     "evidence": [
+      "docs/raw/coverage.tsv:1229-1237",
+      "grep -c -i quattro docs/raw/{coverage,adobe-cameras,evidence}.tsv → 0",
+      "docs/raw-parity.md:105、122、195"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F16",
+     "claim": "3 通道 DNG LinearRaw（PhotometricInterpretation 34892、SamplesPerPixel 3）在代码上能完整解码和显影：raw_ifd 接受 CFA 或 LINEAR_RAW；允许 cpp 为 1/3/4；cpp==3 时 demosaic 原样返回；照片 develops_raw 为 true，DNG 不在 relative_wb_format 里，所以按开尔文白平衡，所有 raw 滑块可用。限制：AI Denoise 拒绝 cpp!=1 或非 Bayer（gaps.md 也注明它对线性 DNG 不可用）；分档快速预览要求 cpp==1；只有合成 LinearRaw 测试，没有用真实的 Foveon 转换 DNG 验证过。",
+     "evidence": [
+      "crates/raw/src/dng.rs:13-18、264-269",
+      "crates/raw/src/demosaic.rs:74-90",
+      "crates/raw/tests/it/dng.rs:212-224（base_ifd LINEAR_RAW）",
+      "crates/engine/src/files/tests.rs:1295-1340（LinearRaw 3×16 位在引擎中加载和渲染）",
+      "docs/raw-parity.md:167、196",
+      "crates/engine/src/denoise/products.rs:181-184",
+      "crates/raw/src/binned.rs:27",
+      "docs/gaps.md:45（第 29 项：AI Denoise doesn't run on merged (linear) DNGs）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F17",
+     "claim": "没有 raw 解码器的插件或注册机制，decode_with 是写死的 match。可扩展的地方在引擎钩子：Session.media.file_loader、file_probe、preview_loader 都是可替换的 Arc<dyn Fn>，由 with_fs 安装；导入、重载、重新检查都通过 file_probe。但 AI Denoise、Convert to DNG、相机外观拟合直接调用 lightcraft_raw，只通过钩子接入的解码器到不了这些路径。",
+     "evidence": [
+      "crates/raw/src/lib.rs:417-437",
+      "crates/engine/src/media.rs:69-73",
+      "crates/engine/src/files/fs.rs:128-144（with_fs）",
+      "crates/engine/src/import/files.rs:283-285；crates/engine/src/import/scan.rs:94；crates/engine/src/cmd/recheck.rs:57-58",
+      "crates/engine/src/denoise/products.rs:172-177；crates/engine/src/cmd/convert.rs:38；crates/engine/src/files/load.rs:118-125（camera_preview 直接读 bytes）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F18",
+     "claim": "上游对 IIQ/X3F 的规划：列为长尾格式缺口（gaps 第 20 项），与压缩 SRW、3FR、KDC、DCR、GPR 合计估算 45–85 小时，收益约每小时 0.01，优先级最低，前提是有样张。clean-room/ 目录下只有 crw，没有 X3F/IIQ 规格。AGENTS.md 禁止复制 GPL/LGPL 代码（LibRaw、dcraw 派生、rawspeed 等），实现时必须按净室规则从公开规格和黑盒样张推导。",
+     "evidence": [
+      "docs/gaps.md:37",
+      "docs/raw-parity.md:272-282（第 9 项）",
+      "docs/roadmap.md:75（IIQ, X3F ⬜）",
+      "ls clean-room → crw",
+      "AGENTS.md:28、115"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "options": [
+    {
+     "name": "外部转 DNG 后导入（不写代码）",
+     "how": "宾得机身直接拍 DNG。IIQ 用 Adobe DNG Converter 转成 Bayer DNG（这些 IIQ 机型都在 Adobe 支持列表 docs/raw/adobe-cameras.tsv 里）。DP2 Quattro 的 X3F 用第三方工具转成 LinearRaw DNG，Adobe 从未支持 Quattro。",
+     "pros": "LightCraft 主程序照常从上游更新；IIQ 转成的 Bayer DNG 可以用全部 raw 功能，包括 AI Denoise；Quattro 转成的 LinearRaw DNG 也能用全部 raw 滑块。",
+     "cons": "多一步转换并占用额外存储；Quattro 转换出的 DNG 颜色是否正确（有没有 ColorMatrix、BaselineExposure）以及转换工具的许可证都需要实测；LinearRaw 用不了 AI Denoise（products.rs:181-184）；仓库里没有真实的 Foveon 转换 DNG 测试过。",
+     "effort": "低（几乎为零开发；需要用真实样张验证）",
+     "hook_points": [
+      "crates/raw/src/dng.rs:13-18、264-269",
+      "crates/engine/src/denoise/products.rs:181-184"
+     ]
+    },
+    {
+     "name": "外挂解码模块，通过引擎钩子包装",
+     "how": "单独写一个 crate，实现 X3F/IIQ 到 RawImage 或 Rgb32f 的转换。在自己的 app 入口里先调用 with_fs()，再用包装闭包替换 media.file_probe、file_loader、preview_loader：遇到 .x3f/.iiq 走自己的解码器，其余交给原实现。",
+     "pros": "不改动上游 crate，合并上游更新时冲突很少；导入扩展名已包含 x3f/iiq，所以导入、重载、渲染都会走到钩子。",
+     "cons": "需要自己维护并编译 app 二进制，钩子不能在运行时动态加载；AI Denoise、Convert to DNG、相机外观拟合直接调用 lightcraft_raw，钩子覆盖不到；catalog 按格式字符串判断白平衡刻度（relative_wb_format）；Foveon 的色彩科学（CAMF 矩阵、Quattro 1:1:4 分层的上采样）工作量很大。",
+     "effort": "中到高（钩子接入约 1–2 周；X3F Quattro 解码器另算，很可能超过 raw-parity.md:282 对长尾格式合计 45–85 小时的估算）",
+     "hook_points": [
+      "crates/engine/src/media.rs:69-73",
+      "crates/engine/src/files/fs.rs:128-144",
+      "crates/engine/src/media/source.rs:274-284、380-401"
+     ]
+    },
+    {
+     "name": "向上游贡献 vendor 解码器",
+     "how": "新增 crates/raw/src/vendor/x3f.rs 和 iiq.rs（或 phaseone.rs），给 IIQ 加一个独立的 RawFormat 变体，扩展 is_supported 和 decode_with 的分支，并把 CC0 样张加入 RAW_SAMPLES 语料测试。",
+     "pros": "所有功能自动生效（预览、导出、DNG 转换，IIQ 还能用 AI Denoise）；合并进上游后不用自己维护分支。",
+     "cons": "必须遵守净室规则（AGENTS.md:28、115，不能参考 LibRaw/dcraw 这类 GPL 代码）；需要可公开的样张；上游把它列为最低优先级（gaps.md:37）；Quattro 的 TRUE III 压缩和颜色处理难度高。",
+     "effort": "高",
+     "hook_points": [
+      "crates/raw/src/lib.rs:109-162、417-437",
+      "crates/raw/src/vendor/",
+      "xtask/src/raw_samples.rs"
+     ]
+    },
+    {
+     "name": "只改进预览与元数据提取（小补丁）",
+     "how": "解析 X3F 的段目录，按目录直接取 JPEG 预览和其中的 Exif，并在 meta 容器嗅探里加 X3F 分支；解析 IIQ 私有块里的预览指针。",
+     "pros": "改动小，风险低；能修复 X3F 没有元数据、IIQ 只有缩略图尺寸的问题。",
+     "cons": "本质上仍是 preview_only，不能进行 raw 编辑。",
+     "effort": "低到中",
+     "hook_points": [
+      "crates/raw/src/preview.rs:289-291",
+      "crates/meta/src/container.rs:34-81",
+      "crates/engine/src/files/preview.rs:16-27"
+     ]
+    }
+   ],
+   "open_questions": [
+    "真实的 DP2 Quattro X3F 里有没有标准的 3 分量 baseline JPEG 预览，尺寸多大，scan_for_jpeg 能不能找到？仓库没有 X3F 样张，本次会话访问 exiftool.org 被网络拦截（需在会话网络设置中放行该域名）。如果找不到，该文件导入会直接失败。",
+    "真实的 IQ3/IQ4 IIQ 会不会触发 thumbnail_shell（Exif PixelX/YDimension 或更大的 SubIFD）等识别规则？文件里有没有 JPEG 预览？如果没有，目录里的照片和导出都只有 IFD0 缩略图大小（测试注释提到 296x220）；如果识别规则全部失败，文件会被当成普通小 TIFF 导入。",
+    "GR III/GR IV 的裁切模式（35mm/50mm）和画幅比例，是写进 DNG 的 DefaultCrop，还是只记在 maker note 里？LightCraft 只认 DefaultCrop。",
+    "第三方 X3F→DNG 工具（例如 Kalpanika x3f_extract）生成的 Quattro LinearRaw DNG，在 LightCraft 中颜色是否正确（ColorMatrix、BaselineExposure 是否齐全）？工具的许可证与 Quattro 支持程度也需要核实。",
+    "K-3 Mark III / K-1 Mark II 的像素偏移 PEF/DNG 实际解码的是哪一帧，是否会出错（代码中没有任何 pixel shift 处理）？",
+    "GR IV、GR IV Monochrome、GR III HDF 只是按格式规则推定 unverified，需要真实样张确认。"
+   ]
+  },
+  "extensibility": {
+   "summary": "结论：在 c2e9c45（v0.18.0 之后的 main）上，LightCraft 没有任何运行时插件机制。依赖里没有 dlopen/libloading、WASM 宿主或脚本引擎；命令注册表在编译期就固定了（crates/engine/src/cmd.rs:143-175）；官方文档自己把“插件生态”列为缺口 #19，状态 ⬜，并注明需要维护者决定（docs/gaps.md:36）。理光机型原生支持：GR/GR II/GR III/GR IIIx 的 DNG 已对真实样张验证，Make=RICOH 的 PEF 走宾得解码器；GR IV 和 HDF 版本未验证。飞思 IIQ 和适马 X3F 目前只能识别格式，解码会返回 Unsupported，导入后标记 preview_only，只能拿内嵌 JPEG 当作已渲染图片来编辑。DP2 Quattro 在覆盖表里根本没有记录。降噪方面：内置 BM3D“AI 降噪”开箱即用，用户也可以“Install from file…”装自己的 ONNX 模型。这是唯一真正能在运行时装入的扩展点，但只接受 Bayer→RGB 契约和一小组算子。Foveon、LinearRaw DNG 以及非 RAW 文件都只能用手动降噪。RAW+JPEG 合并显示不存在，只有手动堆叠和“按拍摄时间自动堆叠”。可以拿来扩展的都是“外部编排”的表面：MCP（import、relink、stack、develop、export、denoise.* 都有，每个命令还对应一个 cmd_* 工具）、loopback 控制通道、CLI run、监视文件夹自动导入、Edit In 往返（渲染 TIFF/PSD，窗口重新获得焦点时重新载入）。另外有一批编译期由宿主装入的 Arc<dyn Fn> 钩子，包括 file_loader、file_probe、file_bytes 等。还有一个关键事实：lightcraft-raw 的 RawImage/ColorData 全部是 pub，write_dng 能写 CFA 和 LinearRaw 两种 DNG。所以独立仓库里的 Rust 工具可以把 X3F/IIQ 转成 LightCraft 自己写、自己读的 DNG。更新机制：craft-update 只从 storytold/lightcraft 下载 release（UPDATE_APP 硬编码，启动时自动检查）。任何 fork 构建如果不改这一点，就会被应用内更新替换回上游版本。上游节奏极快：30 天 3,172 个提交，每 2–3 天发一版；crates/raw/src/lib.rs 30 天改了 49 次，长期维护补丁集的成本很高。推荐路线：近期用方案 A，即独立的“LightCraft-additional-extensions”工具，把 X3F/IIQ 转成 DNG，再通过控制通道/MCP relink 并堆叠 JPEG，主程序零补丁、照常更新；中期按 CRW 先例向上游提交 clean-room 原生解码器 PR（方案 C）；不建议长期维护 fork（方案 B）。",
+   "claims": [
+    {
+     "id": "F1",
+     "claim": "代码里没有任何运行时插件/扩展机制：工作区没有 libloading/dlopen、wasmtime/wasmer、rhai/mlua/pyo3/deno 等依赖；唯一的 cdylib 是浏览器 WASM 构建，它不是插件宿主；命令注册表在编译期固定（静态 OnceLock 里的 CommandSpec，id 是 &'static str，run 是函数指针），运行时无法注册新命令。文档也承认插件生态不存在。",
+     "evidence": [
+      "检索方法：grep -rniE 'libloading|dlopen|cdylib|wasmtime|wasmer|rhai|mlua|rlua|pyo3|deno|boa_engine|plugin' --include=Cargo.toml，代码里 grep '\\bplugin' --include=*.rs；唯一命中 cdylib 的是 apps/lightcraft-web/Cargo.toml:13",
+      "crates/engine/src/cmd.rs:133-175（cmd! 宏 + command_specs() 静态 OnceLock）",
+      "docs/gaps.md:36（#19 Plug-in ecosystem ⬜，40–80 h + owner decision）",
+      "docs/target-app-parity.md:58",
+      "docs/file-format-parity.md:60（Lightroom 插件 .lrplugin ⬜）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F2",
+     "claim": "理光（Ricoh）原生支持：GR 系列写 DNG。GR、GR II、GR III、GR IIIx、GX200 已对真实样张验证（锁定传感器哈希/与机内 JPEG 比对）；GR IV、GR IV Monochrome、GR III(x) HDF、GR Digital 系列走 DNG 解码器但未验证。Make 为 RICOH 的 PEF 由 probe 判定为 Pef，走宾得解码器。",
+     "evidence": [
+      "docs/raw/coverage.tsv:1081-1094",
+      "crates/raw/src/lib.rs:225-227（make.starts_with(\"PENTAX\") || make.starts_with(\"RICOH\") → RawFormat::Pef）",
+      "docs/raw-parity.md:99、119（Pentax / Ricoh 60 款，99% 可用）",
+      "docs/raw/evidence.tsv:369、376、400"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F3",
+     "claim": "飞思 IIQ 和适马 X3F 目前不能原生解码。X3F 靠 FOVb 魔数识别为 RawFormat::X3f，但 is_supported 里没有它，decode_with 落到兜底分支返回 Unsupported。IIQ 被结构规则 thumbnail_shell 识别为 OtherTiff，同样返回 Unsupported。引擎随后退回内嵌预览：X3F 用结构化 JPEG 扫描找预览，照片带 preview_only 原因入库，按已渲染 JPEG 编辑。覆盖表把所有 Phase One IQ/P+ 和 Sigma SD/DP 的 X3F 都标为 preview；DP2 Quattro 在覆盖表中没有条目。",
+     "evidence": [
+      "crates/raw/src/lib.rs:124-125（X3f 变体）、142-163（is_supported 不含 X3f/OtherTiff）、182-184（FOVb）、247-248（OtherTiff）、311-358（thumbnail_shell）、435-436（OtherTiff/其他 → Unsupported）",
+      "crates/raw/src/preview.rs:289-291、452-455（X3F 结构化 JPEG 扫描）",
+      "crates/engine/src/files/probe.rs:134-150（preview_only: Some(why)）；crates/engine/src/files/load.rs:96-102",
+      "docs/raw-parity.md:176、195（Foveon ⬜）",
+      "docs/raw/coverage.tsv:1055-1080、1230-1237；grep -ri quattro docs crates 无结果",
+      "docs/parity-checklist.md:84（IIQ 由结构识别、X3F 按魔数识别，均为 preview_only）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F4",
+     "claim": "文件发现和格式嗅探已经覆盖这两种格式：导入扩展名列表已包含 iiq 和 x3f，codecs 嗅探已把 FOVb 归为 RawOther。引擎所有 RAW 路径（加载、探测、DNG 导出、转 DNG、AI 降噪产物、相机配置文件）都经由 lightcraft_raw::probe/decode。因此要原生支持，只需改 crates/raw，引擎层不用动。",
+     "evidence": [
+      "crates/engine/src/import/files.rs:13-21（EXTENSIONS 含 \"iiq\"、\"x3f\"）",
+      "crates/codecs/src/sniff.rs:114-115",
+      "crates/engine/src/files/load.rs:85-94；files/probe.rs:134-135；export/prepare.rs:267-270；cmd/convert.rs:38；denoise/products.rs:172-180；camera_profiles.rs:204；sidecar.rs:405-414"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F5",
+     "claim": "新增原生解码器的精确挂接点：(1) crates/raw/src/lib.rs:108-138 的 RawFormat 枚举（X3f 已有；IIQ 需新增变体或在 OtherTiff 前插入检测）；(2) lib.rs:142-163 的 is_supported；(3) lib.rs:166-251 的 probe（IIQ 检测要放在 247 行 OtherTiff 判定之前）；(4) lib.rs:417-438 的 decode_with 分派（加 vendor::x3f/iiq::decode(bytes, mode)，并实现 Mode::Header 只读头部，因为 probe_info 也走这里，见 403-405 行）；(5) crates/raw/src/vendor.rs:3-30 的模块表；(6) 若做成外部 crate，按 craft-crw 先例在 Cargo.toml:15-16 和 crates/raw/Cargo.toml:19 加依赖；若做成工作区新 crate，必须登记到 xtask/src/layers.rs:36-73 的 TABLE，否则 CI 报 Unregistered。X3F 输出 cpp=3、cfa=None 的线性 RGB，与 LinearRaw 路径兼容；AI 降噪在 denoise/products.rs:181 会拒绝非 Bayer。",
+     "evidence": [
+      "crates/raw/src/lib.rs:108-138、142-163、166-251、403-405、417-438",
+      "crates/raw/src/lib.rs:690-725（RawImage：cpp=3 即线性 RGB，cfa=None）",
+      "crates/raw/src/vendor.rs:3-30",
+      "Cargo.toml:3（members = crates/*）、15-16；crates/raw/Cargo.toml:19",
+      "xtask/src/layers.rs:36-73、338-342（unregistered_and_testkit_rules）",
+      "crates/engine/src/denoise/products.rs:181-185",
+      "docs/raw-parity.md:196（LinearRaw ✅）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F6",
+     "claim": "引擎有可替换的进程内钩子：MediaCache.file_loader、reduced_loader、file_probe、preview_loader、file_bytes（ByteReader），以及 denoise.loader。它们都是 pub 的 Arc<dyn Fn>，由宿主二进制在 Session::with_fs 里装入。这只是编译期注入点，不是运行时插件：桌面应用在 apps/lightcraft/src/session.rs 里构造 Session。而且有些路径不经过钩子，例如 sidecar.rs 的 file_orientation 直接读文件再调用 lightcraft_raw::probe_info。",
+     "evidence": [
+      "crates/engine/src/media.rs:69-75",
+      "crates/engine/src/media/source.rs:100、105、109、128、401",
+      "crates/engine/src/merge.rs:77（ByteReader 类型）",
+      "crates/engine/src/files/fs.rs:130-145（with_fs）",
+      "apps/lightcraft/src/session.rs:259、282、284、295（Session::new().with_fs()…）",
+      "file_bytes 的使用者：export/prepare.rs:151、denoise/session.rs:241、cmd/convert.rs:29-34、import/commit.rs:162",
+      "绕过点：crates/engine/src/sidecar.rs:400-414"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F7",
+     "claim": "lightcraft-raw（L1，MIT OR Apache-2.0）的 RawImage、ColorData、BlackLevel、Cfa 字段全部 pub；write_dng 能写 CFA DNG，也能写 cfa=None 的 LinearRaw DNG。所以独立仓库可以通过 git 依赖 lightcraft-raw，自己解析 X3F/IIQ，再写出 LightCraft 一定读得懂的 DNG。",
+     "evidence": [
+      "crates/raw/src/lib.rs:656-686（ColorData pub）、690-725（RawImage pub）",
+      "crates/raw/src/dngwrite.rs:179（pub fn write_dng）、196（PHOTOMETRIC = CFA 或 LINEAR_RAW）",
+      "Cargo.toml:6（license = \"MIT OR Apache-2.0\"）",
+      "crates/raw/Cargo.toml:9-24（依赖只有 tiff/meta/raster/color/geom/craft-crw 等，没有 UI）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F8",
+     "claim": "MCP、控制通道、CLI 可以编排几乎一切，但不能增加解码格式。MCP 有 import、query_photos、select_photos、set_develop、apply_preset、export、run_command/command_run/command_batch，每个引擎命令还有一个 cmd_* 工具，所以 stack.*、photo.relink、photo.reload、library.recheckPreviewOnly、library.autoImport、denoise.* 都能调用。控制通道是 loopback JSON-lines、无认证。stack.group 的 explicit_targets 为 false，必须先 library.select/select_photos 有了选择才能执行。",
+     "evidence": [
+      "crates/mcp/src/tools.rs:93、100、135、142、157、169、190、202、228",
+      "docs/mcp.md（Shared core tools / Helpers / One tool per command / Preview-only raws after an update 等节）",
+      "docs/control-protocol.md:1-4、51（The port has no authentication）",
+      "crates/engine/src/lib.rs:585-590（enabled 检查）；crates/engine/src/cmd/organize.rs:168-191（stack.group，has_selection）",
+      "crates/engine/src/cmd/missing.rs:129-155（photo.relink：重新探测，preview_only/尺寸跟随新文件，保留目录记录）",
+      "crates/engine/src/cmd/recheck.rs:123-129"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F9",
+     "claim": "降噪：代码里有无需下载的内置去噪器（id builtin，BM3D，可走 GPU）。用户可以在设置里“Install from file…”安装自己的 ONNX + denoise-model.json，或用 LIGHTCRAFT_DENOISE_MODELS 指定目录。这是唯一真正的运行时可装载扩展，但有三条限制：manifest 的 Domain 只有 BayerToRgb；ONNX 只支持 Conv、ConvTranspose、MaxPool、Concat、DepthToSpace（块大小 2，CRD 顺序）和融合的 LeakyRelu；非 Bayer 图像在产物生成时被拒绝。另有远程 tile 服务器协议 v1（LIGHTCRAFT_DENOISE_URL），要求两端模型 SHA-256 一致。手动降噪 detail.nrLuminance/nrColor 等对所有图像都可用。",
+     "evidence": [
+      "crates/denoise-core/src/builtin.rs:1-19；docs/denoise.md:9-13",
+      "docs/denoise.md:133-163、243-262、299-302",
+      "crates/denoise-core/src/manifest.rs:16-24（Domain::BayerToRgb 唯一变体）、41-65",
+      "crates/denoise/src/onnx.rs:75-80、195-205（其他算子 → unsupported）",
+      "crates/engine/src/denoise/products.rs:181-185",
+      "crates/denoise/src/remote.rs:12-19、233-234、370-371",
+      "grep crates/develop/src：detail.nrLuminance、nrColor、nrDetail 等"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F10",
+     "claim": "README 与代码不一致：中文 README 把 AI 降噪标为 ⬜，英文 README 说需要另装权重。但代码和 docs/denoise.md 都表明已有开箱即用的内置去噪器。这里以代码为准；本次未实际运行。",
+     "evidence": [
+      "README.zh-hans.md:325、336",
+      "README.md:355、374",
+      "crates/denoise-core/src/builtin.rs:1-19；crates/engine/src/denoise/session.rs:21、52"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F11",
+     "claim": "RAW+JPEG 合并显示不存在。目录的 Photo 模型没有配对字段，导入把 RAW 和 JPEG 当作两张独立照片；导入对话框只能按文件类型整体勾选或取消。唯一的分组手段是堆叠：手动 stack.group（可指定 top、collapsed），或 stack.auto 按拍摄时间间隔分组（同一秒内按文件名排序，第一个作封面，连拍也会被并入）。sidecar 只处理 XMP，同名 RAW/JPEG 共用 IMG_0001.xmp。",
+     "evidence": [
+      "检索方法：grep -iE 'pair|sibling|companion' crates/catalog/src/model.rs 的 Photo 结构体，以及 crates/engine/src 下的 raw+jpeg 相关模式，均无配对实现",
+      "crates/catalog/src/model.rs:305-320（只有 preview_only 等，无配对字段）",
+      "crates/engine/src/sidecar.rs:44-53",
+      "crates/engine/src/cmd/organize.rs:168-191、258-283",
+      "crates/catalog/src/stacks.rs:208-231",
+      "docs/parity-checklist.md:72、109（无视觉相似度自动堆叠）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F12",
+     "claim": "Edit In 与外部编辑器：Edit In 先把带编辑的照片渲染成 16/8 位 TIFF 或 PSD（命名为 <name>-Edit），导入后堆叠在原图上，再交给外部编辑器；窗口重新获得焦点时会对这些副本执行 photo.reload。“Open Original in Other Editor”只把原始文件交给外部程序，没有往返，也不入库。因此外部工具只能在已渲染的 TIFF 上做附加降噪，无法让 X3F/IIQ 变成可原生编辑的 RAW。",
+     "evidence": [
+      "crates/engine/src/cmd/convert.rs:123-200（edit_external / edit_copy，stack.group top=new）",
+      "crates/ui-egui/src/menus/files.rs:108-170、181-230",
+      "crates/ui-egui/src/app/prefs.rs:20-31（focus 后 photo.reload）",
+      "crates/engine/src/open_path.rs:5-11"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F13",
+     "claim": "有监视文件夹自动导入：library.autoImport，每约 3 秒扫描一次，可以原位添加或复制，可指定相册。没有联机拍摄（tethering）。外部转换器把 DNG 写进监视文件夹，LightCraft 就会自动导入。",
+     "evidence": [
+      "crates/engine/src/cmd/library/specs.rs:1171-1176",
+      "docs/parity-checklist.md:76（LR-IMP-AUTO ✅）、698（LRC-LIB-TETHER ⬜）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F14",
+     "claim": "数据级扩展点都不能增加解码器，只能补充数据：profile.import 导入 .cube LUT（作为创意配置文件）和用户自己的 .dcp（作为相机配置文件，在解码时替换颜色模型）；lensfun 数据库可下载，也可用 LIGHTCRAFT_LENSFUN_DIR 指向自有目录；另有预设导入、去噪模型目录。某格式一旦能解码（包括转换出的 DNG），DCP 可以为它补颜色矩阵。",
+     "evidence": [
+      "crates/engine/src/cmd/lut_profiles.rs:94-100、152-156",
+      "crates/engine/src/cmd/lens_refresh.rs:145-148、194-197；docs/lens-profiles.md:4-32",
+      "crates/engine/src/preset_import.rs:1-21"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F15",
+     "claim": "Cargo features 只在编译期生效：桌面/CLI 有 denoise（默认开启）和 rawnind-model，raw 有 jxl，codecs 有 heif。没有可以在运行时启用的模块。",
+     "evidence": [
+      "apps/lightcraft/Cargo.toml:13-15",
+      "apps/lightcraft-cli/Cargo.toml:32-34",
+      "crates/engine/Cargo.toml:60-61",
+      "crates/raw/Cargo.toml:26-29",
+      "crates/codecs/src/sniff.rs:74-78（heif/jxl 的 cfg）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F16",
+     "claim": "更新机制会覆盖 fork：桌面应用启动时检查更新（main.rs:367）；UPDATE_APP 继承 craft_update::suite::LIGHTCRAFT，其 repo 为 \"storytold/lightcraft\"，且 craft-update 只从该仓库下载 release。fork 构建如果不改 repo 或关闭检查，会被应用内更新替换为上游官方版本，扩展随之丢失。AppImage 的 zsync 用 GITHUB_REPOSITORY，fork 的 CI 会自动指向自己。上游 release 依赖签名 secrets 和 craft-fonts，fork 的产物没有签名。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:9-16",
+      "apps/lightcraft/src/main.rs:228、367",
+      "craft-libs（rev 1b34eba，即 Cargo.toml:18 锁定的版本）crates/update/src/suite.rs:11 与 crates/update/src/app.rs:12-13（\"Releases are only ever downloaded from this repository\"）",
+      "packaging/linux/package.sh:171-172",
+      "docs/releasing.md:1-20、77-91"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F17",
+     "claim": "上游变动极快，维护补丁集代价高：2026-10-11 到 2026-11-10 共 3,172 个提交；v0.13.0 到 v0.18.0 发布于 10-22 至 11-02，约每 2–3 天一版。相关文件 30 天内的提交数：crates/raw/src/lib.rs 49、Cargo.toml 99、Cargo.lock 142、crates/ui-egui/src/lib.rs 281、apps/lightcraft/src/main.rs 81、apps/lightcraft/src/session.rs 16、xtask/src/layers.rs 12、crates/raw/Cargo.toml 8、crates/raw/src/vendor.rs 7、crates/codecs/src/sniff.rs 1。",
+     "evidence": [
+      "方法：在 scratchpad 做 blobless 克隆（git clone --filter=blob:none --shallow-since=2026-10-11），对各文件统计 git log -- <path> | wc -l，并读取标签日期",
+      "标签：v0.18.0 2026-11-02、v0.17.0 11-01、v0.16.0 10-30、v0.15.0 10-28、v0.14.0 10-25、v0.13.0 10-22"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F18",
+     "claim": "上游接受外部解码器 crate 和 clean-room 流程，有先例：CRW 解码器放在 craft-libs 的 craft-crw crate，通过约 255 行的适配器 vendor/crw.rs 接入；ARW6 的做法是把 LibRaw 编译运行、只当黑盒 oracle，从不读它的源码；压缩 ORF 解码器因来源（provenance）未澄清被整体撤回。文档把 IIQ、X3F 等长尾格式估为 45–85 h，并标注为“低使用率”。",
+     "evidence": [
+      "clean-room/crw/README.md:1-10",
+      "crates/raw/src/vendor/crw.rs:1-30",
+      "Cargo.toml:15-16",
+      "docs/arw6-compression.md:105",
+      "docs/orf-compression.md:3-11",
+      "docs/raw-parity.md:282；docs/gaps.md:37（#20，35–75 h）",
+      "AGENTS.md：Clean room / Pure Rust / 不得复制 GPL/LGPL 代码（LibRaw、rawspeed、rawler 等）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F19",
+     "claim": "外部转换工具现状：Kalpanika x3f_extract 是 BSD-3-Clause 的 C 代码，支持 Merrill 和 Quattro 格式，默认输出 DNG，内容为“已降噪但未做颜色转换的 RAW 数据加颜色转换信息”。dnglab 是 LGPL-2.1 的 Rust 工具，支持 Phase One IIQ（含 IQ4 150MP、IQ180 等），不支持 X3F。从论坛和第三方资料看，Adobe DNG Converter 似乎不支持 dp Quattro 的 X3F，但没找到 Adobe 官方确认。dp Quattro 固件 2.00 增加了 12 位未压缩 DNG 记录，但 DNG 与 JPEG 不能同时记录。作为用户侧的外部进程，这些工具都可以用；但不能把它们的代码并入上游：clean-room 规则禁止复制他人代码，即便许可证是 BSD；LGPL 也不在许可白名单内。",
+     "evidence": [
+      "https://github.com/Kalpanika/x3f",
+      "https://raw.githubusercontent.com/Kalpanika/x3f/master/doc/copyright.txt",
+      "https://raw.githubusercontent.com/Kalpanika/x3f/master/doc/readme.txt",
+      "https://github.com/dnglab/dnglab",
+      "https://raw.githubusercontent.com/dnglab/dnglab/main/SUPPORTED_CAMERAS.md",
+      "https://community.adobe.com/questions-675/how-to-import-x3f-file-into-lightroom-945677",
+      "https://www.diyphotography.net/?p=113600",
+      "https://drivers.softpedia.com/blog/a-new-update-is-available-for-sigma-dp-quattro-camera-series-get-firmware-2-00-515187.shtml",
+      "https://www.rangefinderforum.com/threads/dp-quattro-series-now-with-dng.163903/",
+      "https://petapixel.com/2017/04/05/sigma-firmware-update-adds-dng-raw-support-sd-quattro-cameras/"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F20",
+     "claim": "上游自己的 photo.convertToDng 就是“写一个无损 DNG 放在原文件旁边、目录记录 relink 过去、保留原文件”，导入时也可以选择转 DNG。但两者都调用 lightcraft_raw::decode，所以对 X3F/IIQ 无效。外部助手可以按同样的语义，替上游补上它暂时解不了的格式。将来上游原生支持后，library.recheckPreviewOnly 会自动清除未转换照片的 preview_only 标记。",
+     "evidence": [
+      "crates/engine/src/cmd/convert.rs:29-43、108-117",
+      "crates/engine/src/import/commit.rs:162",
+      "crates/engine/src/cmd/recheck.rs:123-129；docs/mcp.md 中 “Preview-only raws after an update” 一节"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "options": [
+    {
+     "name": "A：独立外部转换助手（LightCraft-additional-extensions），X3F/IIQ → DNG，通过控制通道、MCP 或 CLI 喂给 LightCraft",
+     "how": "独立仓库提供一个守护进程或 CLI（例如 lcx）。做法：(1) 监视相机卡或指定文件夹，也可以由用户在 LightCraft 中选中 preview_only 的照片后触发；(2) X3F 调用 x3f_extract（BSD-3，外部进程）得到 DNG；IIQ 调用 dnglab（LGPL-2.1，外部进程）或用户自装的 Adobe DNG Converter 得到 CFA DNG；进阶版是在本仓库用纯 Rust 自写解析器，git 依赖 lightcraft-raw 的 RawImage 和 write_dng，直接写出 LightCraft 自己的 DNG（X3F 为 LinearRaw，IIQ 为 CFA）；(3) 应用在运行时通过 `lightcraft --control 7980` 加 `lightcraft-cli run --connect`，应用关闭时用 `lightcraft-cli run --library`，依次调用 library.import、photo.relink {id, path}（保留评级、关键词，清除 preview_only），或把 DNG 写进 library.autoImport 的监视文件夹；(4) 对同目录同主文件名的 RAW/DNG 与 JPEG，先 library.select 再 stack.group {ids, top: rawId, collapsed: true}，合并成一个折叠堆叠；(5) 降噪：IIQ 转出的是 Bayer DNG，可以直接用内置 BM3D 或用户自装的 ONNX AI 降噪；X3F 转出的 LinearRaw 只能用手动降噪。评分：‘主程序照常更新’ 5/5（不改上游一行，只依赖已文档化的命令和 DNG 格式）；工作量 低–中（调用现成工具约 1–2 周；自写 Rust 解析器另加数周）；质量 中（取决于转换器。IIQ 经 dnglab 接近原生；Quattro 的上下层重采样和颜色由 x3f_extract 决定，与 Sigma Photo Pro 的差距未验证）。",
+     "pros": "上游零改动，应用内自动更新照常工作；能走 LightCraft 完整的 RAW 管线（IIQ 还能用 AI 降噪），DCP 也能为 DNG 补颜色矩阵；GPL/LGPL 工具只作为独立进程运行，不污染上游；方向与上游 photo.convertToDng 的语义一致；将来上游原生支持后，可以用 library.recheckPreviewOnly 平滑迁移。",
+     "cons": "磁盘上多一份 DNG；需要额外进程，控制端口无认证；stack 不是真正的配对，评级和旗标不同步，删除也不联动；X3F 的 LinearRaw DNG 用不了 AI 降噪；relink 会让目录指向 DNG 而不再指向 X3F；命令参数若有变化需跟进（风险低，命令有文档）。",
+     "effort": "低–中：外部工具方案约 40–80 h（含文件监视、配对规则、测试）；自写 Rust 版 X3F/IIQ→DNG 另加 60–150 h",
+     "hook_points": [
+      "crates/engine/src/cmd/missing.rs:129-155（photo.relink）",
+      "crates/engine/src/cmd/library/specs.rs:1171-1176（library.autoImport）",
+      "crates/engine/src/cmd/organize.rs:168-191、258-283（stack.group、stack.auto）",
+      "crates/engine/src/cmd/recheck.rs:123-129（library.recheckPreviewOnly）",
+      "crates/mcp/src/tools.rs:93-228（MCP 工具）",
+      "docs/control-protocol.md:1-4（--control 端口）",
+      "crates/raw/src/dngwrite.rs:179、196（write_dng，可写 LinearRaw）",
+      "crates/raw/src/lib.rs:656-725（pub 的 RawImage/ColorData）"
+     ]
+    },
+    {
+     "name": "B：维护补丁集或 fork，把原生 X3F/IIQ 解码器编进 LightCraft",
+     "how": "fork storytold/lightcraft。解码器放在独立的外部 crate（仿照 craft-crw），尽量减少对上游文件的改动。必要的补丁：Cargo.toml 的 workspace 依赖加 1 行；crates/raw/Cargo.toml 加 1 行；crates/raw/src/vendor.rs 加 1–2 行；crates/raw/src/lib.rs 约 6–10 行（加 Iiq 变体、改 is_supported、在 247 行之前插入 IIQ 检测、decode_with 加分派）；crates/ui-egui/src/lib.rs:12-16 把 UPDATE_APP 的 repo 改成 fork 自己的仓库，或在 apps/lightcraft/src/main.rs:367 关闭启动检查，否则会被上游版本覆盖；再加一个自己的 release 流水线。用 CI 机器人在每个上游 tag 上 rebase 并跑 cargo xtask ci。变体 B'：只在 apps/lightcraft/src/session.rs 和 CLI 构造 Session 的位置加一行，把 media.file_loader、reduced_loader、file_probe、preview_loader、file_bytes 和 denoise.loader 包一层：遇到 .x3f/.iiq 就在内存里转成 DNG，再交给 lightcraft_engine::files::load_vec 或 probe_bytes。B' 的补丁面更小，但 sidecar.rs:400-414 这类直接读文件的路径会绕过它。评分：‘照常更新’ 1–2/5（用户只能从 fork 拿更新，必然滞后；上游每 2–3 天一版，raw/lib.rs 30 天改了 49 次，Cargo.lock 每次都要重新生成）；工作量 高（解码器本身加上长期 rebase、签名和打包）；质量 高（原生解码，IIQ 走 AI 降噪，DCP 和镜头数据都能用）。",
+     "pros": "体验最好、最“原生”：导入即可编辑，无需中间文件；IIQ 能用全部降噪手段；补丁面可以压到约 10 行加一个外部 crate。",
+     "cons": "违背“软件照常更新”的目标：必须关闭或改指向应用内更新，否则会被官方版覆盖；需要自建签名和发布（不签名会触发 macOS Gatekeeper 和 Windows SmartScreen 警告），还要锁定 craft-fonts；上游变动极快，rebase 冲突和 CI 维护是长期成本；B' 有绕过路径，且每次加载都要转换。",
+     "effort": "高：解码器 45–85 h（上游自己的估计），外加初次搭建 fork 流水线约 20–40 h，之后每月持续几小时到十几小时",
+     "hook_points": [
+      "crates/raw/src/lib.rs:108-138、142-163、166-251、417-438",
+      "crates/raw/src/vendor.rs:3-30",
+      "Cargo.toml:15-16（craft-crw 先例）；crates/raw/Cargo.toml:19",
+      "xtask/src/layers.rs:36-73（若新 crate 是工作区成员）",
+      "crates/ui-egui/src/lib.rs:9-16（UPDATE_APP）；apps/lightcraft/src/main.rs:367",
+      "apps/lightcraft/src/session.rs:259-295（B' 包装钩子的位置）",
+      "crates/engine/src/media.rs:69-75；crates/engine/src/files/fs.rs:130-145",
+      "packaging/linux/package.sh:171-172；docs/releasing.md:77-91"
+     ]
+    },
+    {
+     "name": "C：向上游提交原生 IIQ/X3F 解码器 PR（按 CRW 先例做 clean-room）",
+     "how": "在 craft-libs 新建 craft-iiq、craft-x3f（或直接放在 crates/raw/src/vendor），用纯 Rust 实现，带 #![forbid(unsafe_code)] 和 deny 属性，不 panic，所有分配都设上限。来源只能是公开规范和黑盒观察：把 LibRaw、dnglab、x3f_extract 编译后运行，只当 oracle 产出对比结果，从不读它们的源码，与 docs/arw6-compression.md:105 的方法一致；先写冻结的格式说明和 clean-room 记录，再用 CC0 样张（raw.pixls.us）做锁定测试。接入方式同方案 B，只是由上游合并。颜色：X3F 文件 CAMF 段里的矩阵和白平衡，或 LightCraft 自己用色卡拟合，参照 chart_table 先例。实施前先在 docs/gaps.md 的 #20 对应 issue 下评论认领，遵守 house rules 第 2 条。评分：‘照常更新’ 5/5（合并后就是官方版本）；工作量 高；质量 高，且长期有人维护；但能否被接受、何时合并不确定，ORF 解码器就是因来源问题被撤回的。",
+     "pros": "一劳永逸，所有平台（含 WASM）都受益；自动享受上游测试、GPU、降噪和 DCP 能力；已有用户的 preview_only 照片会被 recheckPreviewOnly 自动升级。",
+     "cons": "clean-room 和来源证明门槛高，不能复制 x3f_extract（虽然是 BSD）、LibRaw 或 rawler 的代码；上游明确把这类格式标为“低使用率”，优先级低；Foveon 不是 Bayer，仍然用不了 AI 降噪（需要上游另做 linear-RGB 去噪契约，docs/denoise.md:299-302 把它列为未来工作）；PR 周期不可控。",
+     "effort": "高：每种格式约 25–60 h（含样张、oracle 对比、颜色和测试），合计与上游估计的 45–85 h 同量级或更多",
+     "hook_points": [
+      "crates/raw/src/lib.rs:108-138、142-163、166-251、417-438",
+      "crates/raw/src/vendor.rs:3-30；crates/raw/src/vendor/crw.rs:1-30（适配器样板）",
+      "clean-room/crw/README.md:1-10（记录放在 craft-libs）",
+      "docs/raw-parity.md:176、195、282；docs/gaps.md:37；docs/raw/coverage.tsv:1055-1080、1230-1237（合并时要同步更新）",
+      "crates/raw/src/preview.rs:289-291（保留预览回退）"
+     ]
+    },
+    {
+     "name": "C2：向上游提交通用“外部解码器”钩子 PR（设置里为扩展名配置外部转换命令，产出 DNG）",
+     "how": "在引擎里加一个可配置项：扩展名 → 外部程序，程序输出 DNG 到缓存目录。在 files/load.rs:85-102 和 files/probe.rs:134-150 的 preview_only 分支之前，以及 file_bytes 钩子处，透明地替换成缓存里的 DNG 字节。安全上沿用 open_path::openable 的思路，限制只能执行用户明确配置的程序。评分：‘照常更新’ 5/5（一旦合并，用户在官方版里自行配置 x3f_extract 或 dnglab 即可）；工作量 中；质量 取决于外部工具。",
+     "pros": "上游只需加一个小而通用的扩展点，从此任何长尾格式都可以交给外部工具；产品本身不引入 GPL/LGPL 依赖（只是运行外部进程，Edit In 和 Apple Photos 已有先例）。",
+     "cons": "相当于开启插件生态，触及 gaps #19 的“需 owner 决定”；执行任意外部程序有安全顾虑（参见 #2135 对 open_path 的收紧）；可能被拒绝或要求大幅调整；WASM 版无法使用。",
+     "effort": "中：实现约 20–40 h，外加与维护者讨论的时间",
+     "hook_points": [
+      "crates/engine/src/files/load.rs:85-102",
+      "crates/engine/src/files/probe.rs:134-150",
+      "crates/engine/src/media.rs:69-75（file_bytes 等钩子）",
+      "crates/engine/src/open_path.rs:5-11、49",
+      "docs/gaps.md:36（插件生态需维护者决定）"
+     ]
+    },
+    {
+     "name": "D：RAW+JPEG 合并显示",
+     "how": "短期（不改上游）：在方案 A 的工具里加一个配对器。通过 catalog.query 或 query_photos 取出同一文件夹、同一主文件名（例如 R0001234.DNG 加 R0001234.JPG、IMG.X3F 加 IMG.JPG），并且拍摄时间一致的照片，先 select_photos，再 cmd_stack_group {ids, top: rawId, collapsed: true}，网格里就只显示一个带计数徽标的条目。也可以直接用 stack.auto {gap: 0}，但同一秒内的连拍也会被并在一起，而且同秒内按文件名排序，X3F 和 PEF 会排在 JPG 后面成为非封面。长期：向上游 PR 一个类似 Lightroom “把 RAW 旁的 JPEG 当作附属文件”的导入选项，在导入扫描阶段像处理 XMP sidecar 一样处理同名 JPEG，并在 Photo 模型里增加配对字段。评分：短期方案‘照常更新’ 5/5，工作量 低，质量 中；上游方案‘照常更新’ 5/5，工作量 中，质量 高，但需要维护者认可。",
+     "pros": "堆叠现在就能用，可撤销，各前端都支持；不需要任何补丁。",
+     "cons": "堆叠不是真正的配对：评级、旗标、关键词不同步，删除不联动，JPEG 也不会被当作 RAW 的快速预览；dp Quattro 在 DNG 模式下不能同时记录 JPEG（只有 X3F 模式能 X3F+JPEG）。",
+     "effort": "短期 8–16 h；上游功能 PR 约 30–60 h",
+     "hook_points": [
+      "crates/engine/src/cmd/organize.rs:168-191、258-283",
+      "crates/catalog/src/stacks.rs:208-231",
+      "crates/engine/src/import/files.rs:28-31、129（XMP sidecar 的处理方式，可作配对实现的参照）",
+      "crates/engine/src/sidecar.rs:44-53",
+      "crates/catalog/src/model.rs:305-320（Photo 模型）"
+     ]
+    },
+    {
+     "name": "E：附加降噪（不改上游）",
+     "how": "(1) 理光 DNG/PEF 和 IIQ 转出的 Bayer DNG：直接用内置 BM3D AI Denoise，或在设置里“Install from file…”安装自训练、许可证合适的 ONNX，契约为 bayerToRgb，只能用 Conv/ConvTranspose/MaxPool/Concat/DepthToSpace/LeakyRelu。(2) 想用更强的 GPU 机器跑：用 lightcraft-cli denoise-serve 加 LIGHTCRAFT_DENOISE_URL。(3) 想用第三方降噪软件：Edit In 渲染 16 位 TIFF，外部降噪后覆盖保存，LightCraft 在窗口重新获得焦点时自动 reload。注意这一步是在已渲染图像上降噪。(4) Foveon、LinearRaw：只能用手动 nrLuminance/nrColor，或走 Edit In。评分：‘照常更新’ 5/5；工作量 很低；质量：Bayer 高，Foveon 一般。",
+     "pros": "全部是官方支持的路径，零代码；自装模型和远程 GPU 都是正式功能。",
+     "cons": "AI 降噪只支持 Bayer；ONNX 算子子集很窄，很多现成模型无法直接导入；Edit In 产出的是渲染后的 TIFF，不再是 RAW 级编辑。",
+     "effort": "很低：配置为主；训练或改造兼容 ONNX 模型则另计",
+     "hook_points": [
+      "crates/denoise-core/src/manifest.rs:16-65",
+      "crates/denoise/src/onnx.rs:75-80、195-205",
+      "crates/engine/src/denoise/products.rs:181-185",
+      "docs/denoise.md:133-163、243-262",
+      "crates/ui-egui/src/app/prefs.rs:20-31"
+     ]
+    }
+   ],
+   "open_questions": [
+    "本次未运行任何构建或测试，全部结论来自静态阅读 c2e9c45 的代码和文档。",
+    "DP2 Quattro 的 X3F 没有样张实测：LightCraft 的结构化 JPEG 扫描能否找到它的内嵌预览、尺寸多大，都未验证。本会话网络访问不了 raw.pixls.us，无法下载 CC0 样张，需要在会话网络设置里放行该域名。",
+    "x3f_extract 转出的 Quattro DNG 是否为 LinearRaw、LightCraft 的渲染效果如何未验证；dp Quattro 固件 2.00 之后机内记录的 DNG 在 LightCraft 能否正确解码也未验证（coverage.tsv 里没有这款机型）。",
+    "用户的飞思 IIQ 具体是哪种（IQ/P+ 机背，IIQ L/S/L16，Sensor+）？dnglab 对每种变体的覆盖程度，以及是否应用了飞思的传感器校准（坏列、平场），都需要用样张确认。",
+    "用户的理光机型是否为 GR IV / GR IV Monochrome / HDF？这几款在 coverage.tsv 里标为 unverified。",
+    "上游维护者是否愿意接受通用外部解码器钩子（C2），或长尾格式解码器 PR（C）的优先级如何？gaps #19 明确需要 owner decision，建议先开 issue 询问。",
+    "Adobe DNG Converter 对 dp Quattro X3F 和各代 IIQ 的支持情况，只有论坛和第三方资料，没有 Adobe 官方支持列表的确认。"
+   ]
+  },
+  "denoise": {
+   "summary": "LightCraft（commit c2e9c45）里一共有五种降噪能力：(1) Detail 面板里的 AI Denoise，是每张照片单独的开关加 Amount 滑块，默认跑内置的经典算法 builtin（BM3D/CBM3D，NLM 作后备，只有滤波这一步能放到 GPU 上），也可以换成用户自己装的 ONNX 模型（pure-Rust CPU 执行器，另有 WGSL GPU 版本）；(2) Luminance NR，在 log 亮度上做 guided filter；(3) Color NR，process V6 起用 nrc_joint 方法，更早的 process 是对色度做模糊；(4) Remove Hot Pixels，在 raw 马赛克上替换孤立的异常感光点；(5) 局部蒙版里的 Noise 滑块。AI Denoise（builtin 和 ONNX 都一样）只认单平面 Bayer CFA，代码在 crates/engine/src/denoise/products.rs:172-189 把关，X-Trans、cpp=3 的 LinearRaw/已去马赛克 DNG（包括 X3F 转出来的线性 DNG、HDR/全景合成 DNG）、JPEG/TIFF，以及只能用内嵌预览显示的 IIQ/X3F，都用不了。另外，对不支持的 CFA 布局，导出时 Amount 不起作用、也不报错，直接按普通方式导出。手动 Luminance/Color NR 在 pipeline 里作用于去马赛克之后的线性 Rec.2020 RGB，所以对所有来源都有效：raw、线性 DNG、JPEG/TIFF，以及 X3F/IIQ 的内嵌 JPEG。AI Denoise 的结果不是新的 DNG，而是一个缓存文件 <library>/denoise/<key>.lcdn（half-float camera RGB），在后续调色之前按 Amount 和普通图混合，属于实时、非破坏的 pipeline 步骤；想要文件，可以另用导出格式 Rendered DNG（线性浮点 DNG，编辑已烤进去）。现在就能装自己的模型：在 Settings ▸ AI Denoise ▸ Install from file… 选一个 .onnx，旁边放 denoise-model.json，要求是 float32、指定的一小组算子、4 通道 RGGB 输入 / 3 通道 2 倍分辨率输出，安装时会校验清单和 SHA-256、要求确认许可，并跑一遍自检。默认构建不带任何模型权重，下载目录也是空的；只有开启 rawnind-model 这个 Cargo feature 才会出现 RawNIND（GPL-3.0）下载项，正式发行版要不要开由维护者决定。对用户的相机来说：Ricoh GR 的 DNG 和 Pentax PEF 是 Bayer，能走 AI Denoise，前提是 raw 能解码；Phase One IIQ 和 Sigma X3F 目前不解码，只能在内嵌 JPEG 上用手动 NR；而且就算以后能解 IIQ，超过 110 MP 的机背（比如 IQ4 150MP）也会被 run.rs 的 MAX_PIXELS 挡住。代码里没有运行时插件机制（unsafe 被 deny，没有 dlopen）。想在不 fork 的前提下补强降噪，可行的办法是：装兼容的 ONNX 模型；用 Open Original in Other Editor 或 Edit In，交给外部降噪器处理后再回导、和原片堆叠（可以用 control protocol 或 MCP 自动化）。要让线性 RGB 或 X-Trans 也能用 AI Denoise，需要往上游贡献一个新的模型契约，文档已经把它列为未完成工作。",
+   "claims": [
+    {
+     "id": "F1",
+     "claim": "LightCraft 一共有五类降噪能力：AI Denoise（每张照片一个开关加 Amount，默认 builtin，可换用户 ONNX 模型）；Detail 里的 Luminance NR 和 Color NR；Remove Hot Pixels（raw 马赛克上的异常点替换）；局部蒙版的 Noise 滑块。UI 上 AI Denoise 是一个独立小节，排在手动 Noise Reduction 滑块上面。",
+     "evidence": [
+      "crates/ui-egui/src/panels/edit.rs:298-318（AI Denoise 小节、Noise Reduction 六个滑块、只对 raw 显示的 Remove Hot Pixels）",
+      "docs/denoise.md:3-7（每张照片单独的开关，0-100 的 Amount，和手动 NR 分开）",
+      "crates/pipeline/src/local.rs:442-473（nr_params / denoise）",
+      "crates/raw/src/hotpixel.rs:1-24,132-137",
+      "crates/pipeline/src/finish.rs:226,740-743,797,844-848（局部 Noise 参数）",
+      "docs/parity-checklist.md:209-215,311"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F2",
+     "claim": "builtin 内置降噪器（id 是 `builtin`，VERSION=5）不用任何模型权重：先从照片自身估计 Poisson-Gaussian 噪声（variance = a·signal + b，四个色平面分开算，用二阶差分 + 5% 分位数），做方差稳定变换，再用 BM3D/CBM3D 对 4 个 Bayer 平面联合滤波（先硬阈值再 Wiener），最后自己做边缘导向的去马赛克。tile 256、overlap 16、Gain::None，契约是 BayerToRgb，许可 MIT OR Apache-2.0。Tuning.bm3d=None 时退回 NLM。只有 BM3D 滤波这一步有 GPU 版本（crates/gpu/src/bm3d.rs），噪声估计、VST 和去马赛克都在 CPU 上。",
+     "evidence": [
+      "crates/denoise-core/src/builtin.rs:1-8,17-23,33-53（manifest：BayerToRgb、Gain::None、MIT OR Apache-2.0）",
+      "crates/denoise-core/src/builtin.rs:80-104（run_with：VST → filter → inverse → demosaic；filter_on_cpu 在 bm3d 和 nlm 之间选）",
+      "crates/denoise-core/src/builtin.rs:163-235（estimate_noise_with）",
+      "crates/denoise-core/src/builtin.rs:347-415（demosaic 只处理 RGGB 四平面）",
+      "crates/denoise-core/src/bm3d.rs:1-10",
+      "crates/denoise-core/src/nlm.rs:1-9,46,66（Tuning.bm3d 默认是 Some）",
+      "crates/gpu/src/bm3d.rs:1-8",
+      "docs/denoise.md:9-41"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F3",
+     "claim": "AI Denoise（builtin 和 ONNX 共用同一条路径）只处理单平面 Bayer CFA。make_product 依次检查：不是 raw 的报 Unsupported；raw 解码返回 Unsupported 的照样返回；cpp != 1 或 !Cfa::is_bayer 的报 Unsupported（报错原文 'only Bayer raw files can be denoised (this one has another sensor layout or is already demosaiced)'）。所以 X-Trans（RAF）、LinearRaw/已去马赛克的 3 通道 DNG（含 X3F 转出的线性 DNG、HDR/全景合成 DNG）都不支持。JPEG/TIFF 和 preview-only 的 raw 在 eligible() 这一步就被排除（develops_raw 要求 kind==Raw 且 preview_only 为 None），UI 状态是 NotApplicable。",
+     "evidence": [
+      "crates/engine/src/denoise/products.rs:25-27（eligible）",
+      "crates/engine/src/denoise/products.rs:149-151,172-189（probe、decode、cpp/is_bayer 检查、layout_of）",
+      "crates/catalog/src/model.rs:447-449（develops_raw）",
+      "crates/catalog/src/model.rs:313-318（preview_only 的照片按渲染图处理，编辑的是内嵌 JPEG）",
+      "crates/engine/src/denoise/session.rs:143-146（不 eligible 就是 NotApplicable）",
+      "crates/denoise-core/src/manifest.rs:16-24（Domain 只有 BayerToRgb 一个变体）",
+      "docs/denoise.md:299-300（'Bayer RAW only. X-Trans, Foveon, demosaiced DNG and non-RAW images remain unsupported'）",
+      "docs/gaps.md:28,45（gap 11 没有 X-Trans；gap 29 合成的线性 DNG 不能用 AI Denoise）",
+      "搜索方式：在 crates/engine/src/tests/denoise.rs 里 grep xtrans|linear|jpeg，没有找到专门测 X-Trans/LinearRaw 被拒绝的测试，只有 'not a raw' 的用例（第 522-525 行）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F4",
+     "claim": "对不支持的 CFA 布局（X-Trans、LinearRaw DNG），AI Denoise 的开关在 UI 里仍然可以点，因为 applicable 只看照片是不是 NotApplicable，而这类文件能通过 eligible。但做出来的产物是 Failed{unsupported:true}，导出时 Unsupported 被映射成 Ok(false)，也就是直接按普通图渲染、不报错。docs/denoise.md:184-187 说的 'never silently exports the plain image' 只适用于本来支持、结果却失败的文件。",
+     "evidence": [
+      "crates/ui-egui/src/panels/edit.rs:301-305",
+      "crates/engine/src/denoise/session.rs:489-519（第 514 行：Err(MakeError::Unsupported(_)) => Ok(false)）",
+      "crates/engine/src/media/source.rs:110-113（'Ok(false) when denoise does not apply to this photo (render it plain)'）",
+      "crates/engine/src/denoise/state.rs:67-71",
+      "docs/denoise.md:184-187"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F5",
+     "claim": "AI Denoise 的结果不会生成新的 DNG，也不会作为新照片进 catalog，这一点和 Lightroom 的 Enhance/Denoise 会写出新 DNG 不同。它是一个可以删掉再重算的缓存 <library>/denoise/<key>.lcdn（压缩的 half-float camera RGB，key 由内容、模型和算法版本决定，默认上限 20 GB）。渲染时普通图和降噪图都在 camera RGB 阶段经过同样的高光重建、WB、色彩矩阵和 DCP，再按 Amount 混合，之后才进入其余调色流程，所以它是实时、非破坏的步骤。导出时如果缓存还没做好，会当场同步生成。",
+     "evidence": [
+      "crates/engine/src/denoise.rs:4-13",
+      "crates/engine/src/media/source.rs:115-128,186-208（DenoiseSpec、PairLoader、Twin、image_for 用 product::blend 混合）",
+      "crates/denoise-core/src/product.rs:416（blend）",
+      "docs/denoise.md:168-187",
+      "crates/ui-egui/src/panels/denoise.rs:249-251（UI 文案：'no extra files are made in your library'）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F6",
+     "claim": "如果确实需要一个降噪后的文件：导出格式 Rendered DNG 会写出线性 16-bit float 的 LinearRaw DNG，但编辑已经烤进去了；导出路径会遵守 AI Denoise 的 Amount。这个功能目前只是一个导出格式，导出的文件不会自动加回 catalog。另外 Convert to DNG（photo.convertToDng）只是把原始马赛克无损重新封装，不包含降噪。",
+     "evidence": [
+      "crates/engine/src/export/options.rs:18-21,36,51",
+      "crates/raw/src/dngwrite.rs:511-523（write_rendered_dng）",
+      "docs/file-format-parity.md:28（'Rendered DNG … not yet added to the catalog'）",
+      "crates/engine/src/cmd/convert.rs:1-3,28-55"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F7",
+     "claim": "手动 Luminance/Color NR 在 pipeline 里作用于线性 Rec.2020 RGB：在 WB、去色边、修补之后，在色调和颜色调整之前。对任何来源都生效：Bayer/X-Trans raw、LinearRaw DNG、JPEG/TIFF，以及 X3F/IIQ 的内嵌 JPEG。UI 滑块一直可用。默认值：新导入的 raw 是 nr_color=25、nr_outliers=true，渲染图（非 raw）全是 0。Luminance 用 log 亮度上的自导向 guided filter；Color 在 process >= V6 时用 nrc_joint（线性 R-Y/B-Y、全帧噪声模型、speck brake），之前的 process 用 rgb/Y 色度高斯模糊。半径按原图像素计算，所以预览和导出看起来一致；CPU 和 GPU 的参数来自同一个 nr_params。",
+     "evidence": [
+      "crates/pipeline/src/lib.rs:3-13（输入是 scene-referred linear Rec.2020，阶段顺序）",
+      "crates/pipeline/src/lib.rs:715-726（lin_cpu 之后调用 local::denoise）",
+      "crates/pipeline/src/local.rs:442-514（nr_params、denoise、apply_nr）",
+      "crates/pipeline/src/local.rs:541-555,593-595（nrc_params；joint_colour_nr 要求 process >= V6）",
+      "crates/pipeline/src/nrc_joint.rs:1-4",
+      "crates/pipeline/src/tests_nr_scale.rs:1-2",
+      "crates/gpu/src/render.rs:1130-1156",
+      "crates/develop/src/lib.rs:24-31（for_raw 默认值）",
+      "crates/develop/src/settings.rs:657-672（Detail::default 对渲染图都是 0）",
+      "crates/ui-egui/src/panels/edit.rs:305-308",
+      "docs/nr-color-joint.md:3-48"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F8",
+     "claim": "Detail 面板里的 Contrast（detail.nrContrast）滑块目前不影响渲染：这个字段会被存储，也能从 XMP 的 LuminanceNoiseReductionContrast 导入，UI 有对应滑块，但 nr_params（CPU 和 GPU 共用）不读它。唯一用到它的地方是 visualize.rs，Alt 拖动时显示灰度预览。parity-checklist 却把这一行标成 ✅，文档和代码对不上。",
+     "evidence": [
+      "crates/develop/src/settings.rs:643",
+      "crates/engine/src/crs.rs:375",
+      "crates/develop/src/controls.rs:265",
+      "crates/pipeline/src/local.rs:442-457（只读 nr_luminance、nr_detail、nr_color、nr_color_detail、nr_color_smoothness）",
+      "crates/pipeline/src/visualize.rs:212,726,744",
+      "搜索方式：grep -rn 'nr_contrast|nrContrast' crates --include=*.rs，结果只在上面这些文件，crates/gpu 里没有",
+      "docs/parity-checklist.md:209"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F9",
+     "claim": "Remove Hot Pixels（detail.nr_outliers）在去马赛克之前，用同色邻居的中值替换孤立的高亮感光点。它要求单平面 U16 CFA 数据，同色相位是从任意 CFA 算出来的，所以不限 Bayer、X-Trans 也适用。LinearRaw（cfa 为 None、cpp=3）和浮点数据会直接跳过。X3F/IIQ 根本不解码，自然也用不上。超过 0.2% 的感光点要替换时整张放弃不处理。",
+     "evidence": [
+      "crates/raw/src/hotpixel.rs:9-24,44",
+      "crates/raw/src/hotpixel.rs:54-72（phases 是通用 CFA 的写法）",
+      "crates/raw/src/hotpixel.rs:137-155（cfa 为 None、非 U16、cpp != 1 都返回 0）",
+      "crates/ui-egui/src/panels/edit.rs:309-318（只有 develops_raw 的照片才显示）",
+      "docs/parity-checklist.md:215"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F10",
+     "claim": "用户现在就能装自己的模型。UI 路径：Settings ▸ AI Denoise ▸ 'Your own model (optional)' ▸ Install from file…，选 .onnx，接着跑 denoise.models.inspect，弹出许可条款对话框要求勾选同意，然后在后台跑 denoise.models.install。命令行、控制通道和 MCP 也能调 denoise.models.install/select/test/remove。要求：.onnx 旁边必须有 denoise-model.json（≤64 KiB，经过 validate：id 规则且不能是 `builtin`、tile 是 16 的倍数且在 64..2048 之间、overlap 是偶数、≥16 且小于 tile 的一半、可选 sha256/sizeBytes、只接受 https 地址、gain 只能是 None 或 MatchMean）；domain 只能是 bayerToRgb；ONNX 只支持 float32，不支持外部 tensor 数据；算子只限 Conv（3×3 same 或 1×1，stride 1，无 group/dilation）、可融合的 LeakyRelu、ConvTranspose 2×2 s2、MaxPool 2×2 s2、双输入通道 Concat、DepthToSpace(2,CRD)，像 Relu/Add/Norm/注意力这类都会报 Unsupported；输入必须 4 通道，输出 3 通道且分辨率翻倍。大小方面，清单的上限写的是 2 GiB，但 ONNX 读取器实际只接受 ≤ MAX_WEIGHTS·4+16 MiB ≈ 528 MiB 的文件、≤1.28 亿个权重、≤512 层。安装时还会核对 SHA-256、跑自检（输出有限、可重复、尺度符合清单、rms_out < 0.8·rms_in），失败就回滚，已经装好的同 id 模型不受影响。模型放在每个用户各自的 denoise-models 目录（可用 LIGHTCRAFT_DENOISE_MODELS 改），选哪个模型是全局设置，不是每张照片各选。",
+     "evidence": [
+      "crates/ui-egui/src/panels/denoise.rs:265-298,596-610",
+      "crates/engine/src/cmd/denoise.rs:94-133（identify）、145-208（install_file：许可确认、SHA、自检、回滚）、315-339（inspect）、658-666（命令说明）",
+      "crates/denoise-core/src/manifest.rs:11-14,100-150",
+      "crates/denoise/src/onnx.rs:1-6,45-49,75-82,124-213,260-281",
+      "crates/denoise/src/onnx_proto.rs:9,210（MAX_BYTES；外部 tensor 数据报 Unsupported）",
+      "crates/denoise/src/net.rs:9-14",
+      "crates/denoise/src/cpu.rs:73-75（in_channels==4、out_channels==3）",
+      "crates/denoise/src/runtime.rs:63-126（self_test）",
+      "crates/engine/src/denoise/model.rs:314-319（自检不通过即 Err）",
+      "docs/denoise.md:135-138,152-164"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F11",
+     "claim": "目前没有任何随软件发布或默认可下载的训练好的模型。默认构建里 known::all() 返回空 Vec；桌面版和 CLI 的默认 features 只有 [\"denoise\"]；要单独打开 rawnind-model feature 才会出现一项固定版本的 RawNIND UtNet2 Bayer（darktable 的 .dtmodel，权重 GPL-3.0，有固定 URL 和 SHA），并且要在用户确认条款之后才下载。commercial=No 的模型永远不会提供下载。发行版是否开启这个 feature 是维护者的政策决定：仓库内的 release.yml 调用的是外部 reusable workflow，在仓库里 grep 不到 rawnind-model 的构建开关。另外，那个 .dtmodel 压缩包里还有一个 linear 模型，LightCraft 目前没有对应的 domain，所以用不上。",
+     "evidence": [
+      "crates/denoise-core/src/known.rs:22-23,24-58,61-70,102-105",
+      "crates/denoise-core/Cargo.toml:9-11；crates/denoise/Cargo.toml:9-12",
+      "apps/lightcraft/Cargo.toml:13-15；apps/lightcraft-cli/Cargo.toml:32-34；crates/engine/Cargo.toml:60-61",
+      "NOTICE:45-52",
+      "docs/denoise.md:135-150",
+      "crates/ui-egui/src/panels/denoise.rs:283-289（'This build offers no model downloads'）",
+      "搜索方式：grep -rn rawnind 整个仓库，排除 crates/denoise*、docs/denoise.md 和各 Cargo.toml 后，只在 NOTICE 和测试里出现；.github/workflows/release.yml 里也没有 features 参数"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F12",
+     "claim": "文档里写明的质量数据和限制：在公开的 Sony A7 III 裁切图上加四档已知合成白噪声，BM3D 的 PSNR 增益依次是 +4.28 / +7.60 / +10.04 / +10.62 dB（NLM 是 +3.70 到 +10.37），4 核 CPU 处理 1536×1024 裁切约 1-2 s，RTX 4080 SUPER 上 0.13-0.24 s。阈值曲线只在 Canon 机身（EOS R、R6 III、M50 II）的真实噪声水平上拟合过；基准用的是合成白噪声，测不到真实高 ISO 下的相关色噪和 banding；文档明确说没有和 Lightroom 达到质量对等，并承认经典滤波在很高噪声下不如好的训练模型。单张图上限 110 MP（MAX_PIXELS），超过会报 Input 错误（被当成 Failed 而不是 Unsupported），所以将来即使能解码 IIQ，IQ4 150MP（约 151 MP）这种机背也会失败。",
+     "evidence": [
+      "docs/denoise.md:39-41,56-62,64-97,116-131,299-302",
+      "crates/denoise-core/src/run.rs:17,91-94",
+      "crates/engine/src/denoise/products.rs:111-118,229（RunError 映射成 MakeError::Failed）",
+      "docs/gaps.md:28"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F13",
+     "claim": "按用户的器材来说：Ricoh GR 的 DNG 和 Ricoh/Pentax 的 PEF 是 Bayer CFA，只要能解码，就能走 AI Denoise（builtin 或自装模型）以及全部手动 NR。Phase One IIQ 被 probe 认成 RawFormat::OtherTiff，Sigma X3F 认成 RawFormat::X3f，两者都不在 is_supported 里，decode 返回 Unsupported，于是作为 preview-only 照片导入，只能在内嵌 JPEG 上用手动 NR，AI Denoise 和 Remove Hot Pixels 都不可用。如果把 X3F 用外部工具转成 LinearRaw DNG，LightCraft 能解码（dng.rs 接受 CFA 或 LINEAR_RAW 的主 IFD），手动 NR 可用，但 AI Denoise 仍因 cpp != 1 被拒。",
+     "evidence": [
+      "crates/raw/src/lib.rs:108-138（RawFormat：X3f 在 125 行，OtherTiff 注释写着包括 IIQ，在 136-137 行）",
+      "crates/raw/src/lib.rs:142-162（is_supported 里没有 X3f 和 OtherTiff）",
+      "crates/raw/src/lib.rs:417-437（OtherTiff 和其他格式 → RawError::Unsupported）",
+      "crates/raw/src/dng.rs:13-19",
+      "crates/engine/src/denoise/products.rs:177,181-185",
+      "crates/catalog/src/model.rs:313-318"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F14",
+     "claim": "LightCraft 没有运行时插件或模块加载机制。workspace 的 lints 设置了 unsafe_code = \"deny\"，AGENTS.md 规定生产代码不准有 unsafe（只有 crates/sysmem 例外）；Cargo.lock 里的 libloading 只是 ash/wgpu-hal/glutin/x11rb 这些图形和窗口依赖间接带进来的。因此在不 fork 的前提下，能扩展的地方只有四类：数据层（ONNX + denoise-model.json）；命令层（loopback 的 control protocol 或 lightcraft-cli mcp 可以驱动所有 engine 命令）；外部编辑器往返（photo.editExternal、Open Original in Other Editor、photo.reload、library.import、stack.group）；remote 降噪协议。",
+     "evidence": [
+      "Cargo.toml:130（unsafe_code = \"deny\"）",
+      "AGENTS.md:27-28,86-94",
+      "Cargo.lock:3561（libloading 的依赖者是 ash、dlib、glutin、khronos-egl、ug、wgpu-hal、x11rb）",
+      "docs/control-protocol.md:1-10；docs/mcp.md:1-15",
+      "crates/engine/src/cmd/convert.rs:123-206,384-412（photo.reload、photo.editExternal：16-bit TIFF/PSD，Adobe RGB/ProPhoto，导入并堆叠到原片上）",
+      "crates/ui-egui/src/menus/files.rs:108-176,181-260（Edit In、Open Original in Other Editor 把原始 raw 直接交给外部程序）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F15",
+     "claim": "remote 降噪协议 v1（lightcraft-cli denoise-serve / LIGHTCRAFT_DENOISE_URL）只是把同一个模型的 tile 分给别的机器算，不适合当作接入其他降噪器的扩展点：两端要比对模型的 SHA-256（服务端对每个 tile 都重新核对）；客户端本地必须已经装好并通过自检同一个模型；只有远端比本地快才会用；远端失败的 tile 改在本地跑，失败三次就停用远端；builtin 不走这条 loader 路径。",
+     "evidence": [
+      "crates/denoise/src/remote.rs:1-21,35-41,233,269-295,370",
+      "crates/engine/src/denoise/model.rs:358-376（default_loader 只用于 ONNX 模型）",
+      "crates/engine/src/denoise/products.rs:136-139（builtin 直接返回 BuiltinModel）",
+      "docs/denoise.md:243-286"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F16",
+     "claim": "ONNX 模型有纯 Rust 的 CPU 执行器（faer-core GEMM，不用 BLAS 也不用 C），还有 WGSL 写的 GPU 版本（crates/gpu/src/nn.rs）。GPU 结果会先和 CPU 对比校验，出错或更慢就退回 CPU；Settings 里可以选 Automatic / Graphics card / Processor。web 构建和不带 denoise feature 的构建会报告推理不可用。",
+     "evidence": [
+      "crates/denoise/src/cpu.rs:1-16",
+      "crates/denoise/Cargo.toml:9-12,17-19",
+      "crates/gpu/src/nn.rs:1-12",
+      "docs/denoise.md:189-215,295-297",
+      "crates/engine/src/tests/denoise.rs:478-491（web 会话：models 命令报错，status 的 model 是 builtin）"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "options": [
+    {
+     "name": "A. 用户自带兼容 ONNX 模型（现有机制，不改代码）",
+     "how": "准备一个或自己训练一个 Bayer→RGB 的 U-Net：4 通道 RGGB 输入，3 通道 2 倍分辨率输出，float32，只用支持的算子（Conv 3×3/1×1、LeakyRelu、ConvTranspose 2×2 s2、MaxPool 2×2、Concat、DepthToSpace 2 CRD），输入尺寸固定且 tile 是 16 的倍数，文件 ≤ 约 528 MiB。旁边写好 denoise-model.json（可以照抄 known.rs 里 RawNIND 那份：tile 512、overlap 64、gain MatchMean 1e6/0.05），然后在 Settings ▸ AI Denoise ▸ Install from file… 安装。也可以从 darktable 的 .dtmodel 里自己解压出 model_bayer.onnx 再配上清单。",
+     "pros": "不用 fork；模型放在每个用户自己的 denoise-models 目录，主程序照常从上游更新；CPU/GPU、缓存、导出、远程 GPU 这些功能都现成可用；安装时有校验、自检和回滚。",
+     "cons": "只对 Bayer 有用（Ricoh/Pentax 可以，X3F/IIQ/线性 DNG 不行）；算子集很窄，NAFNet、Restormer 这类现代架构装不上；RawNIND 权重是 GPL-3.0，自己本地用可以，再分发要承担 GPL 义务；目前没有许可宽松的现成权重；选模型是全局的，不能按相机自动切换。",
+     "effort": "已有兼容模型：0.5-2 小时（写清单加验证）；自己训练或改造一个许可宽松的兼容模型：数周（数据、训练、导出成受限的 ONNX 子集）",
+     "hook_points": [
+      "crates/engine/src/cmd/denoise.rs:94-208（identify/install_file）",
+      "crates/denoise-core/src/manifest.rs:41-65,100-139",
+      "crates/denoise/src/onnx.rs:1-6",
+      "crates/denoise/src/cpu.rs:73-75",
+      "crates/ui-egui/src/panels/denoise.rs:265-298",
+      "环境变量 LIGHTCRAFT_DENOISE_MODELS"
+     ]
+    },
+    {
+     "name": "B. 外部 raw 降噪器生成线性 DNG 后回导（外挂流程，可自动化）",
+     "how": "对选中的照片用 Photo ▸ Edit In ▸ Open Original in Other Editor，把原始 raw 交给外部降噪程序，前提是它支持该机型，并能输出 LinearRaw DNG。拿到 DNG 后通过 control protocol（lightcraft --control 7980）或 lightcraft-cli mcp --connect 依次调用 library.import 和 stack.group，把它和原片堆在一起（可以写一个伴随脚本或服务，监听输出目录）。LightCraft 会把 LinearRaw DNG 当作 raw 来调色。",
+     "pros": "零 fork、不碰上游代码；能用上更强的第三方或自建降噪器；只要外部工具能把 X3F（或 IIQ）转成 LinearRaw DNG，就能把这些格式带进 LightCraft 的 raw 调色流程。",
+     "cons": "每张照片多出一个文件；得到的线性 DNG 在 LightCraft 里用不了 AI Denoise 和 Remove Hot Pixels，只有手动 NR；色彩和镜头元数据的继承取决于外部工具；外部工具本身的许可和费用要自己评估；流程需要额外编排。",
+     "effort": "手动流程马上能用；写自动化脚本（控制通道 + 文件监听 + 导入/堆叠）大约 1-3 天",
+     "hook_points": [
+      "crates/ui-egui/src/menus/files.rs:181-260（open_original_in）",
+      "docs/control-protocol.md:1-10",
+      "docs/mcp.md:9-15",
+      "engine 命令 library.import、stack.group、photo.reload",
+      "crates/raw/src/dng.rs:13-19（支持 LinearRaw）"
+     ]
+    },
+    {
+     "name": "C. Edit In 渲染成 TIFF 交给外部降噪，再 Reload",
+     "how": "用 photo.editExternal 把照片连同编辑渲染成 16-bit TIFF（Adobe RGB 或 ProPhoto），自动导入并堆在原片上；外部降噪器原地处理这个 TIFF 后，执行 photo.reload（Reload from Disk）重新读取。",
+     "pros": "完全是现成功能；任何来源都能用，包括 preview-only 的 X3F/IIQ（但那时处理的只是内嵌 JPEG）。",
+     "cons": "降噪发生在色调映射之后、在显示参考的 RGB 上，效果通常不如在 raw 阶段降噪；编辑被烤进 TIFF，之后再调色就是在 TIFF 上调；文件大。",
+     "effort": "几小时（配置外部编辑器）",
+     "hook_points": [
+      "crates/engine/src/cmd/convert.rs:123-206,395-411",
+      "crates/ui-egui/src/menus/files.rs:108-176"
+     ]
+    },
+    {
+     "name": "D. 往上游贡献：linear-RGB（以及 X-Trans）降噪契约，并扩充 ONNX 算子集",
+     "how": "在 Domain 里加一个 LinearRgbToRgb 之类的变体（3 通道输入、同分辨率 3 通道输出）；放宽 products.rs:181-189 的检查，按 domain 分发；在 run.rs 旁边写一个 3 平面的 tile 运行器；去掉 cpu.rs 写死的 4/3 通道检查，扩充 onnx.rs/net.rs 的算子（Relu、Add 等），并在 crates/gpu 的 nn WGSL 和 reference 里实现同样的算子；builtin 的 BM3D 也可以做一个 3 平面版本。可以考虑接 RawNIND 压缩包里那个 linear 模型（仍受 GPL 约束）。这类改动应该作为 PR 提给上游，不要长期维护 fork。",
+     "pros": "原生覆盖 X3F 转出的线性 DNG、已去马赛克的 DNG、HDR/全景合成 DNG（gap 29），接着可以做 X-Trans（gap 11）；文档本来就把 linear-RGB 契约列为未来工作，合进上游的可能性较高；合进去以后用户照常更新就行。",
+     "cons": "工作量大，必须 clean-room、不能用 unsafe、不能 panic，CPU 和 GPU 都要有等价测试；仍然解决不了 X3F/IIQ 本身不解码的问题（那是 raw 解码器的范围）；模型许可政策还没定；需要维护者认可；如果做成 fork，会和上游持续分叉。",
+     "effort": "按 docs/gaps.md 的估计：gap 29 约 10-20 小时，再加上 linear-RGB 契约；gap 11（X-Trans 加训练权重）约 30-60 小时，另需模型政策决定。实际做完整的契约、算子、GPU kernel 和测试，估计 40-80 小时以上",
+     "hook_points": [
+      "crates/denoise-core/src/manifest.rs:16-24（Domain）",
+      "crates/engine/src/denoise/products.rs:172-189,229",
+      "crates/denoise-core/src/run.rs:82-100（denoise_bayer）",
+      "crates/denoise/src/cpu.rs:73-75",
+      "crates/denoise/src/onnx.rs:75-213；crates/denoise/src/net.rs:62-75",
+      "crates/gpu/src/nn.rs；crates/gpu/src/bm3d.rs",
+      "crates/engine/src/media/source.rs:115-208（PairLoader/Twin）",
+      "docs/denoise.md:299-302；docs/gaps.md:28,45"
+     ]
+    },
+    {
+     "name": "E. 自写伴随进程实现 remote 协议 v1，接入其他降噪器（不推荐）",
+     "how": "自己写一个 TCP 服务，按协议 v1（JSON 行加 half-float 载荷）接收 RGGB tile、返回 RGB，并在 hello 里报出本地已安装模型的 SHA-256。",
+     "pros": "不用改主程序代码。",
+     "cons": "本质上是冒充同一个模型：客户端本地必须先装一个能通过自检的同 SHA 模型；远端只在比本地快时才被使用；远端失败的 tile 会用本地模型补上，同一张图里结果会不一致；只限 Bayer；违背协议的设计用意，以后协议升级很可能失效。",
+     "effort": "2-4 天，但结果不可靠",
+     "hook_points": [
+      "crates/denoise/src/remote.rs:1-21,233,370",
+      "docs/denoise.md:243-286"
+     ]
+    }
+   ],
+   "open_questions": [
+    "官方发行版构建时会不会开启 rawnind-model？release.yml 调用的是外部的 reusable workflow（storytold/craft-common-actions），仓库内看不到 features 参数，需要看实际发布的产物或问维护者。",
+    "Ricoh GR 各代 DNG 和 Ricoh/Pentax PEF 的具体机型能不能被 lightcraft_raw 正常解码，以及有没有 Pixel Shift 或 Monochrome 这类非 Bayer 变体？这部分不在本次降噪任务范围内，需要格式那个子任务的结论。",
+    "有没有许可在 allowlist 之内（MIT/BSD/Apache/CC0 等）、又落在 LightCraft 那一小组 ONNX 算子里的已训练 Bayer 降噪模型可用？目前文档把它列为缺口。",
+    "builtin 的阈值曲线只用 Canon 机身拟合过，在 Ricoh GR（APS-C）和 Phase One 中画幅背上的实际效果没有测过。",
+    "把 Sigma DP2 Quattro 的 X3F 转成 LinearRaw DNG，有哪些外部工具可选？它们的许可、输出的色彩和元数据质量怎样？未核实。",
+    "维护者是否愿意接受 linear-RGB 降噪契约，或者扩充 ONNX 算子集的 PR？docs/denoise.md 和 docs/gaps.md 都把它列为未来工作，但没有具体的设计和排期。",
+    "detail.nrContrast 没有渲染效果，这是有意留下的空位还是 bug？parity-checklist 把它标成 ✅，需要和上游确认。",
+    "对不支持的 CFA（X-Trans、LinearRaw），导出时 AI Denoise 不起作用也不提示，这是否符合文档 184-187 行的本意？可以考虑在导出时给出提示。"
+   ]
+  },
+  "rawjpeg": {
+   "summary": "结论：截至 main c2e9c45（2026-11-10），LightCraft 没有类似 Lightroom「将 RAW 旁的 JPEG 视为单独照片」的导入选项，也不会自动配对。同名的 R0001234.DNG+JPG、SDIM0001.X3F+JPG、P0001234.IIQ+JPG 导入后是两张互相独立的目录照片，每个文件各生成一个 Op::AddPhoto。现有代码里和 RAW+JPEG 相关的只有三处：导入审阅对话框可以按文件类型取消勾选 JPEG（#344）；XMP 侧车命名会让 RAW 优先占用 IMG_0001.xmp，JPEG 改用 IMG_0001.JPG.xmp（#1905）；重命名或 Move 导入时，共享的 stem 侧车会被复制或保留。这些都只是防止元数据互相覆盖，并不会合并显示。可以直接复用的是现成的 Stack 模型（AddStack/SetStack，可撤销、写入日志）：折叠后网格只显示顶部一张，左上角有数量徽章，按 S 展开/折叠，按 Shift+S 换顶。但「按拍摄时间自动堆叠」不能代替配对检测：它会把连拍也并进来；而 X3F 的容器不被元数据解析器识别，没有 EXIF 拍摄时间，只能退回文件修改时间。X3F 和 IIQ 目前都是 preview-only，显示和编辑都基于文件内嵌的 JPEG（当作渲染图处理）。代码里没有任何逻辑会去用同目录的相机 JPEG 来显示它们。camera_preview 只对缺少色彩矩阵的 RAW（含 PEF，不含 DNG/X3F/IIQ）用它自己的内嵌 JPEG 拟合色彩和色调，JPEG 只提供像素对应关系，不提供输出像素，也从不读取旁边的独立 JPEG 文件。重要的是上游已有现成实现：PR #4046（open，head 90cf6d0a，2026-11-10）新增 raw_jpeg.rs、导入选项 pairRawJpeg（默认关闭）和命令 stack.rawJpegPairs。它用折叠堆叠实现配对，不改目录格式；RAW 为 preview-only 时把相机 JPEG 放在顶部，这正适合 X3F/IIQ。但它尚未合入，堆叠后两个文件仍是两张照片，评分等只作用于各自那一张。不改主程序的扩展方案可行：通过控制协议或 MCP connect 调用 photo.inspect、library.select、stack.group 来自动堆叠。要注意 stack.group 必须先有选中照片才可用（没有选中时即使传了 ids 也会被拒绝），而且执行后会改变当前选择。不要在 fork 里给 Photo 加 companion 字段：目录 VERSION 必须提升，会和上游版本号冲突；PR #1231 就是前车之鉴，它把 VERSION 从 9 升到 11，而当前 main 已是 12。",
+   "claims": [
+    {
+     "id": "F1",
+     "claim": "当前 main 没有 RAW+JPEG 配对或「视为一张照片」功能：ImportOptions 没有相关字段，library.import 也不解析相关参数。commit_prepared 为每个就绪文件各推一个 Op::AddPhoto，然后作为一个 Batch 提交；parity-checklist 的 LR-IMP-* 各行里也没有 RAW+JPEG 条目。",
+     "evidence": [
+      "crates/engine/src/import/types.rs:46-80（ImportOptions 字段：on_deleted/mode/preset/keywords/local/destination/organize/rename/metadata_preset/convert_dng/recipe）",
+      "crates/engine/src/cmd/library/import.rs:73-86",
+      "crates/engine/src/import/commit.rs:257-313（每个 Ready 文件 Photo::new + Op::AddPhoto），:328（一次 commit）",
+      "docs/parity-checklist.md:72-89（LR-IMP-* 各行无 RAW+JPEG 项）",
+      "搜索方法：在 *.rs/*.md 中 grep -i 'separate photo|raw+jpeg|pairRawJpeg|rawJpegPairs|LR-IMP-RAWJPEG'，main 中无相关实现；crates/catalog/src/raw_jpeg.rs 不存在"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F2",
+     "claim": "导入环节现有唯一相关能力：导入审阅对话框按文件类型批量勾选或取消（例如只导 RAW、不导旁边的 JPEG，issue #344）。",
+     "evidence": [
+      "crates/ui-egui/src/dialogs/import.rs:113-126（file_type，JPEG/JPG 合并为一类），:175-186（check_type 注释写明 'the raws only, ... not the JPEGs kept beside them (issue #344)'），:296-321（测试）",
+      "docs/parity-checklist.md:72（LR-IMP-ADD-DIALOG：'a toggle per type ... the raws without the JPEGs beside them, issue #344'）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F3",
+     "claim": "sidecar.rs:51 那一行的含义：Full 命名（IMG_0001.CR3.xmp）在 RAW+JPEG 并存时不会有歧义。Stem 命名下，同 stem 的多个已编目文件中，RAW 优先、其次按文件名占有 IMG_0001.xmp，其余文件读写 <file>.xmp；导入时 ImportStems 按同样规则排名（#1905）。Move 导入或重命名时，共享的 stem 侧车被保留或复制。这只是防止元数据互相覆盖，不是合并显示。",
+     "evidence": [
+      "crates/engine/src/sidecar.rs:16-22（Shared names 文档），:44-52（SidecarNaming::Stem/Full），:933-938（rank_of：(kind != Raw, path, id)），:1011-1068（ImportStems::for_import/owns）",
+      "crates/engine/src/import_move.rs:34-41（'the other half of a raw + JPEG pair'），:251-272（sibling_photo）",
+      "docs/parity-checklist.md:114（LR-LIB-RENAME：共享 stem 侧车被复制），:172（LR-META-XMP，issue #1905）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F4",
+     "claim": "Stack 是现成且可复用的目录数据：Stack{id, photos（photos[0] 为顶部）, collapsed}，通过 Op::AddStack/RemoveStack/SetStack 修改，可撤销、写入日志。group_ops 负责合并已有堆叠并指定顶部；arrange_stacks 让折叠的堆叠只显示一张；Session 的可见列表对 Recently Deleted 以外的视图都应用它。Op::Batch 按顺序应用，所以同一 Batch 里先 AddPhoto 再 AddStack 是合法的。",
+     "evidence": [
+      "crates/catalog/src/model.rs:20-38",
+      "crates/catalog/src/lib.rs:173-183（AddStack/RemoveStack/SetStack），:1146-1164（Batch 顺序应用、失败回滚），:443-447（alloc_stack_id）",
+      "crates/catalog/src/stacks.rs:1-8，:50-90（group_ops），:93-95（stack_with_ops），:171-203（arrange_stacks）",
+      "crates/engine/src/lib.rs:1302-1304"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F5",
+     "claim": "「按拍摄时间自动堆叠」（stack.auto，对话框 0–86400 秒）把时间间隔不超过 gap 的连续照片串成一组，同秒内按文件名排序，第一个作封面。它会把连拍并在一起，所以不是配对检测。按文件名排序时 DNG/IIQ 排在 JPG 前，X3F 排在 JPG 后。X3F（FOVb）不被元数据容器解析器识别，没有 EXIF 拍摄时间，导入时回退为文件修改时间，因此 X3F+JPG 按时间配对不可靠。",
+     "evidence": [
+      "crates/catalog/src/stacks.rs:205-231（auto_stack_groups；sort_by 时间 then cmp_name）",
+      "crates/catalog/src/query.rs:518-520（cmp_name 小写比较）",
+      "crates/engine/src/cmd/organize.rs:259-283（stack.auto）",
+      "crates/ui-egui/src/dialogs.rs:814-823（Slider 0.0..=86400.0）",
+      "crates/meta/src/container.rs:34-66（embedded() 处理 PSD/RAF/MRW/CR3/HEIF/JPEG/PNG/WebP/TIFF，不处理 FOVb）",
+      "crates/engine/src/files/probe.rs:133-155（preview-only RAW 的 captured 来自 lightcraft_meta::extract）",
+      "crates/engine/src/import/job.rs:360-366（没有日期时回退为 file_modified）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F6",
+     "claim": "网格 UI：左上角的堆叠徽章在折叠时显示数量，展开时显示 i/n，点击即可展开或折叠（胶片栏同样支持）。格式标签只显示所显示照片自己的 photo.format（例如 'DNG'），没有 'DNG+JPG' 这类合并格式徽章。preview-only RAW 另有琥珀色 'Preview' 标签。",
+     "evidence": [
+      "crates/ui-egui/src/panels/grid.rs:415-416，:1263-1293（stack_badge），:850-877（paint_cell_caption 中 let fmt = photo.format），:942-953（paint_preview_pill）",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:161",
+      "docs/parity-checklist.md:109（LR-LIB-STACK）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F7",
+     "claim": "堆叠后在语义上仍是两张独立照片：命令目标就是所选或显式 ids，不会展开到整个堆叠；删除堆叠顶部只删除它本身并把它移出堆叠，同伴保留；引擎中没有「作用于整个堆叠」的逻辑。",
+     "evidence": [
+      "crates/engine/src/lib.rs:1438-1454（targets/selected）",
+      "crates/engine/src/cmd/library/specs.rs:657-664（photo.delete）",
+      "crates/engine/src/cmd/library/selection.rs:66-74（删除时 remove_from_stacks_ops）",
+      "搜索方法：在 engine/ui-egui 非测试代码中 grep -i 'whole stack|entire stack|stack members|hidden members'，无结果"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F8",
+     "claim": "外部可以创建堆叠：stack.group {ids, top, collapsed} 可通过 MCP（run_command / 自动生成的 cmd_stack_group / command_batch）、控制协议 engine.execute（127.0.0.1，无认证）或 lightcraft-cli run 调用。坑：stack.group 的启用条件是 has_selection，且没有开启 explicit_targets，所以没有选中照片时即使传 ids 也会被拒（Disabled）；执行后会把选择改为 top。stack.auto 的启用条件为 always，但不能指定顶部。",
+     "evidence": [
+      "crates/engine/src/cmd/organize.rs:168-192（stack.group，has_selection，:190 selection=single(top)），:259-266（stack.auto，always）",
+      "crates/engine/src/lib.rs:588-589（仅 explicit_targets 且命名了照片时跳过 enabled 检查）",
+      "crates/engine/src/cmd.rs:70-73，:105-113",
+      "docs/mcp.md:140-141（command_run/command_batch），:174（run_command），:205-214（cmd_* 工具）",
+      "docs/control-protocol.md:1-10，:46-53（无认证）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F9",
+     "claim": "扩展能拿到配对所需的数据：catalog.query 的 photo_summary 只有 fileName/format/kind/captured/previewOnly，没有路径；但 Filter 支持 folder/subfolders 和 importedFrom，photo.inspect 返回整个 Photo 的序列化（含 source.path）以及 stack 信息（id/photos/position/collapsed）。库有 catalog.lock，同一时间只能被一个程序打开，所以 GUI 运行时扩展应走控制协议或 MCP connect，而不是 lightcraft-cli --library。",
+     "evidence": [
+      "crates/engine/src/cmd/query.rs:12-34（photo_summary），:82-94（catalog.query，默认 limit 200），:161-176（photo.inspect + stack）",
+      "crates/catalog/src/query.rs:18-73（Filter，camelCase；imported_from :68，folder :72）",
+      "crates/catalog/src/model.rs:86-94（Source::File{path}，serde tag=type）",
+      "crates/engine/src/library.rs:1011-1020（catalog.lock 警告文案）",
+      "https://github.com/storytold/lightcraft/issues/99（closed：两个进程同时打开库会互相丢失编辑，库锁由此引入）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F10",
+     "claim": "X3F 和 IIQ 在 main 上都是 preview-only：RawFormat::is_supported 不包含 X3f 和 OtherTiff（IIQ 归入 OtherTiff）。X3F 通过扫描文件里最大的 JPEG 字节流得到预览；解码失败时 load_bytes_now 改用 load_embedded_preview，并按渲染图（非 RAW）处理。代码中没有任何把同目录同名相机 JPEG 当替身显示的逻辑（sibling_photo 只用于侧车）。",
+     "evidence": [
+      "crates/raw/src/lib.rs:124-125（X3f），:136-137（OtherTiff 含 IIQ），:142-162（is_supported）",
+      "crates/raw/src/preview.rs:289-291，:452-460（scan_for_jpeg）",
+      "crates/engine/src/files/load.rs:96-103",
+      "crates/engine/src/files/preview.rs:12-27（stand_in_image），:75-81",
+      "crates/catalog/src/model.rs:313-318（preview_only 视为 rendered source），:447-449（develops_raw）",
+      "crates/engine/src/tests/import.rs:2419-2461（c.x3f/d.iiq 以 preview only 导入，kind=Raw）",
+      "crates/engine/src/files/tests.rs:1467-1498",
+      "docs/raw-parity.md:101，:105，:176，:195",
+      "搜索方法：grep -i 'sibling|with_extension(\"jpg' 只命中 import_move::sibling_photo、rename/fs.rs、denoise manifest"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F11",
+     "claim": "camera_preview 只在 RAW 没有相机矩阵（matrix_is_fallback）且格式属于 file_local_look 列表（ARW/NEF/NRW/RW2/RAF/CR3/CR2/PEF/SRW/ORF/CRW/MRW/ERF）时，才把该文件内嵌的 JPEG 缩成 96px 代理，与传感器代理逐像素配对，拟合 3x3 矩阵、色调/色度曲线和 HSV 表；JPEG 只提供对应关系，不输出像素。DNG（例如 Ricoh GR）自带矩阵，只有在可用时才拟合 DNG 色调。proxies() 只解码 RAW 自身字节里的预览，从不读取旁边的独立 JPEG。pairs.rs 里的 pairs 指像素对，不是文件对。",
+     "evidence": [
+      "crates/engine/src/camera_preview.rs:1-6，:59-87（LOOK_VERSION：拟合结果一变就必须提升）",
+      "crates/engine/src/camera_preview/colour.rs:6-34（PROXY=96、file_local_look），:37-67（starting_colour），:80-88（dng_tone_eligible），:95-109",
+      "crates/engine/src/camera_preview/look_fit.rs:10-20，:278-286",
+      "crates/engine/src/camera_preview/proxy.rs:6-9（MIN_PREVIEW_FRACTION），:83-101（decode_raw_preview(bytes, …)）",
+      "crates/engine/src/camera_preview/pairs.rs:56-63（sensor→JPEG 像素对）",
+      "docs/camera-preview-colour.md:3（'All output pixels still come from the RAW sensor data; there is no JPEG replacement'）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F12",
+     "claim": "上游已有进行中的工作，都还没合入 c2e9c45。Issue #3439（open，标签 in progress）就是这个需求。PR #4046（open，2026-11-10，head 90cf6d0a）的内容：新增 crates/catalog/src/raw_jpeg.rs（同目录、stem 忽略大小写，恰好 1 个 RAW + 1 个 jpg/jpeg/heic/heif/hif）；新增 library.import 参数 pairRawJpeg 和库偏好 import.pairRawJpeg（默认关）；新增命令 stack.rawJpegPairs {ids?, all?, preview?}，可补配已有库；用折叠堆叠实现，不改目录格式；develops_raw() 为假（preview-only）时 JPEG 置顶，并在重新识别解码状态时自动调整顶部；导入的配对并入导入的那一个撤销步骤；新增 fix_selection，避免选中被隐藏的成员。PR #1231（open，配对剔片，同步评分）会新增 Op::AddPair 等。",
+     "evidence": [
+      "https://github.com/storytold/lightcraft/issues/3439",
+      "https://github.com/storytold/lightcraft/issues/1230",
+      "https://github.com/storytold/lightcraft/pull/4046（git ls-remote：refs/pull/4046/head = 90cf6d0a4a76a5820ad4ad434bc27c5e0cf56f5d；diffstat 26 个文件 +1035/-19）",
+      "PR #4046 版本中 crates/catalog/src/raw_jpeg.rs：RawJpegPair::stack_order、COMPANION_EXTENSIONS、raw_jpeg_pairs、raw_jpeg_retop_ops",
+      "https://github.com/storytold/lightcraft/pull/1231（refs/pull/1231/head = 62c1a2dc）",
+      "https://github.com/storytold/lightcraft/issues/332",
+      "本地 clone 中不存在 crates/catalog/src/raw_jpeg.rs，也搜不到 pairRawJpeg"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F13",
+     "claim": "目录格式规则：给 Photo/Stack 新增序列化字段或新增 Op 都必须提升 journal VERSION（当前为 12）；库被新版打开后会立即升级，旧版随后拒绝打开。所以在 fork 中自行添加 companion 字段会和上游版本号冲突；PR #1231 就在旧基线上把 VERSION 从 9 升到 11。基于堆叠的方案不需要改格式。",
+     "evidence": [
+      "crates/catalog/src/journal.rs:64-80（Rules），:89-91（VERSION = 12）",
+      "PR #1231 diff：crates/catalog/src/journal.rs '-pub const VERSION: u32 = 9; +pub const VERSION: u32 = 11;'，新增 '| 11 | RAW+JPEG pair links | Op::AddPair, Op::RemovePair, Op::RejectPair, Catalog.pairs |'"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F14",
+     "claim": "上游实现可复用的钩子和先例：sidecar::stem_key/stem_key_into（以目录+stem 小写为键）；StemOwners/ImportStems（已在同 stem 文件之间做 RAW 优先排序）；import_move::sibling_photo；import_batch_done（引擎命令和 UI 导入任务每个批次都会调用，适合在导入后追加分组）；以及程序化堆叠的先例：Edit In 生成的副本、HDR/全景合并结果都会自动与源文件堆叠。",
+     "evidence": [
+      "crates/engine/src/sidecar.rs:801-830，:940-1068",
+      "crates/engine/src/import_move.rs:265-272",
+      "crates/engine/src/cmd/library/import.rs:91-115；crates/ui-egui/src/dialogs/import/task.rs:347；crates/engine/src/cmd/library/specs.rs:1363",
+      "crates/engine/src/cmd/convert.rs:174-200（stack.group 把编辑副本放在顶部）",
+      "crates/engine/src/merge.rs:445-447（stack_with_ops）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F15",
+     "claim": "按用户的三种相机看：Ricoh GR 的 DNG 和 Ricoh 品牌 Pentax 的 PEF 都从传感器数据解码（Pentax/Ricoh 共 60 个机型，40 个已验证、20 个未验证、0 个仅预览），配对时应以 RAW 为顶部；IIQ 和 X3F 是 preview-only，配对时应以相机 JPEG 为顶部（PR #4046 的 stack_order 正是如此）。",
+     "evidence": [
+      "docs/raw-parity.md:99（Pentax / Ricoh | 60 | 40 | 20 | 0），:101（IIQ preview），:105（X3F preview），:119，:176",
+      "crates/catalog/src/model.rs:447-449",
+      "PR #4046 raw_jpeg.rs RawJpegPair::stack_order（develops_raw ? [raw,jpeg] : [jpeg,raw]）"
+     ],
+     "confidence": "medium"
+    }
+   ],
+   "options": [
+    {
+     "name": "(a) 不改主程序的外部扩展：导入后自动把 RAW+JPEG 堆叠起来",
+     "how": "写一个独立的小进程（Python 标准库或 Rust，MIT/Apache 许可；clean-room，不拷其他产品代码），启动 LightCraft 时加 --control 7980（或用 lightcraft-cli mcp --connect）。轮询 engine.execute catalog.query {filter:{importedFrom:<上次时间>}, limit, offset}，对新照片调用 photo.inspect 取 source.path、kind、previewOnly 和 stack。按（父目录, 小写 stem）分组；只处理恰好 1 个 kind=raw 加 1 个 .jpg/.jpeg（kind=image），且两者都未在堆叠中的组。顶部取法：previewOnly 为空时选 RAW（GR DNG/PEF），否则选 JPEG（X3F/IIQ）。对每组：先读 library.state.selection，再 library.select {ids:[top,other], active:top}，再 stack.group {ids:[top,other], top, collapsed:true}，最后把原选择恢复为可见照片（隐藏成员映射到堆叠顶部）。同样的脚本也可以用 stack.group 在 --library 模式下对已有库补配，但前提是 GUI 没在运行。",
+     "pros": "主程序零改动，可照常跟随上游更新；只用已公开的命令和数据（Stack 是现成的、可撤销、写入日志的目录数据），不改目录格式；脚本随时可停，Ungroup Stack 即可还原。",
+     "cons": "要轮询，没有事件推送；stack.group 在没有选中照片时被拒，且会改变选择，GUI 中会看到选择闪动；每对占一个撤销步骤（command_batch 也是每步一个撤销）；控制端口无认证，只监听 loopback；仍是两张照片，评分和删除不联动，网格也没有 'DNG+JPG' 徽章；X3F 的拍摄时间不可靠，所以只能按文件名配对。",
+     "effort": "约 1–2 人日（脚本 + 文档），另需在真实 GR/X3F/IIQ 文件上验证约 0.5 天",
+     "hook_points": [
+      "docs/control-protocol.md:1-10（engine.execute）",
+      "docs/mcp.md:140-141,174,205-214",
+      "crates/engine/src/cmd/query.rs:82-94,161-176",
+      "crates/engine/src/cmd/organize.rs:168-192",
+      "crates/engine/src/lib.rs:588-589（启用条件检查）",
+      "crates/catalog/src/query.rs:68,72（importedFrom/folder）"
+     ]
+    },
+    {
+     "name": "(a2) 等待或临时挑选上游 PR #4046",
+     "how": "PR #4046（head 90cf6d0a）已实现：导入选项 pairRawJpeg 加设置项（默认关）、stack.rawJpegPairs 补配已有库，以及 preview-only RAW 时 JPEG 置顶。最省事的做法是在 PR 上反馈或测试（比如 X3F/IIQ/GR 样本）并等待合入。急用时可以在个人分支 cherry-pick 这个 PR 的 6 个提交，每次上游发版时 rebase，合入后删掉分支。",
+     "pros": "功能完整、有测试（catalog 14 个、engine 11 个 RAW+JPEG 测试），撤销语义正确（并入导入的那一个撤销步骤），会修正选择，不改目录格式，所以与上游库格式完全兼容。",
+     "cons": "尚未合入；cherry-pick 就意味着维护分叉（虽然不改格式，冲突面较小）；界面字符串只有德语翻译，简中会回退英文；仍是两张照片（评分不同步，那是 #1231 的范围）。",
+     "effort": "等待：0；临时分叉：约 0.5 人日，之后每次发版约 0.5 小时 rebase",
+     "hook_points": [
+      "https://github.com/storytold/lightcraft/pull/4046",
+      "PR 文件：crates/catalog/src/raw_jpeg.rs、crates/engine/src/import/commit.rs（stack_raw_jpeg_pairs）、crates/engine/src/cmd/organize.rs（stack.rawJpegPairs、fix_selection）、crates/ui-egui/src/dialogs/settings/import.rs"
+     ]
+    },
+    {
+     "name": "(b) 上游改动：导入选项堆叠配对，或将 JPEG 作为 companion 挂到照片上",
+     "how": "b1（堆叠模型，即 #4046 的路线）：ImportOptions 加一个 bool；在 commit_prepared 或 import_batch_done 之后，用 stem_key/ImportStems 的同一键在整个目录中查找同伴（以覆盖跨批次的配对），生成 Op::AddStack（collapsed，顶部按 develops_raw 决定），作为独立提交并入导入的撤销步骤。b2（Lightroom 式 companion 模型，#332 讨论过的方案）：Photo 加 companion 路径字段并提升 journal VERSION，Copy/Move 导入、重命名、移动文件夹、从磁盘删除、Synchronize、Find Missing、导出原件等文件操作都要跟着 companion 走，网格显示 'DNG+JPG' 徽章。",
+     "pros": "b1 改动小、可逆、无格式变更，已有实现可参考；b2 语义最接近 Lightroom：一张照片、评分和删除一致。",
+     "cons": "b1 仍是两张照片；b2 要提升目录格式（旧版从此拒绝打开该库），涉及每一个文件操作，工作量大、风险高，也不适合放在 fork 里做（会和上游 VERSION 冲突，见 PR #1231）。",
+     "effort": "b1：约 3–5 人日（PR #4046 约 1000 行）；b2：多个 PR，约 3–6 周",
+     "hook_points": [
+      "crates/engine/src/import/types.rs:46-80",
+      "crates/engine/src/import/commit.rs:187-339",
+      "crates/engine/src/cmd/library/import.rs:73-115",
+      "crates/engine/src/sidecar.rs:801-830,1011-1068",
+      "crates/catalog/src/stacks.rs:50-95",
+      "crates/catalog/src/journal.rs:68-91"
+     ]
+    },
+    {
+     "name": "(c) 更丰富的显示：preview-only RAW 显示相机 JPEG，或在 RAW 渲染与相机 JPEG 之间切换",
+     "how": "c1（零代码）：堆叠时把 X3F/IIQ 的相机 JPEG 放顶部，用 Shift+S（stack.setTop）切换顶部、S（stack.toggle）展开；两张都选中时用 Compare（view.compare，Shift+C）并排对比 RAW 渲染与相机 JPEG。c2（上游引擎）：preview-only RAW 若有配对的 JPEG，在 media/cache.rs 的 origin_ref/source_ref 和快速预览路径（fs_preview_loader/embedded_preview_srgb）里改为加载 JPEG 路径，替代内嵌预览（files/load.rs:96-103）。两者本来都按渲染源处理（crs::Target::for_file 对 preview-only 也视为渲染图），所以已有调整可以沿用。还要给缓存键和智能预览加盐，「导出原件」仍导出 RAW，并检查裁切宽高比是否一致。c3（UI）：在 Detail 里加一个「Camera JPEG」切换，显示配对 JPEG 或 RAW 自己的内嵌预览（embedded_preview_srgb 已存在），也可以复用 Compare 面板。c4（不推荐）：内嵌预览过小时改用同目录全尺寸 JPEG 作为 camera_preview 的拟合参照。拟合本来就在 96px 代理上运行，收益有限，而且必须提升 LOOK_VERSION。",
+     "pros": "c1 立即可用；c2 让 X3F/IIQ 以相机全尺寸 JPEG 显示和编辑（不必依赖内嵌预览的分辨率），设置语义不变；c3 方便与机内直出比较色彩。",
+     "cons": "c2/c3 必须改上游代码（缓存、智能预览、快速预览、导出都要考虑），无法用外部扩展实现；c2 必须有可靠的配对关系（堆叠或 companion）；c4 要提升 LOOK_VERSION，会让已有智能预览重建。",
+     "effort": "c1：0；c2：约 1–2 周（上游）；c3：约 3–5 人日；c4：约 1 周，收益低",
+     "hook_points": [
+      "crates/engine/src/media/cache.rs:384-393,416-446",
+      "crates/engine/src/files/load.rs:96-103",
+      "crates/engine/src/files/preview.rs:75-110",
+      "crates/engine/src/crs.rs:43-46",
+      "crates/ui-egui/src/menus/ui_commands.rs:70（view.compare）",
+      "crates/ui-egui/src/panels/compare.rs",
+      "crates/engine/src/camera_preview/proxy.rs:87-101",
+      "crates/engine/src/camera_preview.rs:59-87"
+     ]
+    }
+   ],
+   "open_questions": [
+    "DP2 Quattro 的 X3F 内嵌 JPEG 和 IIQ 内嵌预览的实际分辨率有多大？这决定了相机 JPEG 置顶或替身显示（c1/c2）的价值。导入真实样本后用 photo.inspect 的 width/height 即可确认。",
+    "Phase One 后背在机内是否会写出同目录、同 stem 的 JPEG？如果 JPEG 是 Capture One 导出到子文件夹的，同目录规则（#4046 和方案 a）都不会配对。",
+    "用户能否接受「堆叠里仍是两张照片」的语义（评分、旗标、删除只作用于顶部那一张）？如果需要评分同步或删除联动，要等 #1231 或 companion 模型。",
+    "PR #4046 何时、以何种形式合入（审查中曾改过选择修正和换顶规则）？合入前要不要在其 PR 下提供 GR/X3F/IIQ 测试反馈？",
+    "X3F 的拍摄时间：真实文件导入后 captured 是否就是文件修改时间（本研究只读了代码，没有用真实 X3F 验证）？如果是，按时间排序或分组会和 JPEG 的 EXIF 时间不一致。",
+    "外部扩展方案中，stack.group 会改变 GUI 当前选择；如果用户正在编辑时扩展触发，体验是否可接受？还是只在用户手动运行一次「补配」时执行？"
+   ]
+  },
+  "web_x3f": {
+   "summary": "结论先说：没有一款主流第三方 raw 软件能原生、正确地显影 DP2 Quattro 的 X3F。Sigma Photo Pro 6.9.0（2025-04，目前能找到的最新版）只能导出 JPEG 或 8/16-bit TIFF，不能把 X3F 导出成 DNG。Adobe（ACR、Lightroom、DNG Converter）只支持早期机身（SD9 到 SD15、DP1/DP2），Merrill 和 Quattro 从未支持过。darktable 明确不解码 Foveon；RawTherapee 的 camconst 里没有 dp Quattro 条目；Capture One、DxO、ON1 都没有找到支持的证据。LibRaw 其实没有删掉 X3F：从 0.20（2020-07）起改成只有编译时定义 USE_X3FTOOLS 才启用，原因是安全策略——外来代码不能可靠拒绝畸形输入。截至 2026-11 的 master 仍然如此，而且 LibRaw 是 LGPL-2.1/CDDL，不在白名单内。\n传感器结构：顶层 5424×3616（19.6MP），中层和底层各约 2712×1808（另有资料写 2720），即 1:1:4。在样张中实测 DP2 Quattro（固件 1.05）的 X3F 版本是 4.1，raw 段图像类型 0x23，尺寸 5888×3672；文件没有 PROP 段，但内嵌一张 5424×3616 的全尺寸 JPEG。\n公开规范只有 Foveon 2004 年的 FOVb External Specification v1.2。它明确删掉了 3/11/18 以外的所有图像编码，所以 TRUE 熵编码、CAMF 和 Quattro 的 raw 编码都没有公开规范。\n开源实现方面：Kalpanika/x3f 是 BSD-3 风格许可，2017-06 打 0.57 后就停止更新，降噪依赖 OpenCV（NLM）。它的活跃 Rust 移植 sagwaco/x3fuse-core（Apache-2.0，v0.4.1，2026-10）能输出 LinearRaw DNG，内置 NLM/BM3D 降噪，支持 Quattro 2×2 扩展和 X3I 合并。但它带 C shim 和 bindgen，x3f-sys 里有大量 unsafe，部分新阶段还来自对 SPP 二进制的反编译。所以它不能放进 LightCraft 进程内（违反 AGENTS.md 的纯 Rust、无 unsafe、clean-room 规则），只能当外部转换器用。\n可行性判断：一，在 LightCraft 内做 clean-room 的原生 Rust X3F Quattro 解码器，许可上可行（可参考公开规范、ExifTool 文档、样张黑盒观察，用内嵌 JPEG 拟合色彩），但 TRUE、CAMF type 5 和 Quattro 色度上采样都没有公开规范，工作量大、来源风险高。二，外部转换路线更现实：导入前用 x3fuse-core 的 x3f_extract 把 X3F 转成 LinearRaw DNG（LightCraft 已支持 LinearRaw、BaselineExposure、ForwardMatrix、HueSatMap），建议 -denoise 0，降噪留到 LightCraft 里做。代价是：输出已经过黑电平扣除、坏点插值和 2×2 色度插值，不可逆；色彩与 SPP 不同；Quattro 的空间增益表不完整；高光可能偏黄绿。另外 dp Quattro 固件 2.0x 以后可以机内直出 12-bit DNG，但不能同时存 JPEG。",
+   "claims": [
+    {
+     "id": "F1",
+     "claim": "DP2 Quattro 传感器为 1:1:4 结构：顶层 5424×3616（约 19.6MP），中层和底层各约 2712×1808（约 4.9MP；有资料写 2720×1808，存在差异），厂商标称有效约 29MP、总约 33MP；Sigma 称顶层承担亮度信息、下两层每 4 个顶层像素对应 1 个像素。",
+     "evidence": [
+      "https://www.thephoblographer.com/?p=58100 (WebSearch 摘录: 'T(Top):5,424×3,616 / M(Middle):2,712×1,808 / B(Bottom):2,712×1,808, Total Approx 33MP')",
+      "https://photorumors.com/?p=79621 (WebSearch 摘录: M/B 2,720×1,808)",
+      "https://photo.yodobashi.com/sigma/interview02_02_e.html (Sigma 开发者访谈：顶层亮度、下层 1/4 采样)",
+      "https://image-sensors-world.blogspot.com/2014/02/sigma-announces-quattro-foveon-sensor.html?m=1 (1:1:4)",
+      "https://blog.kasson.com/the-last-word/sigma-quattro-imaging-architecture (批评：顶层光谱偏蓝，并非纯亮度)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F2",
+     "claim": "X3F 版本：Merrill 样张为 3.0，DP2 Quattro（固件 1.05.0.9222）和 sd Quattro H 样张都是 4.1（文件头字节 01 00 04 00）。Quattro 文件只有 3 个目录项：一个 JPEG 预览 IMA2（格式 18，5424×3616 全尺寸）、一个 CAMF、一个 raw IMA2（DP2Q 为类型 0x23，5888×3672；SDQH 为 0x27），没有 PROP 段。4.x 文件头在偏移 28/32 处已不是旧规范里的宽高字段。x3fuse-core 文档写'4.0 = Quattro，4.1 = sd Quattro'，与实测 DP2Q=4.1 不符。",
+     "evidence": [
+      "我用 Python 按公开 FOVb 规范写的只读解析脚本：/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/scripts/x3fhdr.py",
+      "样张 /tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3f_test_files/_SDI8284.X3F（字符串 'SIGMA dp2 Quattro'、'1.05.0.9222'）",
+      "x3fuse-core docs/src/format.md:63-71（版本表）与 :130-142（图像类型表 0x0001_0023 RAW Quattro）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F3",
+     "claim": "压缩与布局的公开情况：Sigma 规格写明 dp Quattro 的 raw 是无损压缩 14-bit，图像引擎为 TRUE III。根据 x3fuse-core 的文档：TRUE 是'预测器 + Huffman'，三个平面各有独立码流；Quattro 的 M/B 平面为半分辨率，需要 2×2 扩展到 T 平面分辨率；CAMF 有 type 2（流密码）、type 4、type 5（1-D 预测 + Huffman，用于 Quattro），里面存放黑电平遮光区、白平衡、色彩矩阵、空间增益和坏点表。按实测段长推算约 8.5 bit/样本（这是推断）。",
+     "evidence": [
+      "https://www.sigma-global.com/en/cameras/dp2-quattro/specification.html（WebSearch 摘录：'Lossless compression RAW data (14-bit), DNG (No compression RAW Data 12-bit)'）",
+      "https://www.wikipedia.org/wiki/Sigma_DP2_Quattro（TRUE III）",
+      "x3fuse-core docs/src/format.md:144-152, :154-186",
+      "Kalpanika x3f doc/changes.txt:23-25（'CAMF type5 (i.e. Quattro) is now working'）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F4",
+     "claim": "Sigma/Foveon 唯一公开的规范是《'FOVb' (.X3F) File Format External Specification》v1.2（2004-05-23，PDF 作者 dicklyon）。它只覆盖到 2.2 版文件头、PROP 段和预览/缩略图格式 3/11/18，文中明确写道'Image encodings other than types 3, 11, and 18 have been removed from this public document'。因此 TRUE、Merrill 3.x、Quattro 4.x 的 raw 编码和 CAMF 都没有公开规范。文档里没有版权或许可条款。",
+     "evidence": [
+      "https://libopenraw.freedesktop.org/formats/x3f/x3f-raw-format.pdf（本沙箱无法直接访问；副本来自 metadata-extractor wiki：/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/mewiki/w/docs/x3f-raw-format.pdf）",
+      "pdftotext 输出 /tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/out_spec.txt 第 1-11 行；grep copyright/license 无结果"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F5",
+     "claim": "Sigma Photo Pro 最新版是 6.9.0（2025-04-17，仅 Windows/macOS），支持 dp/sd Quattro 的 X3F/X3I。dp Quattro 固件 2.00 之后拍的 X3F 需要 SPP 6.5.4 以上。SPP 输出格式是 JPEG、8-bit TIFF、16-bit TIFF，没有找到把 X3F 导出为 DNG 的证据；它的 DNG 能力只用于显影 fp/BF 的 DNG，且不显影 dp Quattro 机内 DNG。",
+     "evidence": [
+      "https://www.sigma-global.com/en/news/2025/04/17/010931/",
+      "https://www.sigma-global.com/en/support/software/sigma-photo-pro/",
+      "https://manualshive.com/en/manual/sigma/photo-pro-4-1/1267976?page=40（旧版手册：JPEG/8-bit TIFF/16-bit TIFF）",
+      "https://b2b.sigma-imaging.se/blog/item/sigma-photo-pro-6-8-0-software-download（6.8.0 加入 fp DNG）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F6",
+     "claim": "Adobe Camera Raw / Lightroom / DNG Converter 只支持早期 Foveon 机身（SD9/SD10/SD14/SD15、DP1/DP1s/DP1x、DP2/DP2s/DP2x），从未支持 Merrill 或 Quattro 的 X3F。Adobe 员工 2014 年曾表示 Quattro 'no direct support planned'。Sigma 另在 2021 年推出了 Photoshop CC 专用的 X3F Plug-in，覆盖 DP Merrill、dp Quattro、SD1 和 sd Quattro。LightCraft 自己的文档也把 Lightroom 的 Foveon 支持标为'✅ (older bodies)'。",
+     "evidence": [
+      "https://www.sigma-global.com/en/support/software/sigma-x3f-plug-in-for-photoshop/（旧机型'cannot be developed in the plug-in… Please use Adobe Camera Raw instead'）",
+      "https://community.adobe.com/feature-requests-564/p-sigma-sd1-when-will-the-merrill-sensors-be-supported-please-666507",
+      "https://community.adobe.com/t5/lightroom-classic-discussions/sigma-dp2-x3f-dateien-lightroom/m-p/8965937",
+      "LightCraft docs/raw-parity.md:195"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F7",
+     "claim": "LibRaw 没有删除 X3F，只是从 0.20（2020-07-23）起默认不编译：只有定义 USE_X3FTOOLS 才启用。原因写在'Imported code policy'里：外来代码不能容忍截断或畸形文件，作者拒绝补拒绝逻辑，存在安全风险（ImageMagick 等会处理任意输入）。dp0–dp3 Quattro 在 0.17（2015）加入，带 Quattro R/G 插值和 AF 点插值开关。截至 2026-11 的 master 仍然受 USE_X3FTOOLS 控制（src/x3f/ 还在）。LibRaw 不提供 Foveon 色彩配置。它的许可是 LGPL-2.1 或 CDDL-1.0。更早在 2010 年，LibRaw 曾因 dcraw 的 Foveon 代码是 GPL 而把它移到 GPL2 demosaic pack。",
+     "evidence": [
+      "LibRaw Changelog.txt:1005-1006, :1088-1125（克隆位置 /tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/LibRaw，commit a9a14b1，2026-11-08）",
+      "Changelog.txt:1632 与 :1690（0.17：Sigma dp1/dp2/dp3/dp0 Quattro）",
+      "Changelog.txt:1856-1865（'No foveon interpolation… ICC profile (not supplied)'）",
+      "Changelog.txt:1524-1528（LGPL 2.1 或 CDDL 1.0）",
+      "Changelog.txt:2366-2372（GPL2 demosaic pack）",
+      "internal/libraw_internal_funcs.h:295, :317",
+      "doc/API-datastruct.html（LIBRAW_RAWSPECIAL_NODP2Q_INTERPOLATERG/AF）",
+      "https://mail.kde.org/pipermail/digikam-devel/2010-November/046692.html"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F8",
+     "claim": "darktable 官方手册写明：除 Fujifilm X-Trans 外不解码非 Bayer 传感器，并点名 Sigma Foveon。RawTherapee（GPL-3.0）的 release notes 泛称'支持 Foveon'，但 camconst.json 里没有任何 dp Quattro 条目，sd Quattro 只有一个 raw_crop（Quality C）；论坛实测 dp2 Quattro 不能显影。",
+     "evidence": [
+      "https://docs.darktable.org/usermanual/5.6/en/overview/supported-file-formats/",
+      "RawTherapee rtengine/camconst.json:3022-3074（克隆 /tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/RawTherapee，commit 64c2d90，2026-11-08）",
+      "RawTherapee RELEASE_NOTES.txt:12",
+      "https://discuss.pixls.us/t/sigma-dp2-quattro/3617"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F9",
+     "claim": "其他商业软件：SILKYPIX Developer Studio Pro8 8.0.7.0（2017-06）加入了 dp0–dp3 Quattro X3F，但有功能限制、不支持 X3I，产品已停止更新。Impress 当时报道 Lightroom、DxO OpticsPro、Capture One Pro 都不能显影 dp Quattro raw，之后没有找到改变的证据。Affinity Photo 据论坛反映通过 LibRaw 能打开部分 X3F，质量有争议，没有官方声明。Iridient 的证据互相矛盾（2016 年评测说不支持 Quattro）。ON1 没有找到相关信息。",
+     "evidence": [
+      "https://dc.watch.impress.co.jp/docs/news/1064957.html",
+      "https://www.silkypix.com/en/?p=384",
+      "https://discuss.pixls.us/t/preliminary-libraw-support-call-for-testing/27676/69",
+      "https://www.libraw.org/node/2552",
+      "https://diglloyd.com/blog/2016/20160804_1130-SigmaPhotoPro-struggle.html"
+     ],
+     "confidence": "low"
+    },
+    {
+     "id": "F10",
+     "claim": "Kalpanika/x3f 的许可是 BSD-3-Clause 风格（Roland Karlsson、Erik Karlsson、Mark Roden，2015）。最后一次提交 2017-06-23，标签 0.57（支持 sd Quattro H）；仓库未归档，有 57 个未关闭 issue。LibRaw 维护者称其'incomplete, and abandoned'。0.54 版说明写着 4.x（Quattro）文件头解码仍不完整、Quattro 关闭了空间增益补偿；0.53 版提到偶发偏绿。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3f/doc/copyright.txt:1-31",
+      "x3f doc/changes.txt:1-10",
+      "git log：e8b48ca 2017-06-23，tag 0.57",
+      "https://github.com/Kalpanika/x3f/releases",
+      "https://github.com/Kalpanika/x3f（527 commits，57 open issues）",
+      "https://libraw.org/comment/5664"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F11",
+     "claim": "Kalpanika 的 x3f_extract 默认输出 DNG，内容是'已降噪但未转换的 RAW 数据 + 色彩转换信息'，可交给 Lightroom 显影。-tiff 输出完全转换到 sRGB/AdobeRGB，但不处理色域外颜色（天空易出怪色）。另有 -unprocessed 和 -meta 选项。降噪依赖 OpenCV：构建脚本从 erikrk/opencv 分支编译，链接 opencv_photo/imgproc/core（OpenCV 3.x，BSD-3），另有 Mark Roden 写的各向异性滤波。",
+     "evidence": [
+      "x3f doc/readme.txt:13-21, :60-77",
+      "x3f install_opencv.sh:27-28",
+      "x3f src/makefile:55-69"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F12",
+     "claim": "sagwaco/x3fuse-core 是 Kalpanika 的活跃 Rust 移植：Apache-2.0，NOTICE 保留 BSD 原文，v0.4.1 发布于 2026-10-27，crates.io 上有 x3f-core 0.4.0。它的 x3f_extract 默认输出 DNG LinearRaw（BlackLevel 0 / WhiteLevel 65535，ISO 和余量放在 BaselineExposure），-compress 用无损 JPEG。降噪：-denoise 0-10（默认 10，即开到最强），-denoiser nlm|bm3d，可走 wgpu GPU，没有 GPU 时退回 CPU。还有 -qtop（导出未处理的 Quattro 顶层）、-dng-highlight-recovery、实验性 -color-mode，以及 X3I（SFD）合并。v0.1.2 起有 Windows 构建，0.4.0 修了 WASM 测试。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3fuse-core/README.md:3-21, :74-118, :227-232",
+      "x3fuse-core LICENSE:1-3, NOTICE:1-40, Cargo.toml:10-14",
+      "https://github.com/sagwaco/x3fuse-core/releases",
+      "https://crates.io/api/v1/crates/x3f-core（0.4.0，Apache-2.0，2026-10-25）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F13",
+     "claim": "x3fuse-core 不适合放进 LightCraft 进程内。x3f-sys 依赖 cc 和 bindgen，编译两个 C shim（x3f_printf.c、x3f_version.c），src 里约 1702 处 unsafe，使用 libc malloc、#[no_mangle] extern \"C\" 和 static mut。这违反 LightCraft 的'Pure Rust, no C/C++ dependencies'和'no unsafe'规则。另外，它的 Merrill SPP 对齐和 Color Modes 阶段明确基于对 SIGMA Photo Pro 6.9.0 ARM64 库的反编译记录，与 clean-room 原则冲突。",
+     "evidence": [
+      "x3fuse-core crates/x3f-sys/Cargo.toml:43-44；crates/x3f-sys/csrc/",
+      "grep -rc unsafe crates/x3f-sys/src → 1702",
+      "x3fuse-core docs/src/spp-alignment.md:3-8（'decompiler records, original instructions, reconstructed kernels'）",
+      "x3fuse-core docs/COLOR-MODES-PLAN.md:75-80",
+      "LightCraft AGENTS.md:27, :28, :91-94, :115, :116"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F14",
+     "claim": "x3fuse-core 对 Quattro 的处理（也就是外部转换路线的画质要点）：M/B 半分辨率平面用 Catmull-Rom 双三次（a=-0.75，模仿 OpenCV INTER_CUBIC）上采样，再用 T 平面的细节通过 BMT/YUV 变换注入，与旧版 OpenCV 结果不是逐位一致。高光恢复不关时，通道饱和不一致会出现'lime/yellow highlights'；增益不一致会出现'lime bright detail and purple dark detail'。Quattro 的色彩阴影或空间增益依赖 Sigma DLL 里的 BData/C8x_y 表，没有完整实现（Kalpanika 0.54 直接关闭了 Quattro 的空间增益）。Quattro 配置文件的标定光源是 D65。",
+     "evidence": [
+      "x3fuse-core docs/PORT-PLAN.md M5a（docs/src/port-plan.md:67）",
+      "x3fuse-core docs/src/format.md:148-152",
+      "x3fuse-core docs/src/pipeline.md:182-191, :204-221, :272-273",
+      "x3fuse-core docs/PORT-PLAN.md M6e5（:98）",
+      "Kalpanika doc/changes.txt:8"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F15",
+     "claim": "X3Fuse（sagwaco/x3fuse）是 macOS 专用 GUI，许可 GPL-3.0（这与 Apache-2.0 的 core 不同）。它把 x3fuse-core 0.3.0 打包进来，标称已测试 DP0/DP1/DP2/DP3 Quattro、sd Quattro 和 sd Quattro H，生成的 DNG 在 Lightroom、darktable、RawTherapee 等软件中测试过。README 明确提醒：DNG 是已转换的数据，不可逆，应保留 X3F 原片；想在目标编辑器里降噪就把 Denoise 设为 Off；X3I 在该 app 中不支持。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3fuse/LICENSE:1-2",
+      "x3fuse README.md:9, :24-49, :100-111, :168-185, :206-223, :232-234"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F16",
+     "claim": "其他开源 X3F 实现都达不到 Quattro raw 解码：rawloader 的 x3f.rs 只有容器解析，报错信息为'X3F decoding not implemented yet'；dnglab/rawler 的 x3f.rs 含 todo!()；两者都没有出现 Quattro 字样，许可都是 LGPL-2.1。crates.io 上的 x3f 0.0.5（MIT OR Apache-2.0，2026-02，pre-alpha）只做容器解析，'intentionally does not perform any image processing'，参考的是 libopenraw 托管的公开规范。SourceForge 上的 x3fdectools 是 GPL。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/rawloader/src/decoders/x3f.rs:149（错误字符串），Cargo.toml license LGPL-2.1",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/dnglab/rawler/src/decoders/x3f.rs:153, :161（todo!()），rawler/Cargo.toml:8",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3fcrate/x3f-0.0.5/README.md, Cargo.toml",
+      "https://x3fdectools.sourceforge.net/development.html"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F17",
+     "claim": "dp Quattro 固件 2.00/2.01（2017-04）加入了机内 DNG 录制：12-bit 无压缩，DP2Q 尺寸为 5424×3616（High）和 2704×1808（Low），同时加入 SFD/X3I。限制：DNG 不能和 JPEG 同时保存（即没有 RAW+JPEG），机内不能调 DNG 的白平衡，SPP 不显影这些 DNG。2.02 修了 Photoshop 处理 DNG 时右侧的噪点。这些 DNG 被普遍认为是 3 通道 Linear DNG，但没有拿到样张，PhotometricInterpretation 未核实。",
+     "evidence": [
+      "https://www.sigma-global.com/en/support/firmware/dp2-quattro/",
+      "https://dc.watch.impress.co.jp/docs/news/1057074.html",
+      "https://photoxels.com/sigma-dp-quattro-series-firmware-updates-ver-2-02",
+      "https://www.rangefinderforum.com/threads/dp-quattro-series-now-with-dng.163903/",
+      "https://www.dpreview.com/forums/threads/adobe-dng-linear-raw.3731225/#post-54452344"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F18",
+     "claim": "可用样张的许可：Kalpanika 的 x3f_test_files 里的 DP2 Quattro 样张 _SDI8284.X3F 版权归 Mark Roden，README 写明'not published into the public domain for any commercial purposes'，只能用于测试，不是 CC0。Imaging Resource 的 dp2 Quattro X3F 版权归该站，仅限非商业。raw.pixls.us 以 CC0 为主，但也有其他许可；在本沙箱里无法访问，没能核实是否有 CC0 的 DP2 Quattro 样张（X3Fuse 只引用了 raw.pixls.us 上 SD9/SD10/SD14 的样张）。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3f_test_files/README.md:9-15",
+      "https://old.imaging-resource.com/news/2014/07/24/sigma-dp2-quattro-first-batch-of-real-world-gallery-images",
+      "https://www.darktable.org/2017/01/rawsamples-ch-replacement/",
+      "https://discuss.pixls.us/t/can-i-use-some-raw-files-from-raw-pixls-us-to-make-a-web-app-demo-video/44619",
+      "x3fuse README.md:47, :190-194"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F19",
+     "claim": "LightCraft 现状（代码层面）：用 FOVb magic 识别 X3F（crates/raw/src/lib.rs:124-125, :182-183），但不在 is_supported 列表里，解码返回 Unsupported（crates/raw/src/tests.rs:264, :267）；预览靠 scan_for_jpeg 扫出内嵌 JPEG（crates/raw/src/preview.rs:289-290），导入扩展名包含 x3f（crates/engine/src/import/files.rs:20）。因为 DP2Q 的 X3F 内嵌全尺寸 5424×3616 JPEG，现在看到的是相机 JPEG，不能做 raw 编辑。LightCraft 已经支持外部转换路线需要的 DNG 特性：LinearRaw（docs/raw-parity.md:167, :196；crates/raw/src/tests.rs:359）、BaselineExposure（crates/engine/src/files/load.rs:196）、ForwardMatrix（crates/raw/src/color.rs:159）、HueSatMap（crates/raw/src/profile.rs:432）。",
+     "evidence": [
+      "crates/raw/src/lib.rs:124-125, :142-156, :182-183",
+      "crates/raw/src/tests.rs:260-267",
+      "crates/raw/src/preview.rs:289-290",
+      "crates/engine/src/import/files.rs:15-21",
+      "docs/raw-parity.md:167, :195-196, :282",
+      "docs/gaps.md:37"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "options": [
+    {
+     "name": "A. 外部转换器预处理（X3F → LinearRaw DNG，再导入 LightCraft）",
+     "how": "用 x3fuse-core 的 x3f_extract（Apache-2.0，cargo 构建，需要 C 编译器和 libclang）批量转换，参数如 `x3f_extract -dng -compress -denoise 0 -dng-highlight-recovery -o out/ *.X3F`，再把 DNG 导入 LightCraft，降噪用 LightCraft 自己的 denoise。转换器作为独立进程运行：可以是监视文件夹脚本，也可以是 LightCraft 之外的小工具或扩展模块，主程序照常跟上游更新。X3F 原片保留存档。",
+     "pros": "工作量最小，当天就能用。Apache-2.0 和 BSD 都在白名单内，作为外部进程不违反 LightCraft 的纯 Rust、无 unsafe 规则。LightCraft 已支持 LinearRaw、BaselineExposure、ForwardMatrix、HueSatMap。可以选择不在转换时降噪，把降噪留给 LightCraft。同一工具还支持 X3I 合并。",
+     "cons": "DNG 里的数据已经过黑电平扣除、坏点插值和 Quattro 2×2 色度插值（双三次 + T 层细节注入），不可逆。色彩不同于 SPP：Quattro 空间增益表不完整，可能偏色或高光偏黄绿。无损压缩后的 DNG 估计仍比 X3F 大，未压缩约 118MB/张（5424×3616×3×2 字节，推算）。x3fuse-core 的部分阶段来自对 SPP 的反编译，只能当黑盒工具用，不能当实现参考。Linux 预编译二进制未核实，需要自己用 cargo 编译。RAW+JPEG 配对要看 LightCraft 能否把同名 DNG 和 JPG 配对。",
+     "effort": "低：脚本或监视文件夹约 2–8 小时；如果做成 LightCraft 的导入钩子或扩展，再加 1–3 天（取决于 LightCraft 是否已有插件或 control-protocol 入口）",
+     "hook_points": [
+      "crates/engine/src/import/files.rs:15-21（导入扩展名）",
+      "crates/raw/src/preview.rs:289-290（X3F 目前只显示预览）",
+      "docs/control-protocol.md / docs/mcp.md（可能的外部自动化入口，需另行核实）",
+      "crates/engine/src/sidecar.rs:~51（RAW+JPEG 配对，需另行核实）"
+     ]
+    },
+    {
+     "name": "B. 之后的新照片改为机内直出 DNG（dp Quattro 固件 ≥2.0x）",
+     "how": "把相机升级到最新固件，画质设为 DNG（12-bit 无压缩），LightCraft 直接按 DNG 处理。",
+     "pros": "零开发。标准 DNG 生态，Lightroom 等软件都能读。机内处理色度插值，和 Sigma 自己的流程一致。",
+     "cons": "只有 12-bit（X3F 为 14-bit）。DNG 模式不能同时存 JPEG，正好与'RAW+JPEG 合并显示'的需求冲突。机内不能调 DNG 白平衡，部分色彩模式不可用。SPP 不显影这些 DNG。DNG 的具体结构（LinearRaw 还是别的）没有拿到样张核实。旧的 X3F 照片仍然需要转换。",
+     "effort": "无（只需升级固件和改相机设置）",
+     "hook_points": []
+    },
+    {
+     "name": "C. SPP 6.9.0 导出 16-bit TIFF 后导入",
+     "how": "在 Windows 或 macOS 上用 Sigma Photo Pro 显影 X3F，导出 16-bit TIFF（ProPhoto 或 AdobeRGB），再导入 LightCraft 做后续调整。",
+     "pros": "色彩和 Quattro 处理是 Sigma 原厂，法律上最干净，支持 X3I。",
+     "cons": "TIFF 是渲染后的输出，失去 raw 的白平衡和曝光宽容度。SPP 只有 GUI，没有 CLI，难以批处理和自动化。不支持 Linux。文件体积大。",
+     "effort": "无开发；手工流程",
+     "hook_points": []
+    },
+    {
+     "name": "D. 在 LightCraft 内写 clean-room 的原生 Rust X3F Quattro 解码器（新 vendor 模块）",
+     "how": "新增 crates/raw/src/vendor/x3f.rs，把 RawFormat::X3f 加进 is_supported。容器、PROP 和预览按 2004 年公开 FOVb 规范实现；4.x 文件头和元数据参考 ExifTool 的 SigmaRaw 标签文档（仓库已有引用 ExifTool 文档的先例）。TRUE 熵码和 CAMF type 5 没有公开规范，需要两人 clean-room：一人只读 BSD 许可的资料写规范，另一人只按规范实现；或者用样张做黑盒逆向。如果 CAMF 解不出来，色彩矩阵和色调就用内嵌全尺寸 JPEG 配对拟合（LightCraft 的 camera_preview 拟合机制已有），黑电平取遮光区实测值。Quattro 的 M/B 上采样自行设计，例如用 T 层做引导滤波，然后接 LightCraft 的 denoise。",
+     "pros": "真正的原生 raw 编辑，可以保留 14-bit 和未处理的数据。许可干净：只用公开规范和观察到的行为。长期集成度最好，还能顺带支持 Merrill 和 classic。",
+     "cons": "TRUE、CAMF、Quattro 编码都没有公开规范，逆向工作量和风险都高。必须严格隔离 x3f_tools、x3fuse-core、LibRaw、dcraw、x3fdectools 的代码，以及 SPP 反编译资料。没有 CC0 的 Quattro 样张可以进仓库，只能用私有样张验证。色彩和画质难以达到 SPP 水平（光谱分离差，色彩矩阵会放大噪声）。上游把 X3F 列为长尾、低收益（docs/raw-parity.md:282：7 种格式合计 45–85 小时、约 +0.6 个百分点），不太可能被上游接受。",
+     "effort": "高：我估计单 Quattro 支持就要 80–200 小时以上，不确定性大（上游对 7 种长尾格式的合计估计 45–85 小时可能低估了 X3F）",
+     "hook_points": [
+      "crates/raw/src/lib.rs:124-125, :142-156, :182-183（RawFormat::X3f、is_supported、probe）",
+      "crates/raw/src/vendor/（新增 x3f.rs）",
+      "crates/raw/src/preview.rs:289-290",
+      "crates/engine/src/camera_preview/colour.rs（用内嵌 JPEG 拟合色彩）",
+      "crates/denoise / crates/denoise-core（降噪）"
+     ]
+    }
+   ],
+   "open_questions": [
+    "raw.pixls.us 上是否有 CC0 许可的 DP2 Quattro（或 dp/sd Quattro）样张？本沙箱访问不了 raw.pixls.us（以及 sigma-global.com、imaging-resource.com、dpreview.com、libopenraw.freedesktop.org、thephoblographer.com），需要放开这些网络域名，或者由用户自己确认。",
+    "DP2 Quattro 下层像素尺寸到底是 2712×1808 还是 2720×1808？Sigma 官方规格页无法直接访问，各家转录不一致。",
+    "x3fuse-core / x3f_extract 能否正确处理 dp Quattro 固件 ≥2.00 拍的 X3F（SPP 对这类文件要求 6.5.4 以上）？本次手头只有固件 1.05 的样张，也没有实际运行转换器。",
+    "dp2 Quattro 机内 DNG 的 PhotometricInterpretation 是 LinearRaw 还是其他，是否已经过机内色度插值或降噪？需要一张实拍 DNG 用 exiftool 检查。",
+    "LightCraft 能否把转换得到的 DNG 与相机 JPEG 按同名配对或堆叠显示（sidecar.rs:~51、Op::AddStack）？这属于另一个子任务，本任务未核实。",
+    "x3fuse-core 的 docs/src/format.md 这类 Apache-2.0 文字文档，派生自阅读 BSD 源码，部分功能还基于 SPP 反编译。它能否被 LightCraft 当作 clean-room 参考？需要项目维护者给出政策判断（AGENTS.md:9 要求许可类问题停下来询问）。",
+    "SILKYPIX Pro8 与 Affinity Photo 对 dp2 Quattro 目前的实际显影质量和可用性，没有找到 2025–2026 年的证据。"
+   ]
+  },
+  "web_iiq_ricoh": {
+   "summary": "LightCraft（c2e9c45）目前不解码 IIQ。代码把 IIQ 识别为一个 TIFF 外壳加一块私有原始数据（RawFormat::OtherTiff），只用内嵌 JPEG 以 preview_only 导入；docs/raw/coverage.tsv 里所有 Phase One IIQ 机型都标为 preview。IIQ 有好几种变体：ExifTool 的 RawFormat 标签分出 RAW 1/2（早期 P 系的 .TIF）、IIQ L（L14）、IIQ S、IIQ Sv2（即 S14，包含 IIQ 14 Smart 和 Sensor+）、IIQ L16（包含 16 Large 和 16 Extended）。L 系是无损的，S 系是有损的。IIQ 文件内嵌传感器标定数据（SensorDefects、多组 FlatField、LinearizationCoefficients、BlackLevelData），LibRaw 和 dcraw 系解码器都靠这些数据做校正；镜头偏色校正 LCC 不在 IIQ 里，是 Capture One 另外生成、绑定后背序列号的文件。能读 IIQ 的软件有：Capture One（全部变体）；Adobe ACR/DNG Converter（P40+ 到 IQ4 150MP/Achromatic，但 S14/S14+ 和 Leaf 压缩文件不支持，IQ4 100MP Trichromatic 不在列表里）；LibRaw（LGPL-2.1/CDDL-1.0）；rawspeed（LGPL-2.1，IQ3 100MP 和 IQ4 150MP 标为 supported=\"no\"）；RawTherapee（GPL-3）；dnglab/rawler 和 rawloader（LGPL-2.1）。没有找到任何 MIT/Apache/BSD/CC0 许可的 IIQ 解码器，也没有公开规范。所以第（1）条路，白室 Rust IIQ 解码器，技术上做得到，但出处风险最高：公开知识全在 GPL/LGPL 代码里，项目刚因为出处问题撤回了压缩 ORF 解码器，CC0 IIQ 样本又少，标定数据的含义也只有一部分有名字；而且它只能并入 crates/raw 核心，做不成独立插件。第（2）条路，先用 Adobe DNG Converter 转换，是最快能用的办法（免费但专有，只有 Windows/macOS 版，Linux 要用 Wine，带命令行）。它对 IIQ L/L16 有效，转出的 DNG 交给 LightCraft 成熟的 DNG 解码器处理；但 IQ4 的 Smart/Sensor+ 模式转不了，Phase One 标定数据是否被保留也不清楚。dnglab 可以在 Linux 上原生做同样的转换，但它是 LGPL，只能作为用户侧的外部工具，不能进上游。Ricoh 方面：GR 系列从 2005 年的 GR Digital 起一直输出 DNG；GR IV 确实存在（2025 年 8 月发布，14-bit DNG），GR IV HDF 和 GR IV Monochrome 于 2026 年 1 月上市，同样是 14-bit DNG。LightCraft 已经验证了 GR、GR II、GR III、GR IIIx、GX200；GR IV 系列、两款 HDF 和 GR Digital 还没验证（缺 CC0 样本），但都是标准 DNG。裁切模式靠 DNG 的 DefaultCrop 实现，LightCraft 会读取这个标签。Ricoh 时代的 Pentax 可以在菜单里选 PEF 或 DNG，LightCraft 两种都能解码，唯一缺口是 Pixel Shift：四帧存在同一个文件里，LightCraft 不做合成。第（3）条结论：Ricoh 除了标准 DNG/PEF 不需要额外模块，最多补样本验证，再加 Pixel Shift 合成。另外，captureintegration.com、support.captureone.com、helpx.adobe.com、picajet.com 这几个站点本会话的 WebFetch 访问不到，相关内容只来自搜索摘要。",
+   "claims": [
+    {
+     "id": "F1",
+     "claim": "LightCraft 代码层面不解码任何 IIQ：IIQ 落入 RawFormat::OtherTiff（TIFF 外壳加私有原始块，靠 thumbnail_shell 结构规则识别），decode 报错原因为 \"raw image in a private block, not decoded yet\"，导入为 preview_only（只用内嵌 JPEG）。coverage.tsv 中全部 Phase One/Leaf IIQ 机型为 preview，P20–P45+ 写的 .TIF raw 为 unsupported。维护者在 issue #859（2026-10-11）里确认没有 IIQ 解码器，并请用户上传 CC0 样本。",
+     "evidence": [
+      "crates/raw/src/lib.rs:136 (OtherTiff 注释含 IIQ)",
+      "crates/raw/src/lib.rs:247 (thumbnail_shell 判为 OtherTiff)",
+      "crates/raw/src/lib.rs:300-358 (thumbnail_shell 规则)",
+      "crates/raw/src/lib.rs:364-370 (preview 原因字符串)",
+      "docs/raw/coverage.tsv:1053-1080 (Phase One 行：IIQ 为 preview，TIF 为 unsupported)",
+      "docs/raw-parity.md:101, :176",
+      "crates/engine/src/import/files.rs:20 (iiq 在导入扩展名列表中)",
+      "https://github.com/storytold/lightcraft/issues/859 （经搜索摘要读到；本会话无法用 GitHub API 读取该仓库）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F2",
+     "claim": "IIQ 变体由 Phase One 私有标签 RawFormat(0x010e) 区分：0=Uncompressed，1=RAW 1，2=RAW 2（ExifTool 注释为可能加密），3=IIQ L（现称 L14），5=IIQ S，6=IIQ Sv2（现称 S14，覆盖 \"IIQ 14 Smart\" 和 \"IIQ 14 Sensor+\"），8=IIQ L16（覆盖 \"IIQ 16 Extended\" 和 \"IIQ 16 Large\"）。PRONOM 的说法是：IIQ Large 无损、Small 有损；IQ4 文档称 Smart 为 near lossless。",
+     "evidence": [
+      "exiftool/exiftool@1da7149 lib/Image/ExifTool/PhaseOne.pm:68-82 (RawFormat PrintConv)",
+      "https://www.nationalarchives.gov.uk/PRONOM/fmt/1061",
+      "https://www.captureintegration.com/?p=8011 （搜索摘要；WebFetch 无法访问）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F3",
+     "claim": "代际差异：早期 P 系（P20/P21/P25/P30/P45 及其 +）在 Adobe 表中扩展名是 TIF；P40+、P65+、IQ1/IQ2 写 IIQ，模式为 L 或 S；IQ3 100MP 在发布后不久加入 IIQ L16；IQ4 150MP 提供 L16 Extended / L16 / L / S14 / Sensor+ 五档。Sensor+ 是 1/4 分辨率合并像素（37.7MP，7100×5324），L16-EX 只在基础 ISO 有意义。XF 和 XT 是机身，IIQ 里的型号记录的是后背，所以 Adobe 表只列后背。",
+     "evidence": [
+      "docs/raw/adobe-cameras.tsv:1055-1082 (Phase One 行及扩展名)",
+      "https://www.captureintegration.com/?p=8011 （搜索摘要）",
+      "https://www.photo-digitaltransitions.com/phase-one-iq3-100mp-schneider-45ls-blue-ring-lens-raw-file-tour/ （搜索摘要）",
+      "https://servix.marcando.be/mediastorage/servix/FSDocument/A0/1403/xf_iq4_technical_specs.pdf （搜索摘要）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F4",
+     "claim": "IIQ 内嵌逐机标定数据：SensorCalibration 子 IFD(0x0110) 含 SensorDefects(0x0400)、AllColorFlatField1/2/3、RedBlueFlatField、LinearizationCoefficients1/2 和多个未命名标签（ExifTool 用 ? 标为猜测），另有 BlackLevel(0x021d)/BlackLevelData(0x0223)。这些数据对画质有实际作用：LibRaw 0.22 新增 use_p1_correction（默认开启，按文件元数据做线性化和坏点映射）；RawTherapee 注释说 dcraw 解码器会按 IIQ 内嵌元数据做黑电平扣除和多种校正；LibRaw 还专门打补丁关掉 rawspeed 自带的 Phase One 平场校正。CCD 后背有多个放大器/象限（如 IQ160 有 4 个），IIQ 写入的是各通道原始输出加标定数据，不校正就会出现分块（tiling）。",
+     "evidence": [
+      "exiftool/exiftool@1da7149 lib/Image/ExifTool/PhaseOne.pm:94-95, :145, :150, :276-383",
+      "LibRaw/LibRaw@a9a14b1 Changelog.txt:229-231 (0.22 发布), :365-367 (use_p1_correction), :448-450 (05.no-phase-one-correction.patch), :769 (缺陷遮蔽改进)",
+      "RawTherapee/RawTherapee@64c2d90 rtengine/camconst.json:3432-3436",
+      "https://www.getdpi.com/forum/medium-format-systems-digital-backs/50367-iq160-tiling-issue.html （搜索摘要）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F5",
+     "claim": "LCC（Lens Cast Calibration，镜头偏色/暗角校正）不在 IIQ 内：用户在 Capture One 里由一张漫射板拍摄生成 LCC 文件，再套用到照片上，该文件只能用于对应序列号的后背。所以外部解码器读不到 LCC；IIQ 内嵌的只是传感器级标定。",
+     "evidence": [
+      "https://support.captureone.com/hc/en-us/articles/360002404757-How-do-I-calibrate-a-lens-if-I-am-experiencing-problems-with-lens-cast （搜索摘要）",
+      "https://www.captureintegration.com/best-practices-for-utilizing-lens-cast-correction-lcc-in-capture-one/ （搜索摘要）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F6",
+     "claim": "Adobe ACR/Lightroom/DNG Converter 支持的 Phase One 后背：P40+、P65+、IQ140–IQ280、IQ3 50/60/80/100MP、IQ3 100MP Trichromatic（ACR 10.4）、IQ4 150MP（ACR 12.2）、IQ4 150MP Achromatic（ACR 13.2），另有 Leaf Credo；IQ4 100MP Trichromatic 不在表中。Adobe 页面脚注写明 \"S14 and S14+ raw compression modes are unsupported\"，也不支持 Leaf 的压缩 MOS/IIQ；IQ3 100MP 的 S 模式在 ACR 9.9 时同样不支持。这与 ExifTool 的映射一致（S14 即 Sv2，包含 Smart 和 Sensor+）。",
+     "evidence": [
+      "docs/raw/adobe-cameras.tsv:1-3 (来源：helpx 页面的 Wayback 抓取 20261003)",
+      "docs/raw/adobe-cameras.tsv:586-589, :1057-1070, :1079, :1082",
+      "https://helpx.adobe.com/camera-raw/desktop/dng-and-file-formats/camera-raw-plug-supported-cameras.html （脚注来自搜索摘要；WebFetch 无法访问）",
+      "https://forum.luminous-landscape.com/index.php?topic=116843.0 （搜索摘要）",
+      "https://community.adobe.com/feature-requests-564/p-phase-one-iq4-support-666484/index2.html （搜索摘要）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F7",
+     "claim": "LibRaw 采用 LGPL-2.1 / CDDL-1.0 双许可，两者都不在 LightCraft 的许可白名单里。各版本对 Phase One 的支持：0.20（2020-07-23）加入 IQ4 150MP；0.21（2022-07-01）加入 Phase One/Leaf IIQ-S v2；0.22（2025-12-25）加入 use_p1_correction。机型表覆盖 P20 到 IQ4 150MP（含 IQ180 IR、IQ260 Achromatic），没有 IQ4 100MP Trichromatic。最新快照 202611（2026-11-04）加入 Ricoh GR IV。",
+     "evidence": [
+      "LibRaw/LibRaw@a9a14b1 COPYRIGHT:1-13",
+      "LibRaw/LibRaw@a9a14b1 Changelog.txt:1-28, :511-516, :995-997, :1020",
+      "LibRaw/LibRaw@a9a14b1 src/tables/cameralist.cpp:1043-1074"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F8",
+     "claim": "rawspeed（LGPL-2.1）有 IiqDecoder / PhaseOneDecompressor（只看了文件名，没读代码）。cameras.xml 中有数据且视为支持的：P20+、P25+、P30、P40+、P45/P45+、P65+、IQ140、IQ150、IQ180，另有 IQ250（no-samples）。P20、P21(+)、P30+、IQ160、IQ260、IQ280、IQ3 50/60/80MP 为 unknown-no-samples。H 25、P25、IQ3 100MP、IQ3 100MP Trichr、IQ4 150MP 明确为 supported=\"no\"。darktable 主要通过 rawspeed 读 raw，rawspeed 不支持的格式回退到 LibRaw，所以 darktable 能否打开 IQ3 100MP/IQ4 取决于 LibRaw 回退路径（未验证）。",
+     "evidence": [
+      "darktable-org/rawspeed@2baa3a2 LICENSE:1-2 (LGPL-2.1)",
+      "darktable-org/rawspeed@2baa3a2 data/cameras.xml:17503-17729",
+      "darktable-org/rawspeed@2baa3a2 data/README.md:46 (supported 属性含义)",
+      "https://docs.darktable.org/usermanual/4.4/en/overview/supported-file-formats/ （搜索摘要）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F9",
+     "claim": "其他开源实现全是 copyleft：RawTherapee 为 GPL-3，camconst 里 Phase One 条目只到 IQ3 100MP，没有 IQ4，且注明矩阵借自 Adobe DNG Converter；dnglab/rawler 为 LGPL-2.1，README 称支持 Phase One IIQ 和 Leaf IIQ/MOS，SUPPORTED_CAMERAS 列有 IQ4 150MP、iXM-100、iXM-RS150F、iXU 等；rawloader 为 LGPL-2.1，README 列有 Leaf IIQ。查了上述克隆的 LICENSE 并做了网络搜索，没有找到 MIT/Apache/BSD/ISC/CC0 许可的 IIQ 解码器；iiq2img（PyPI，面向 iXM-GS120）许可未知；Phase One Image SDK 为专有软件，由 CATALYST 等 GIS 厂商集成使用。",
+     "evidence": [
+      "RawTherapee/RawTherapee@64c2d90 LICENSE:1-2 (GPL-3); rtengine/camconst.json:3432-3485",
+      "dnglab/dnglab@e98ce45 LICENSE:1-2; README.md:81, :89, :90; SUPPORTED_CAMERAS.md:692-709",
+      "pedrocr/rawloader@8f2ace2 LICENSE:1; README.md:32, :35",
+      "https://pypi.org/project/iiq2img/ （搜索摘要）",
+      "https://catalyst.earth/catalyst-system-files/professional-help/references/gdb_r/PhaseOneIIQ.html （搜索摘要）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F10",
+     "claim": "Capture One（原属 Phase One）支持 IIQ L、IIQ S 和 IIQ 16bit 全部变体；Apple 的系统级 RAW 支持也包括部分 Phase One 后背（IQ1 100MP、IQ150、IQ160、IQ260、IQ3 100MP Trichromatic、iXG、iXH）。有对比报告指出 IQ4 文件在 ACR 下出现 color bleed，在 Capture One 下没有，说明非原厂解码器的标定处理会影响画质。",
+     "evidence": [
+      "https://support.captureone.com/hc/en-us/articles/360002718118-Camera-Models-and-RAW-Files-Supported-by-Capture-One （搜索摘要）",
+      "https://support.apple.com/en-us/122870 （搜索摘要）",
+      "https://www.diglloyd.com/blog/2022/20220208_1208-PhaseOneIQ-ColorBleed-ACR-CaptureOnePro.html （搜索摘要）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F11",
+     "claim": "没有公开的 IIQ 规范（网络搜索只找到 ExifTool 的标签说明和 GPL/LGPL 代码）。样本情况：raw.pixls.us 主动征集 IIQ-L/IIQ-S，说明覆盖稀少；其新样本多为 CC0，但有部分旧样本是 CC BY-NC-SA 4.0，需要逐个文件核对。ExifTool 自带的 t/images/PhaseOne.iiq 只有 3364 字节，是不含图像数据的元数据桩，许可为 Artistic/GPL。DPReview 和厂商发布的 IQ4 样张受版权保护，不能用作测试资产。",
+     "evidence": [
+      "darktable-org/rawspeed@2baa3a2 docs/ReferenceSampleArchive.rst:31-37, :76",
+      "https://raw.pixls.us （搜索摘要：征集 Phase One IIQ-L、IIQ-S）",
+      "exiftool/exiftool@1da7149 git ls-tree: t/images/PhaseOne.iiq 3364 bytes; README:171-176",
+      "https://www.dpreview.com/samples/5188232543/phase-one-iq4-sample-gallery/"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F12",
+     "claim": "白室实现的出处约束很严：AGENTS.md 要求只能从观察到的行为和公开规范中学习，并点名禁止复制 LibRaw、rawspeed、rawloader、rawler、dcraw 派生代码，也禁止复制 Adobe 的相机矩阵。项目已有先例：压缩 ORF 解码器因出处无法确认被撤回，今后任何重新支持都需要独立确立出处。项目自己的估算是 IIQ 与其他长尾格式合计 45–85 小时、收益 +0.6 个百分点；中画幅及其他格式的使用权重只有 0.5%。",
+     "evidence": [
+      "AGENTS.md:28, :115",
+      "docs/orf-compression.md:1-3",
+      "docs/raw-parity.md:122, :282",
+      "docs/gaps.md:37"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F13",
+     "claim": "Ricoh GR 系列全部输出 DNG：GR Digital（2005 年发布即采用 DNG）、GR Digital II/III/IV、GX100/GX200、GXR 各镜头单元、GR、GR II、GR III、GR IIIx、GR III/IIIx HDF、GR IV、GR IV Monochrome，Adobe 表、LibRaw、rawspeed（mode=\"dng\"）都一致。GR IV 确实存在：2025 年 5 月宣布开发，8 月正式发布，约 25.7MP APS-C，记录 14-bit DNG。GR IV HDF 计划 2026-01-16 发售，GR IV Monochrome 于 2026-01-15 上市，也都是 14-bit DNG；rawspeed 把 GR IV HDF 作为 GR IV 的别名处理。",
+     "evidence": [
+      "docs/raw/adobe-cameras.tsv:1083-1101",
+      "LibRaw/LibRaw@a9a14b1 src/tables/cameralist.cpp:1085-1102; Changelog.txt:28",
+      "darktable-org/rawspeed@2baa3a2 data/cameras.xml:18579-18608",
+      "https://www.ricoh-imaging.co.jp/english/products/gr-4/spec/",
+      "https://www.ricoh-imaging.co.jp/english/products/gr-4-mono/spec/",
+      "https://news.ricoh-imaging.co.jp/rim_info2/2026/20260115_041600.html",
+      "https://petapixel.com/2025/08/20/nearly-every-aspect-of-the-ricoh-gr-iv-compact-camera-is-new",
+      "https://imaging-resource.com/NEWS/1126618134.html"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F14",
+     "claim": "GR DNG 的已知特点：GR II 为 12-bit，GR III 起为 14-bit；GR III 的 DNG 是未压缩还是 LJ92 无损压缩，来源相互矛盾，未定论（LightCraft 两种都能解）。GR III 的 35mm/50mm 裁切模式在 DNG 里保留全幅数据，只用 DefaultCrop 声明裁切：Lightroom 和 darktable 会套用，RawTherapee 和 ART 不套用。没有证据表明 GR III 的 DNG 带 WarpRectilinear/FixVignette 镜头校正 opcode（只有单个样本的报告）。",
+     "evidence": [
+      "https://www.photographyblog.com/reviews/ricoh_gr_iii_review （搜索摘要：GR II 12-bit → GR III 14-bit）",
+      "https://www.imaging-resource.com/PRODS/ricoh-gr-iii/ricoh-gr-iiiDAT.HTM 与 https://revelraw.com/blog/what-is-a-dng-file.html （压缩说法矛盾）",
+      "https://discuss.pixls.us/t/dng-recover-edges/21699 （搜索摘要）",
+      "https://bitbucket.org/agriggio/art/issues/270/art-doesnt-apply-default-crop",
+      "crates/raw/src/dng.rs:340 (LightCraft 读取 DefaultCropOrigin/Size)",
+      "docs/raw-parity.md:167 (DNG 未压缩、LJ92 等均支持)"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F15",
+     "claim": "LightCraft 对 Ricoh 的现状：GR、GR II、GR IIIx、GX200 由语料测试验证（钉住传感器哈希，有内嵌 JPEG 的还与相机 JPEG 比对；GX200 和 GXR 只钉哈希），GR III 由 RAW_SAMPLES 语料测试验证；GR III HDF、GR IIIx HDF、GR IV、GR IV Monochrome、GR Digital I–IV、GX100、GXR 各单元为 unverified（走通用 DNG 解码器）。Pentax/Ricoh 按使用量加权：完全可用 99%，在已验证机身上 80%。单色和 LinearRaw DNG 都能处理。",
+     "evidence": [
+      "docs/raw/coverage.tsv:1081-1098",
+      "crates/raw/tests/it/canon_pentax_corpus.rs:1-10, :145-149",
+      "xtask/src/raw_samples.rs:619-621, :1912-1914",
+      "docs/raw-parity.md:99, :119, :196"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F16",
+     "claim": "Ricoh 时代的 Pentax 机身由用户在 [RAW File Format] 菜单里选择 PEF 或 DNG（K-5 等机型手册有记载，K-3 Mark III 规格写明 RAW (PEF/DNG)）。LightCraft 能解码 PEF（未压缩、Huffman、packed 12-bit），缺 area 标签的机身边框行列会被裁掉（#1271）；DNG 走通用 DNG 解码器。Pixel Shift Resolution（K-3 II、K-1、K-70、KP，K-1 II 另有手持 Dynamic 模式）把 4 帧存进同一个 PEF 或 DNG（约 4 倍大小）。RawTherapee 能合成并带运动校正，ACR 9.5.1 起能合成但不做运动校正；LightCraft 不合成这 4 帧，crates/raw 里搜不到 pixel shift 相关代码。",
+     "evidence": [
+      "https://www.manualslib.com/manual/518983/Pentax-K-5.html?page=130 （搜索摘要）",
+      "https://www.fotointern.ch/wp-uploads/2020/10/Pentax_K3III_27-10-20_Specs.pdf （搜索摘要）",
+      "docs/raw-parity.md:163-164, :197",
+      "grep -i 'pixel.shift' crates/raw/src → 0 处命中",
+      "https://pixls.us/articles/rawtherapee-and-pentax-pixel-shift/",
+      "https://discuss.pixls.us/t/support-for-pentax-pixel-shift-files-3489/2560 （搜索摘要：ACR 9.5.1）",
+      "https://www.ricoh-imaging.co.jp/english/products/k-1-2/feature/02.html",
+      "RawTherapee/RawTherapee@64c2d90 RELEASE_NOTES.txt:12"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F17",
+     "claim": "Adobe DNG Converter 免费但为专有软件，只提供 Windows 版（含 ARM64，需 Win10 22H2+/Win11）和 macOS 版（13+），没有 Linux 版，RawPedia 有 Wine 安装指南。它有官方命令行模式（选项必须写在文件名前面；用户反馈不支持通配符，常需逐个文件调用）。LightCraft 不能捆绑它，但用户可以在自己的外部流程里调用。转出的 CFA DNG（通常为 LJ92）正好落在 LightCraft 已经成熟的 DNG 解码路径上。",
+     "evidence": [
+      "https://helpx.adobe.com/photoshop/using/adobe-dng-converter.html （搜索摘要）",
+      "https://rawpedia.rawtherapee.com/Template:AdobeDngConverterLinux",
+      "https://community.adobe.com/havfw69955/attachments/havfw69955/camera-raw/23452/1/DNG%20Converter%20Command%20Line.pdf （搜索摘要）",
+      "docs/raw-parity.md:167-168"
+     ],
+     "confidence": "medium"
+    }
+   ],
+   "options": [
+    {
+     "name": "(1) 白室原生 Rust IIQ 解码器（需进入上游 crates/raw）",
+     "how": "按项目已有的白室流程（参照 CRW/ARW6 的做法：规格文档写在 craft-libs 白室目录，用黑盒 oracle 对比）分两组。A 组只看 CC0 样本的字节、ExifTool 公开的标签名和黑盒输出（只运行 LibRaw/dcraw_emu 二进制看结果，不读源码），写出 IIQ 容器、RawFormat 3/8 无损码流和标定语义的独立规格；B 组按规格在 crates/raw/src/vendor/iiq.rs 实现。顺序：先做 IIQ L/L16 加黑电平和象限平衡，再做 SensorDefects、平场和线性化，最后视情况做 S/Sv2 有损码流。",
+     "pros": "真正原生：Linux 和 WASM 都能用，保留 IIQ 原件，非破坏性编辑和降噪直接作用在传感器数据上；能惠及所有 IIQ 用户，可以随上游一起更新。",
+     "cons": "没有公开规范，公开知识全在 GPL/LGPL 代码里（AGENTS.md:115 禁止复制），出处风险最高，压缩 ORF 撤回就是先例；CC0 IIQ 样本稀缺，IQ3 100MP 和 IQ4 很可能没有，需要用户自己拍摄并以 CC0 捐赠；标定数据只有一部分标签有名字，做不好会出现分块和偏色；S/Sv2 是有损算法，难度更高；解码器只能进核心，做不成可加载模块，要维护者接受并经过出处审查。",
+     "effort": "项目自己的估算：IIQ 与其他长尾格式合计 45–85 小时（docs/raw-parity.md:282）。以下是我的估计：仅 IIQ L/L16 加基础标定约 20–40 agent 小时，S/Sv2 再加 15–30 小时，不含样本收集和出处审查；不确定性很高。",
+     "hook_points": [
+      "crates/raw/src/lib.rs:118-137 (RawFormat 枚举，新增 Iiq 变体)",
+      "crates/raw/src/lib.rs:247 (probe：现在归入 OtherTiff)",
+      "crates/raw/src/lib.rs:364-370 (other_tiff_reason)",
+      "docs/raw/coverage.tsv / docs/raw/coverage.py",
+      "xtask/src/raw_samples.rs (钉住 CC0 样本)",
+      "crates/raw/tests/it/ (新增 iiq 语料测试)"
+     ]
+    },
+    {
+     "name": "(2) 导入前用 Adobe DNG Converter 把 IIQ 转成 DNG（用户侧外部模块）",
+     "how": "在 LightCraft 之外写一个摄取脚本或监视文件夹：对每个 IIQ 调用 Adobe DNG Converter 命令行（Windows/macOS 原生，Linux 用 Wine），把 DNG 写在 IIQ 旁边，再通过 LightCraft 的 CLI 或 MCP/control protocol 导入 DNG。可以把 DNG 和 IIQ 归入同一个堆叠，或者只导入 DNG、IIQ 原件归档。",
+     "pros": "上游零改动，LightCraft 照常更新；LightCraft 的 DNG 解码器已经成熟（LJ92、DefaultCrop、opcode）；对 Adobe 支持表内后背的 IIQ L/L16 立即可用；DNG 是开放格式，便于长期归档。",
+     "cons": "转换器是专有软件，不能随 LightCraft 分发；按 Adobe 脚注，IQ4 的 S14/S14+（Smart、Sensor+）和 Leaf 压缩 IIQ 转不了，IQ4 100MP Trichromatic 不在支持表；不确定 Adobe 是否完整应用 IIQ 内嵌的平场、坏点和线性化标定（有 ACR 下 IQ4 color bleed 的报告）；存储翻倍；Linux 依赖 Wine。",
+     "effort": "约 2–6 小时脚本开发，另需对照 Capture One 用自己的后背做一次画质验证。",
+     "hook_points": [
+      "docs/mcp.md / docs/control-protocol.md（外部导入入口）",
+      "crates/engine/src/import/files.rs:15-20（导入扩展名，DNG 已支持）",
+      "catalog 堆叠 (Op::AddStack)：把 IIQ 和 DNG 归为一组"
+     ]
+    },
+    {
+     "name": "(2b) 用 dnglab convert（LGPL-2.1，Rust 命令行）作为外部转换器",
+     "how": "和 (2) 的流程相同，只是转换器换成 dnglab convert。它在 Linux/macOS/Windows 上都原生运行，以独立进程调用，不进入 LightCraft 的依赖树。",
+     "pros": "开源、跨平台、可脚本化，Linux 不需要 Wine；README 和 SUPPORTED_CAMERAS 列有 IQ4 150MP、iXM 等。",
+     "cons": "LGPL 不在白室许可白名单内，永远不能进上游，只能作为用户私有工具；它支持哪些变体（S/Sv2/L16-EX）、应用了哪些标定都不清楚，需要自己验证；对上游而言也不算白室。",
+     "effort": "约 2–6 小时，另需逐个变体验证画质。",
+     "hook_points": [
+      "与 (2) 相同：CLI/MCP 导入加 Op::AddStack"
+     ]
+    },
+    {
+     "name": "(2c) IIQ 交给 Capture One 显影，LightCraft 管图库",
+     "how": "在 Capture One 里显影 IIQ（原厂标定和 LCC 都能用），导出 16-bit TIFF，再用 LightCraft 的 Edit In 外部编辑器流程或导入，与 IIQ 预览堆叠。",
+     "pros": "IIQ 画质最好，所有变体都支持，LCC 可用。",
+     "cons": "不是在 LightCraft 里编辑 RAW，不满足原生 RAW 编辑的需求；需要付费的专有软件；TIFF 体积大。",
+     "effort": "约 1–3 小时设置工作流。",
+     "hook_points": [
+      "crates/ui-egui/src/menus/files.rs（Edit In）",
+      "crates/engine/src/cmd/convert.rs"
+     ]
+    },
+    {
+     "name": "(3) Ricoh：不需要格式模块，只补样本验证（可选：Pixel Shift 合成）",
+     "how": "GR 和 Pentax 继续用标准 DNG/PEF。可选做三件事：(a) 把 GR IV、GR IV HDF、GR IV Monochrome、GR III/IIIx HDF 的原图以 CC0 上传到 raw.pixls.us，让维护者转为 verified；(b) Pentax Pixel Shift：写一个外部预处理器，把 4 帧合成为 LinearRaw DNG 再导入（LightCraft 已支持 LinearRaw），或者推动上游在 crates/raw 中读取多帧；(c) 提出一个忽略 DefaultCrop 的恢复边缘选项，用来找回 GR 裁切模式下的全幅画面。",
+     "pros": "现有能力已覆盖 GR、GR II、GR III、GR IIIx 和大部分 PEF/DNG，几乎零成本；样本捐赠直接提高上游的验证覆盖。",
+     "cons": "Pixel Shift 的帧布局需要白室观察，外部合成器要自己维护运动校正；GR IV 系列在补到样本之前仍为 unverified。",
+     "effort": "样本捐赠约 0.5 小时；外部 Pixel Shift 合成约 10–25 小时；上游实现多帧读取另计约 15–30 小时（估计）。",
+     "hook_points": [
+      "docs/raw/coverage.tsv:1085-1088（GR HDF 和 GR IV 系列为 unverified）",
+      "xtask/src/raw_samples.rs（钉住新样本）",
+      "docs/raw-parity.md:164（Pixel Shift 帧未合成）",
+      "crates/raw/src/dng.rs:340（DefaultCrop）"
+     ]
+    }
+   ],
+   "open_questions": [
+    "用户实际用的是哪款 Phase One 后背或机身（P 系、IQ1/2/3，还是 XF/XT 上的 IQ4 150MP），拍的是哪种 IIQ 模式（L、L16、S14、Sensor+）？这直接决定 Adobe 路线能否走通。",
+    "Adobe 支持表对 IQ3 100MP Trichromatic（*）和 IQ4（**）的脚注全文：helpx.adobe.com 本会话无法访问，\"S14 and S14+ unsupported\" 只来自搜索摘要。",
+    "Adobe DNG Converter 转 IIQ 时，是否把 IIQ 内嵌的 SensorDefects、FlatField、Linearization 标定烘焙进 DNG 的 CFA 数据，还是丢弃？这决定了转换后的画质。",
+    "IIQ 16 Extended 和 IIQ 16 Large 在码流上是否不同？ExifTool 把两者都归为 RawFormat 8。",
+    "dnglab/rawler 实际能解哪些 IIQ 变体（S/Sv2/L16），是否应用标定？需要用实际样本验证。",
+    "raw.pixls.us 上是否有 IQ3 100MP 或 IQ4 150MP 的 CC0 IIQ 样本：网站无法访问，issue #390 似乎引用过 IQ4 150MP 文件但未确认许可。",
+    "GR III、GR IIIx、GR IV 的 DNG 到底是未压缩还是 LJ92，有没有镜头校正 opcode：来源矛盾，需要用实际文件和 exiftool 核对（不影响 LightCraft 能否解码）。",
+    "K-1 II 的 Dynamic Pixel Shift 和 K-3 III 的 Pixel Shift 文件布局能否在机外合成？现有资料只有论坛说法。",
+    "iiq2img（DPIRD-DMA/iiq2img）的许可证未知。",
+    "本会话 WebFetch 无法访问 www.captureintegration.com、support.captureone.com、helpx.adobe.com、picajet.com，相关结论只基于搜索摘要；如需逐字核实，要先在会话网络设置里放行这些主机。"
+   ]
+  }
+ },
+ "verification": {
+  "v_ext_denoise": {
+   "verdicts": [
+    {
+     "id": "extensibility:F1",
+     "status": "confirmed",
+     "note": "属实。所有 Cargo.toml 里都没有 libloading/dlopen/wasmtime/wasmer/rhai/mlua/pyo3/deno/extism；唯一的 cdylib 是 apps/lightcraft-web（WASM 构建）。CommandSpec 的 id、label 是 &'static str，run 是函数指针，command_specs() 把它们装进静态 OnceLock，运行时不能新增命令。.rs 源码里能搜到的 \"plug-in\" 只有 crates/film/src/lib.rs:4 一处，说的是姊妹产品 PhotoCraft 自己的插件，和 LightCraft 的扩展机制无关。",
+     "evidence": [
+      "检索：grep -rniE 'libloading|dlopen|wasmtime|wasmer|rhai|mlua|rlua|pyo3|deno|boa_engine|wasmi|extism|abi_stable' --include=Cargo.toml，无命中；grep -rn cdylib --include=Cargo.toml，仅命中 apps/lightcraft-web/Cargo.toml:13",
+      "crates/engine/src/cmd.rs:55-74（CommandSpec，run: Run 是函数指针）、133-175（cmd! 宏与 OnceLock）",
+      "docs/gaps.md:36（#19 Plug-in ecosystem ⬜，40–80 h + owner decision）",
+      "crates/film/src/lib.rs:3-4（\"whose PhotoCraft plug-ins run the same maths\"）"
+     ]
+    },
+    {
+     "id": "extensibility:F2",
+     "status": "confirmed",
+     "note": "属实。GR、GR II、GR III、GR IIIx、GX200 为 verified；GR III/IIIx HDF、GR IV、GR IV Monochrome、GR Digital I–IV、GX100、GXR、THETA Z1 为 unverified。probe 遇到 Make 以 RICOH 开头（新款宾得机身的 Make 是 RICOH IMAGING）且有 CFA 证据时，判为 Pef。补充两点限制：宾得 Pixel Shift（PEF/DNG）的多帧不会合成（⬜）；GR IV Monochrome 是单色传感器，不是 Bayer，用不了 AI 降噪。",
+     "evidence": [
+      "docs/raw/coverage.tsv:1081-1100",
+      "crates/raw/src/lib.rs:225-227",
+      "docs/raw-parity.md:99、119",
+      "docs/raw-parity.md:166（\"PEF / DNG | Pentax pixel shift | ⬜ | frames not combined\"）",
+      "crates/engine/src/denoise/products.rs:181-185（cpp!=1 或非 Bayer 即拒绝）"
+     ]
+    },
+    {
+     "id": "extensibility:F3",
+     "status": "corrected",
+     "note": "主结论成立：X3F 由 FOVb 识别为 RawFormat::X3f，IIQ 识别为 OtherTiff，两者都不在 is_supported 里，decode 返回 Unsupported，入库时标 preview_only，按已渲染 JPEG 编辑。需要修正的细节有五处。(1) IIQ 判为 OtherTiff 的条件是 has_cfa、thumbnail_shell、is_preview_container、is_leaf_mosaic 四者任一（lib.rs:247），不只 thumbnail_shell。导入测试里的合成 IIQ 是“IFD0 只指向 JPEG”的结构，命中的是 is_preview_container。(2) X3F 的预览是 scan_for_jpeg 做字节扫描，取文件中最大的完整彩色 JPEG，不是解析 X3F 目录。(3) 覆盖表并没有把所有 P+ 都标为 preview：P 20/20+/21/21+/25/25+/30/30+/45/45+ 和 H 20/H 25 标为 TIF unsupported（Adobe 列表写的扩展名是 TIF），只有 IQ 系列、P 40+、P 65+ 标为 IIQ preview。(4) 覆盖表的 preview 是 coverage.py 按扩展名套规则得出的，没有用真机样张验证；语料库里没有任何真实 IIQ/X3F，相关测试都用合成文件。(5) 覆盖表的基准是 Adobe 官方支持列表 docs/raw/adobe-cameras.tsv。DP2 Quattro 不在表里，是因为 Adobe 列表本来就没有任何 Merrill/Quattro 机型。",
+     "evidence": [
+      "crates/raw/src/lib.rs:182-184、247-248、286-289（is_preview_container）、311-351（thumbnail_shell）、435-436",
+      "crates/raw/src/preview.rs:289-291、452-520（scan_for_jpeg）",
+      "docs/raw/coverage.tsv:1053-1054、1069-1079（P 系列 TIF unsupported）、1055-1068、1077、1080（IIQ preview）、1230-1237",
+      "docs/raw/coverage.py:105-106（X3F/IIQ 一律按规则判为 preview）",
+      "docs/raw/adobe-cameras.tsv:1、1232-1239（Sigma 只有 DP1/DP1s/DP2/SD9/SD10/SD14）",
+      "crates/engine/src/tests/import.rs:2427-2458（合成 X3F/IIQ）；crates/engine/src/files/tests.rs:1556-1570（合成 IIQ shell）",
+      "检索：grep -iE 'iiq|x3f|phase|sigma' xtask/src/raw_samples.rs crates/raw/tests，只有 Sigma fp 的 DNG"
+     ]
+    },
+    {
+     "id": "extensibility:F4",
+     "status": "corrected",
+     "note": "文件发现（EXTENSIONS 含 iiq、x3f）和 codecs 嗅探（FOVb → RawOther）属实，所有解码入口也确实都调用 lightcraft_raw::probe/decode。但“只需改 crates/raw，引擎层不用动”说过头了。引擎和 catalog 各有按格式写死的名单：camera_preview/colour.rs 的 file_local_look 决定哪些格式用文件内 JPEG 拟合起始色彩（只适用于文件里没有颜色矩阵的格式）；catalog 的 relative_wb_format 按扩展名决定白平衡用相对值还是开尔文；files/preview.rs:24 用 is_supported 判断能否解码。新解码器如果像 DNG 一样自带颜色矩阵，可以不碰这些名单；如果只给出厂商白平衡乘数，就要同时改 engine 和 catalog，否则会落到中性矩阵。",
+     "evidence": [
+      "crates/engine/src/import/files.rs:13-21",
+      "crates/codecs/src/sniff.rs:23-26、114-115",
+      "crates/engine/src/camera_preview/colour.rs:13-34（file_local_look，注释写明 catalog 的 relative_wb 按扩展名匹配同一组格式）",
+      "crates/catalog/src/model.rs:349-353（relative_wb_format 扩展名名单）、355-364",
+      "crates/engine/src/files/preview.rs:24"
+     ]
+    },
+    {
+     "id": "extensibility:F5",
+     "status": "corrected",
+     "note": "列出的挂接点都存在，行号也基本准确：RawFormat 在 lib.rs:108-138，is_supported 在 142-163，probe 在 166-251，其中 OtherTiff 的判定在 247 行；probe_info 走 decode_with(Mode::Header)，decode_with 在 417-438；vendor.rs:3-30；craft-crw 依赖在 Cargo.toml:15-16 和 crates/raw/Cargo.toml:19；TABLE 在 xtask/src/layers.rs:36-73，Unregistered 测试在 338-342；products.rs:181 拒绝非 Bayer。需要补三点：(a) F4 修正里提到的 engine/catalog 色彩名单也要改；(b) 上游 release.yml 会拒绝 Cargo.lock 里 github.com/storytold 以外的 git 依赖，也拒绝 .cargo/config 里的 patch/replace，所以按 craft-crw 先例做的外部 crate 必须放进 storytold 组织（如 craft-libs），否则就得放在仓库内；(c) X3F 输出 cpp=3、cfa=None 只是设计设想。Quattro 的三层分辨率不同（顶层全分辨率，中下两层为 1/4），解码器要先重采样才能给出逐像素 RGB。",
+     "evidence": [
+      "crates/raw/src/lib.rs:108-163、166-251、403-405、417-438",
+      "crates/raw/src/vendor.rs:3-30",
+      "Cargo.toml:3、15-16；crates/raw/Cargo.toml:19",
+      "xtask/src/layers.rs:36-73、338-342",
+      "crates/engine/src/denoise/products.rs:181-185",
+      ".github/workflows/release.yml:40-66（\"Git dependencies outside github.com/storytold\" 即失败）"
+     ]
+    },
+    {
+     "id": "extensibility:F6",
+     "status": "corrected",
+     "note": "MediaCache 上确实有 pub 的 Arc<dyn Fn> 钩子（file_loader、reduced_loader、file_probe、preview_loader、file_bytes），由 Session::with_fs 装入，属于编译期注入，不是运行时插件。修正：(1) with_fs 并不设置 file_bytes，它为 None 时表示直接读本地文件系统；with_fs 设置的 media.denoise.loader 是 PairLoader（fs_pair_loader），不是降噪模型的 loader。(2) 绕过钩子的路径不止 sidecar.rs：AI 降噪的 make_product 在没有 spec.read 时直接 std::fs::read，再直接调 lightcraft_raw::decode（products.rs:166-177），完全不经过 file_loader。所以方案 B'（只包装 file_loader 等钩子）无法让转换出的格式用上 AI 降噪。",
+     "evidence": [
+      "crates/engine/src/media.rs:69-75",
+      "crates/engine/src/files/fs.rs:130-145（with_fs 没有设置 file_bytes）",
+      "crates/engine/src/media/source.rs:100、105、109、128、401",
+      "crates/engine/src/denoise/products.rs:166-177",
+      "crates/engine/src/sidecar.rs:398-418",
+      "apps/lightcraft/src/session.rs:259、282、284、295"
+     ]
+    },
+    {
+     "id": "extensibility:F7",
+     "status": "confirmed",
+     "note": "属实。RawImage、ColorData 的字段全部是 pub，lib.rs:59 导出 write_dng 和 write_rendered_dng；write_dng 有 CFA 时写 CFA，cfa 为 None 时写 LINEAR_RAW，SamplesPerPixel 取 cpp；workspace 许可证为 MIT OR Apache-2.0。",
+     "evidence": [
+      "crates/raw/src/lib.rs:59、656-686、690-725",
+      "crates/raw/src/dngwrite.rs:179-196",
+      "Cargo.toml:8"
+     ]
+    },
+    {
+     "id": "extensibility:F8",
+     "status": "confirmed",
+     "note": "属实。MCP 有共享核心工具（command_run/command_batch 等）、各类 helper，以及每个命令一个 cmd_* 工具。控制通道只监听 loopback，没有认证。stack.group 的 enabled 是 has_selection，explicit_targets 为 false，所以只传 ids、没有选择时，Session::execute 会以 Disabled 拒绝执行。photo.relink 会重新探测，preview_only 和尺寸随新文件更新。",
+     "evidence": [
+      "docs/mcp.md:131-148、169-180、206-245",
+      "docs/control-protocol.md:3-4、51",
+      "crates/engine/src/lib.rs:584-590",
+      "crates/engine/src/cmd.rs:111-113",
+      "crates/engine/src/cmd/organize.rs:168-191",
+      "crates/engine/src/cmd/missing.rs:129-155"
+     ]
+    },
+    {
+     "id": "extensibility:F9",
+     "status": "confirmed",
+     "note": "属实。内置 builtin（BM3D）开箱即用；可以用 Install from file 或 LIGHTCRAFT_DENOISE_MODELS 装 ONNX；Domain 只有 BayerToRgb 一个变体；ONNX 算子仅支持 Conv、ConvTranspose、MaxPool、Concat、DepthToSpace(2, CRD) 和融合的 LeakyRelu，其他一律报 unsupported；远程协议 v1 要求两端模型 SHA 一致。",
+     "evidence": [
+      "crates/denoise-core/src/builtin.rs:1-23、33-53",
+      "crates/denoise-core/src/manifest.rs:16-24",
+      "crates/denoise/src/onnx.rs:1-6、75-85、120-215",
+      "crates/denoise/src/remote.rs:1-21",
+      "crates/engine/src/config.rs:116-118"
+     ]
+    },
+    {
+     "id": "extensibility:F10",
+     "status": "confirmed",
+     "note": "属实。中文 README 两处把 AI 降噪标为 ⬜，英文 README 说权重需要另装，但代码自带不需要权重的 builtin，docs/denoise.md 也写明 AI Denoise needs no set-up。中文 README 落后于代码的地方不止这一处，例如第 324 行把 CR3 解码标为 ⬜，而 parity-checklist 写的是 CR3 已能解码。",
+     "evidence": [
+      "README.zh-hans.md:325、336、324",
+      "README.md:355、374",
+      "docs/denoise.md:9-13",
+      "crates/denoise-core/src/builtin.rs:1"
+     ]
+    },
+    {
+     "id": "extensibility:F11",
+     "status": "corrected",
+     "note": "“没有 RAW+JPEG 配对、只能用堆叠”属实：Photo 模型没有配对字段；导入只有“按文件类型整体勾选”的开关（issue #344）；分组只有 stack.group 和 stack.auto，stack.auto 在同一秒内按文件名排序。但“同名 RAW/JPEG 共用 IMG_0001.xmp”是错的。issue #1523/#1905 之后，同主文件名的多个文件里由 raw 拥有 stem sidecar（IMG_0001.xmp），JPEG/TIFF 改用自己的 IMG_0001.JPG.xmp，不再读 raw 那份。也就是说，代码是有意让两者的元数据保持独立的。不过这套 StemOwners/ImportStems/stem_key 已经能找出同主文件名的兄弟文件，以后要做配对，可以直接复用。",
+     "evidence": [
+      "crates/engine/src/sidecar.rs:44-53、81-103、931-1019（rank_of：raw 优先；ImportStems 注释 issue #1905）",
+      "docs/parity-checklist.md:172（\"files sharing a stem (raw + JPEG) get separate sidecars ... issue #1905\"）",
+      "crates/catalog/src/model.rs:243-325（Photo 无配对字段）",
+      "crates/ui-egui/src/dialogs/import.rs:175、296；crates/ui-egui/src/dialogs/import/body.rs:133-137",
+      "crates/engine/src/cmd/organize.rs:168-191、258-283；crates/catalog/src/stacks.rs:205-231",
+      "检索：grep -rniE 'raw ?\\+ ?jpe?g|companion|jpeg sidecar|pair' crates apps，除 sidecar 和重命名相关代码外没有配对实现"
+     ]
+    },
+    {
+     "id": "extensibility:F12",
+     "status": "confirmed",
+     "note": "属实。photo.editExternal 把照片渲染成 16/8 位 TIFF 或 PSD，命名 <name>-Edit，导入后与原图堆叠（collapsed:false，堆叠是展开的）；窗口重新获得焦点时对这些副本执行 photo.reload。Open Original 只把原始文件交给外部程序，不渲染、不入库。补充：Edit In 有两个目标，一是姊妹应用 PhotoCraft，二是设置里配置的外部编辑器。",
+     "evidence": [
+      "crates/engine/src/cmd/convert.rs:123-206",
+      "crates/ui-egui/src/menus/files.rs:108-176、178-260",
+      "crates/ui-egui/src/app/prefs.rs:18-31",
+      "crates/engine/src/open_path.rs:1-50"
+     ]
+    },
+    {
+     "id": "extensibility:F13",
+     "status": "confirmed",
+     "note": "属实。library.autoImport 和 library.autoImportScan 构成监视文件夹自动导入，每 3 秒扫描，可以原位添加或复制，可以指定相册；没有联机拍摄。",
+     "evidence": [
+      "crates/engine/src/cmd/library/specs.rs:1171-1205",
+      "docs/parity-checklist.md:76、697-698"
+     ]
+    },
+    {
+     "id": "extensibility:F14",
+     "status": "confirmed",
+     "note": "属实。profile.import 接受 .cube（作为创意配置文件）和用户自己的 .dcp（作为相机配置文件，解码时替换颜色模型）；lensfun 可以用 LIGHTCRAFT_LENSFUN_DIR 指向自有目录。这些都只能补数据，不能增加解码器。",
+     "evidence": [
+      "crates/engine/src/cmd/lut_profiles.rs:85-100、145-160",
+      "crates/ui-egui/src/dialogs/settings/general.rs:123-127"
+     ]
+    },
+    {
+     "id": "extensibility:F15",
+     "status": "corrected",
+     "note": "结论正确：feature 只在编译期生效，没有运行时模块。但列举不全：桌面应用另有 heif feature（apps/lightcraft/Cargo.toml:16-18），engine 另有 sam（SAM 3 AI 蒙版），codecs 另有 avif 和 parallel。",
+     "evidence": [
+      "apps/lightcraft/Cargo.toml:12-18",
+      "apps/lightcraft-cli/Cargo.toml:30-34",
+      "crates/engine/Cargo.toml:57-61",
+      "crates/codecs/Cargo.toml:38-48",
+      "crates/raw/Cargo.toml:26-29"
+     ]
+    },
+    {
+     "id": "extensibility:F16",
+     "status": "corrected",
+     "note": "UPDATE_APP 继承 suite::LIGHTCRAFT（repo 为 storytold/lightcraft），craft-update 注释写明 Releases are only ever downloaded from this repository，桌面应用启动时检查更新，这些都属实。修正与补充：(1) 更新是弹窗提示，用户可以点 Later，不是静默替换；“fork 会被替换回上游”只在用户接受更新时发生。(2) craft-update 支持 ArtCraft Launcher 写入的版本钉选文件（Stable/Nightly/Pinned），可以把应用固定在某个版本。(3) 上游 release.yml 拒绝 storytold 以外的 git 依赖和 cargo config patch；AGENTS 规则 11 要求 CI 调用 craft-common-actions。fork 自建发布必须改写这些流水线。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:9-16",
+      "apps/lightcraft/src/main.rs:228、367；crates/ui-egui/src/dialogs/updates_ui.rs:50-55、95-107",
+      "scratchpad craft-libs@1b34eba crates/update/src/suite.rs:11、crates/update/src/app.rs:12-13",
+      "craft-libs@1b34eba crates/update/src/updater.rs:290-299、557（StartupPromptResponse::Later）",
+      "craft-libs@1b34eba crates/update/src/pins.rs:1-40（VersionTrack::Pinned）",
+      "packaging/linux/package.sh:167-172",
+      "/home/user/storytold/lightcraft/.github/workflows/release.yml:33-66；AGENTS.md:19（规则 11）"
+     ]
+    },
+    {
+     "id": "extensibility:F17",
+     "status": "confirmed",
+     "note": "我在 scratchpad 的 blobless 克隆 lc-hist（同为 c2e9c45）上复核：自 2026-10-11 起共 3,172 个提交（克隆就是从这天开始的 shallow-since，所以总数就是这段时间的全部提交）；raw/lib.rs 49 个，Cargo.toml 99 个，Cargo.lock 142 个，ui-egui/lib.rs 281 个，main.rs 81 个，vendor.rs 7 个。发版节奏其实比原文说的还快：v0.11.0 在 10-21，v0.12.0 和 v0.13.0 都在 10-22。",
+     "evidence": [
+      "git -C scratchpad/lc-hist log --since=2026-10-11 --oneline | wc -l → 3172",
+      "git log --since=2026-10-11 -- <path> | wc -l，逐个文件统计",
+      "git tag --sort=creatordate：v0.11.0 2026-10-21、v0.12.0 10-22、v0.13.0 10-22 … v0.18.0 11-02"
+     ]
+    },
+    {
+     "id": "extensibility:F18",
+     "status": "confirmed",
+     "note": "属实。CRW 解码器和它的 clean-room 记录都在 craft-libs，LightCraft 通过约 255 行的 vendor/crw.rs 适配接入；ARW6 的做法是把 LibRaw 编译运行、只当黑盒 oracle，从不读它的源码；压缩 ORF 因来源未澄清被撤回。补充：raw-parity.md:282 的 45–85 h 是压缩 SRW、3FR、IIQ、X3F、KDC、DCR、GPR 七类合计的估算，不是单指 IIQ 和 X3F；gaps #20 估 35–75 h。",
+     "evidence": [
+      "clean-room/crw/README.md:1-10",
+      "crates/raw/src/vendor/crw.rs:1-25（wc -l = 255）",
+      "docs/arw6-compression.md:105",
+      "docs/orf-compression.md:1-14",
+      "docs/raw-parity.md:282；docs/gaps.md:37"
+     ]
+    },
+    {
+     "id": "extensibility:F19",
+     "status": "corrected",
+     "note": "大部分属实，有两处要修正。x3f_extract 是 BSD 许可，支持 Quattro（X3F_IMAGE_RAW_QUATTRO = 0x00010023，正好是 DP2 Quattro 样张里 raw 段的 format 35），默认输出 LinearRaw DNG，内容是“已降噪但未做颜色转换”的数据；但它最后一次提交在 2017-06-23，已停止维护，降噪部分依赖 OpenCV。dnglab 是 LGPL-2.1，支持 Phase One IQ/P+ 全系，支持列表里没有 Sigma/X3F。修正一：Adobe 不支持 Quattro 并非“未找到官方确认”。仓库里的 docs/raw/adobe-cameras.tsv 是 Adobe 官方支持列表的解析版（Wayback 2026-10-03 快照），其中 Sigma 只有 DP1/DP1s/DP2/SD9/SD10/SD14 的 X3F，没有任何 Merrill 或 Quattro。修正二：固件 2.00 增加 12 位未压缩 DNG、且 DNG 与 JPEG 不能同时记录，这两点在 Sigma 澳洲代理的 datasheet 里有原文，但该 datasheet 没有明确写出 dp Quattro 型号。",
+     "evidence": [
+      "scratchpad/ext/x3f/doc/copyright.txt:1-20；doc/readme.txt:10-16、61-63",
+      "scratchpad/ext/x3f/src/x3f_extract.c:60；src/x3f_output_dng.c:405；src/x3f_io.h:76；git log -1 → 2017-06-23 e8b48ca",
+      "scratchpad/ext/x3f/src/x3f_denoise.cpp（OpenCV）",
+      "scratchpad/ext/dnglab/LICENSE（LGPL-2.1）；SUPPORTED_CAMERAS.md:692-709；grep -i 'sigma|x3f' 无结果",
+      "docs/raw/adobe-cameras.tsv:1、1232-1239",
+      "https://sigmaphoto.com.au/ts1517956938/attachments/Product/9189/C80900.tag.datasheet.pdf",
+      "https://drivers.softpedia.com/blog/a-new-update-is-available-for-sigma-dp-quattro-camera-series-get-firmware-2-00-515187.shtml"
+     ]
+    },
+    {
+     "id": "extensibility:F20",
+     "status": "confirmed",
+     "note": "属实。convertToDng 和导入时的“转为 DNG”都调用 lightcraft_raw::decode，再写 DNG 并回读校验，所以对 X3F/IIQ 无效；recheckPreviewOnly 会在版本变化时重新探测 preview_only 照片。",
+     "evidence": [
+      "crates/engine/src/cmd/convert.rs:1-3、28-55、111-122",
+      "crates/engine/src/import/commit.rs:158-169",
+      "crates/engine/src/cmd/recheck.rs:110-135；docs/mcp.md:237-245"
+     ]
+    },
+    {
+     "id": "denoise:F1",
+     "status": "confirmed",
+     "note": "属实。Detail 面板依次是 AI Denoise 小节、六个 Noise Reduction 滑块，以及只对 develops_raw 照片显示的 Remove Hot Pixels；局部蒙版也有 Noise 参数。",
+     "evidence": [
+      "crates/ui-egui/src/panels/edit.rs:298-318",
+      "docs/denoise.md:3-7"
+     ]
+    },
+    {
+     "id": "denoise:F2",
+     "status": "confirmed",
+     "note": "属实。builtin 的 VERSION=5、TILE=256、OVERLAP=16、Gain::None、许可 MIT OR Apache-2.0；先测噪声、做 VST，再用 BM3D（后备 NLM）滤波，最后自己去马赛克。按文档，只有滤波这一步可以上 GPU。",
+     "evidence": [
+      "crates/denoise-core/src/builtin.rs:1-53",
+      "docs/denoise.md:9-41",
+      "crates/gpu/src/bm3d.rs"
+     ]
+    },
+    {
+     "id": "denoise:F3",
+     "status": "confirmed",
+     "note": "属实。eligible 要求 develops_raw，即 kind==Raw 且 preview_only 为 None；make_product 拒绝 cpp!=1 或非 Bayer 的文件，报错原文与引用一致。补充：单色 DNG（cfa=None、cpp=1，如 GR IV Monochrome、K-3 Mark III Monochrome）也会被这条检查拒绝。",
+     "evidence": [
+      "crates/engine/src/denoise/products.rs:25-27、172-189",
+      "crates/catalog/src/model.rs:447-449",
+      "crates/denoise-core/src/manifest.rs:16-24",
+      "docs/denoise.md:299-302"
+     ]
+    },
+    {
+     "id": "denoise:F4",
+     "status": "confirmed",
+     "note": "属实。UI 里 applicable 只看状态是不是 NotApplicable，X-Trans 和 LinearRaw 能通过 eligible，所以开关仍可点；导出时 MakeError::Unsupported 被映射成 Ok(false)，按普通图导出、不报错；UI 状态显示为 Failed{unsupported:true}。",
+     "evidence": [
+      "crates/ui-egui/src/panels/edit.rs:301-305",
+      "crates/engine/src/denoise/session.rs:486-519（514 行）",
+      "crates/engine/src/denoise/state.rs:67-71",
+      "docs/denoise.md:184-187"
+     ]
+    },
+    {
+     "id": "denoise:F5",
+     "status": "confirmed",
+     "note": "属实。AI 降噪的结果是缓存文件 <library>/denoise/<key>.lcdn，不会成为库里的新照片；渲染时按 Amount 混合；导出时如果缺少缓存会同步生成。",
+     "evidence": [
+      "crates/engine/src/denoise.rs:1-13",
+      "docs/denoise.md:168-187"
+     ]
+    },
+    {
+     "id": "denoise:F6",
+     "status": "confirmed",
+     "note": "属实。导出格式有 Dng（raw 数据加 XMP）和 RenderedDng（线性 16 位浮点，编辑已烤进去，不加回目录）两种；convertToDng 只是无损重新封装，不含降噪。",
+     "evidence": [
+      "crates/engine/src/export/options.rs:18-22、36-37",
+      "docs/file-format-parity.md:28",
+      "crates/engine/src/cmd/convert.rs:1-3、28-55"
+     ]
+    },
+    {
+     "id": "denoise:F7",
+     "status": "confirmed",
+     "note": "属实。pipeline 在 lin_cpu（白平衡等）之后调用 local::denoise；新导入 raw 的默认值是 nr_color=25、nr_outliers=true；process 从 V6 起色度降噪用 nrc_joint；GPU 也调用同一个 nr_params/nrc_params。",
+     "evidence": [
+      "crates/pipeline/src/lib.rs:715-726",
+      "crates/pipeline/src/local.rs:442-514、541-555、593-595",
+      "crates/develop/src/lib.rs:21-31",
+      "crates/gpu/src/render.rs:1135、1146"
+     ]
+    },
+    {
+     "id": "denoise:F8",
+     "status": "confirmed",
+     "note": "属实。nr_params 不读 nr_contrast，CPU 和 GPU 渲染都用不到它；它只出现在设置、XMP 导入、控件定义和 visualize 的灰度预览里；parity-checklist 却把这一行标成 ✅。",
+     "evidence": [
+      "grep -rn 'nr_contrast|nrContrast' crates --include=*.rs：settings.rs:643、crs.rs:375、controls.rs:265、visualize.rs:212/726/744、edit.rs:307",
+      "crates/pipeline/src/local.rs:442-457",
+      "docs/parity-checklist.md:209"
+     ]
+    },
+    {
+     "id": "denoise:F9",
+     "status": "confirmed",
+     "note": "属实。热像素去除要求 cfa 存在、U16 数据、cpp==1，同色相位按任意 CFA 计算；默认上限 HOT_PIXEL_MAX_SHARE=2e-3，引擎的 hot_pixel_limit 可以调整。",
+     "evidence": [
+      "crates/raw/src/hotpixel.rs:44、130-160",
+      "crates/engine/src/files.rs:117-122"
+     ]
+    },
+    {
+     "id": "denoise:F10",
+     "status": "confirmed",
+     "note": "属实。安装流程依次是许可确认、SHA 校验、自检、写 installed.json；MAX_BYTES = MAX_WEIGHTS*4 + 16 MiB ≈ 528 MiB（MAX_WEIGHTS = 128M）；不支持外部 tensor 数据；清单上限 64 KiB。",
+     "evidence": [
+      "crates/engine/src/cmd/denoise.rs:94-208",
+      "crates/denoise/src/onnx_proto.rs:9、210",
+      "crates/denoise/src/net.rs:14",
+      "crates/denoise-core/src/manifest.rs:11-14"
+     ]
+    },
+    {
+     "id": "denoise:F11",
+     "status": "confirmed",
+     "note": "属实。默认构建下 known::all() 返回空；开启 rawnind-model 后才有 RawNIND（GPL-3.0）；仓库内 release.yml 调用外部 reusable workflow，看不到 features 参数。“commercial=No 的模型不提供下载”是由测试断言保证的。",
+     "evidence": [
+      "crates/denoise-core/src/known.rs:21-70、102-105",
+      "NOTICE:45-52",
+      "/home/user/storytold/lightcraft/.github/workflows/release.yml:68-74（uses craft-common-actions release.yml@main）"
+     ]
+    },
+    {
+     "id": "denoise:F12",
+     "status": "confirmed",
+     "note": "属实。MAX_PIXELS=110,000,000，超过即报 Error::Input，被映射为 Failed；文档里的 PSNR 数据和“只在 Canon 机身上拟合”的说明与原文一致。IQ4 150MP 约 151 MP，会被挡住；IQ3 100MP 约 101 MP，不受影响。",
+     "evidence": [
+      "crates/denoise-core/src/run.rs:16-17、91-94",
+      "crates/engine/src/denoise/products.rs:111-118",
+      "docs/denoise.md:56-58、73、111-128"
+     ]
+    },
+    {
+     "id": "denoise:F13",
+     "status": "corrected",
+     "note": "基本正确，修正三点。(1) GR IV Monochrome 等单色 DNG 不是 Bayer，用不了 AI 降噪，也用不了 Remove Hot Pixels。(2) IIQ 判为 OtherTiff 靠的是结构规则（lib.rs:247 的四个条件任一），注释里的“包括 IIQ”只是说明，不是检测依据；真实 IIQ 没有样张验证。(3) 补充：dp Quattro 升级固件 2.00 后可以在机内直接记录 DNG，LightCraft 的 DNG 解码器接受 CFA 和 LinearRaw 两种主 IFD，理论上能原生解码，但 coverage 表和语料库里都没有这款机型，未经验证；而且 Quattro 的 DNG 很可能是 3 通道线性数据，仍然用不了 AI 降噪。",
+     "evidence": [
+      "crates/raw/src/lib.rs:136-137、247-248",
+      "crates/raw/src/dng.rs:13-20",
+      "crates/engine/src/denoise/products.rs:181-185",
+      "docs/raw/coverage.tsv:1088"
+     ]
+    },
+    {
+     "id": "denoise:F14",
+     "status": "confirmed",
+     "note": "属实。workspace lints 设了 unsafe_code = \"deny\"，unsafe 只允许出现在 crates/sysmem；libloading 只由 ash、dlib、glutin、khronos-egl、ug、x11rb 等图形和窗口依赖间接引入。",
+     "evidence": [
+      "Cargo.toml:130",
+      "AGENTS.md:91、106、112",
+      "Cargo.lock：libloading 0.8.9 的依赖者 ash/dlib/glutin/khronos-egl/ug/x11rb"
+     ]
+    },
+    {
+     "id": "denoise:F15",
+     "status": "confirmed",
+     "note": "属实。builtin 在 loaded() 里直接返回 BuiltinModel，不走 default_loader；远程端只会配合 ONNX 模型启用，并按 SHA 识别模型。",
+     "evidence": [
+      "crates/engine/src/denoise/products.rs:135-146",
+      "crates/engine/src/denoise/model.rs:357-376",
+      "crates/denoise/src/remote.rs:1-21"
+     ]
+    },
+    {
+     "id": "denoise:F16",
+     "status": "confirmed",
+     "note": "属实。CPU 执行器用 faer-core，GPU 执行器在 crates/gpu/src/nn.rs，用 WGSL 内核。",
+     "evidence": [
+      "crates/denoise/Cargo.toml:11-21",
+      "crates/gpu/src/nn.rs:1-6",
+      "docs/denoise.md:189-215、295-297"
+     ]
+    }
+   ],
+   "missed": [
+    "DP2 Quattro 实样静态分析：scratchpad/ext/x3f_test_files/_SDI8284.X3F（README 写明是 DP2 Quattro，固件 2 以前）为 FOVb 4.1；目录里第一个 IMA2 段 format=18，是 5424x3616 的全尺寸 JPEG（约 14 MB，开头 ffd8ff），raw 段 format=35，尺寸 5888x3672。LightCraft 对 X3F 走 scan_for_jpeg，取文件中最大的完整彩色 JPEG（preview.rs:289-291、452-520），因此 DP2 Quattro 导入后，预览只读模式下很可能显示约 19.6 MP 的全尺寸机内 JPEG。注意：这是我用 Python 解析 X3F 目录（scripts/x3f_dir.py）得出的推断。想编译 lightcraft-raw 实际跑一遍，但构建权限被拒，所以 LightCraft 本身没有实测。",
+    "覆盖表里 IIQ/X3F 的“preview”只是 coverage.py:105-106 按扩展名套规则得出的，语料库里没有任何真实 IIQ 或 X3F，相关测试全是合成文件（crates/engine/src/tests/import.rs:2427-2458、files/tests.rs:1556-1570）。真实 IIQ 能否被 lib.rs:247 的结构规则认出、会不会被当成一张小 TIFF 打开，都没有验证过。",
+    "RAW+JPEG 的 sidecar 不共享：raw 拥有 IMG_0001.xmp，JPEG 用 IMG_0001.JPG.xmp（sidecar.rs:931-1019，issue #1523/#1905），重命名时共享的 stem sidecar 会被复制而不是拿走（parity-checklist.md:114）。现有的 StemOwners/ImportStems/stem_key 已能识别同主文件名的兄弟文件，是做 RAW+JPEG 配对或合并显示时最自然的上游挂接点。",
+    "新增解码器不只要改 crates/raw：engine 的 camera_preview/colour.rs:17-34（file_local_look）和 catalog 的 model.rs:349-353（relative_wb_format，按扩展名）是按格式写死的名单。文件里没有颜色矩阵的格式必须一起改，否则只能落到中性矩阵或光谱矩阵。",
+    "上游 release.yml:40-66 拒绝 github.com/storytold 以外的 git 依赖和 .cargo/config 里的 patch/replace；AGENTS.md 规则 11 要求 CI 统一调用 storytold/craft-common-actions。按 craft-crw 先例做外部解码器 crate，必须放进 storytold 组织（craft-libs）才能进入官方发布；fork 自建发布也必须改写这条流水线。",
+    "应用内更新是带 Later 按钮的提示，不是静默替换（craft-libs crates/update/src/updater.rs:557）；ArtCraft Launcher 写的版本钉选文件（pins.rs，VersionTrack::Pinned）可以把应用固定在某个版本。",
+    "dp Quattro 固件 2.00 起可以机内直接记录 12 位未压缩 DNG，这是一条不需要转换器的原生路径（LightCraft 的 dng.rs:13-20 接受 LinearRaw），但 DNG 不能和 JPEG 同时记录，也就没有 RAW+JPEG 配对可言；这款机型在 LightCraft 中未验证。来源：https://sigmaphoto.com.au/ts1517956938/attachments/Product/9189/C80900.tag.datasheet.pdf ，https://drivers.softpedia.com/blog/a-new-update-is-available-for-sigma-dp-quattro-camera-series-get-firmware-2-00-515187.shtml",
+    "x3f_extract 最后一次提交在 2017-06-23（scratchpad/ext/x3f），已停止维护，降噪依赖 OpenCV（src/x3f_denoise.cpp）。它支持 DP2 Quattro 样张里的 raw 类型 0x00010023（x3f_io.h:76），默认输出 LinearRaw DNG（x3f_output_dng.c:405）。转出的 DNG 在 LightCraft 里只能用手动降噪，不能用 AI 降噪（cpp=3）。",
+    "宾得 Pixel Shift 多帧不会合成（raw-parity.md:166 ⬜）；理光、宾得的单色机型（GR IV Monochrome、K-3 Mark III Monochrome）不是 Bayer，AI 降噪和 Remove Hot Pixels 都用不了（products.rs:181-185；hotpixel.rs:137-155）。",
+    "Phase One 的 P 20/20+/21/21+/25/25+/30/30+/45/45+ 和 H 20/25 在覆盖表里是 TIF unsupported（TIF is not imported，coverage.tsv:1053-1054、1069-1079），不是 IIQ preview。但用户手里只要是 .IIQ 扩展名的文件，仍会按扩展名导入（import/files.rs:20）。",
+    "用户引用的中文 README 整体落后于代码：第 324 行把 CR3 解码标为 ⬜（实际已能解码，见 parity-checklist LR-IMP-FORMATS），第 325、336 行把 AI 降噪标为 ⬜。判断能力应以代码和 docs/*.md 为准。"
+   ]
+  },
+  "v_formats_rawjpeg": {
+   "verdicts": [
+    {
+     "id": "formats:F1",
+     "status": "confirmed",
+     "note": "属实。EXTENSIONS 第 20 行包含 iiq/x3f/mos/mef 等，注释也写明 preview-only raw 同样会被发现，能否解码由 probe 决定。测试中 c.x3f、d.iiq、f.mos 都以 preview_only、kind=Raw 导入。",
+     "evidence": [
+      "crates/engine/src/import/files.rs:12-21",
+      "crates/engine/src/tests/import.rs:2419-2456"
+     ]
+    },
+    {
+     "id": "formats:F2",
+     "status": "confirmed",
+     "note": "属实。FOVb 被 sniff 为 RawOther；II*\\0 开头的文件由 tiff_is_raw 判定（条件包括 DNGVersion、photometric 32803/34892、压缩值 32767/32769/32770/34316/34713/65000/65535，以及 Sony M/S 的特殊规则），否则判为 Tiff。引擎 probe_bytes 先走 lightcraft_raw::probe。",
+     "evidence": [
+      "crates/codecs/src/sniff.rs:114-116",
+      "crates/codecs/src/sniff.rs:126-128",
+      "crates/codecs/src/sniff.rs:166-220",
+      "crates/engine/src/files/probe.rs:134"
+     ]
+    },
+    {
+     "id": "formats:F3",
+     "status": "confirmed",
+     "note": "属实。X3f 是独立变体，IIQ 只出现在 OtherTiff 的注释里。is_supported 不含 X3f/OtherTiff。decode_with 对 OtherTiff 返回 other_tiff_reason，对 X3f 落到兜底分支（\"X3f files are not decoded yet\"）。vendor/ 下没有 x3f/iiq/phaseone；全仓 grep SECd/IMA2/CAMF/SECi/IIII 以及 phase.one 均为 0。",
+     "evidence": [
+      "crates/raw/src/lib.rs:122-137",
+      "crates/raw/src/lib.rs:140-162",
+      "crates/raw/src/lib.rs:417-437",
+      "crates/raw/src/tests.rs:256-270",
+      "ls crates/raw/src/vendor（arw…srw，无 x3f/iiq）"
+     ]
+    },
+    {
+     "id": "formats:F4",
+     "status": "confirmed",
+     "note": "代码层面属实：OtherTiff 只靠 has_cfa、thumbnail_shell、is_preview_container、is_leaf_mosaic 这几条通用规则判定，四条都不满足时 probe 返回 None，文件走 codecs 路径按普通 TIFF（kind=Image）导入。真实 IIQ 会触发哪条规则，没有样张可验证。测试注释 \"a 150 MP file renders 296x220\" 说明曾有真实的 150MP IIQ 只露出 296x220 的 IFD0 图像。",
+     "evidence": [
+      "crates/raw/src/lib.rs:244-249",
+      "crates/raw/src/lib.rs:255-262",
+      "crates/raw/src/lib.rs:272-281",
+      "crates/raw/src/lib.rs:311-351",
+      "crates/engine/src/files/tests.rs:1553-1570",
+      "docs/whats-new.md:2050-2052",
+      "xtask/src/raw_samples.rs（grep x3f/iiq/phase/leaf 无结果）"
+     ]
+    },
+    {
+     "id": "formats:F5",
+     "status": "confirmed",
+     "note": "属实。Unsupported 经 preview_reason 变成 Ok(why)，再用 embedded_preview_size 取预览尺寸，写入 preview_only；没有预览时报 \"unsupported raw (...) without an embedded preview\"。load_bytes_now 调 load_embedded_preview，返回 SourceInfo::default()，取的是最大那张预览（covering=None）。",
+     "evidence": [
+      "crates/engine/src/files/probe.rs:130-157",
+      "crates/engine/src/files/probe.rs:242-250",
+      "crates/engine/src/files/load.rs:95-103",
+      "crates/engine/src/files/preview.rs:57-80"
+     ]
+    },
+    {
+     "id": "formats:F6",
+     "status": "confirmed",
+     "note": "属实。preview_covering 对 Crw/Mrw/X3f 直接 scan_for_jpeg。walk_jpeg 只接受 SOF0-2（baseline/extended/progressive），拒绝 lossless/arithmetic/hierarchical；scan 只保留 3 分量的 JPEG，按字节长度取最大，预算为文件大小的 8 倍。stand_in_image 只在 codecs::sniff==Tiff 时用文件本身兜底，X3F 是 RawOther，找不到 JPEG 就会导入失败。没有任何 Quattro 专用代码。",
+     "evidence": [
+      "crates/raw/src/preview.rs:289-291",
+      "crates/raw/src/preview.rs:397-450",
+      "crates/raw/src/preview.rs:452-516",
+      "crates/raw/src/preview/tests.rs:568-595",
+      "crates/engine/src/files/preview.rs:12-27"
+     ]
+    },
+    {
+     "id": "formats:F7",
+     "status": "confirmed",
+     "note": "属实，补充一点细节：meta::embedded 没有 FOVb 分支，所以 X3F 没有 EXIF。拍摄时间的取值顺序是：先用同名 XMP 侧车里的日期（如有），再退回 file_modified。方向优先取内嵌 JPEG 自带的方向，否则为 Normal。",
+     "evidence": [
+      "crates/meta/src/container.rs:33-81",
+      "crates/meta/src/lib.rs:297-302",
+      "crates/engine/src/import/job.rs:360-366",
+      "crates/engine/src/files/preview.rs:4-10"
+     ]
+    },
+    {
+     "id": "formats:F8",
+     "status": "confirmed",
+     "note": "属实。candidates 会查 undefined 类型标签里的 JPEG、JPEGInterchangeFormat，以及压缩值 6/7/34892 的单块图像；有 maker note 时也查；格式不支持时再全文件扫描；仍然没有，且 codecs 判为 Tiff，就用文件本身（即 IFD0 缩略图）兜底。注意：如果 codecs 把某个 IIQ 判成 RawTiffLike，这个兜底就不会生效。",
+     "evidence": [
+      "crates/raw/src/preview.rs:197-232",
+      "crates/raw/src/preview.rs:293-324",
+      "crates/engine/src/files/preview.rs:16-27",
+      "crates/engine/src/files/tests.rs:1559-1564"
+     ]
+    },
+    {
+     "id": "formats:F9",
+     "status": "confirmed",
+     "note": "基本属实。develops_raw=false；crs Target 为 Rendered；AI Denoise 的 eligible 为 false，状态是 NotApplicable；Remove Hot Pixels 只对 develops_raw 显示；6 个手动降噪滑块恒为启用。小修正：Convert to DNG 遇到 preview-only 不会整体报错，而是把 decode 错误放进 skipped 列表返回。",
+     "evidence": [
+      "crates/catalog/src/model.rs:313-318",
+      "crates/catalog/src/model.rs:447-449",
+      "crates/ui-egui/src/panels/edit.rs:43,59,83-90,295-312",
+      "crates/engine/src/denoise/products.rs:25-27",
+      "crates/engine/src/denoise/session.rs:143-147",
+      "crates/engine/src/crs.rs:44-50",
+      "crates/engine/src/cmd/convert.rs:60-100",
+      "crates/ui-egui/src/panels/detail/info.rs:227"
+     ]
+    },
+    {
+     "id": "formats:F10",
+     "status": "confirmed",
+     "note": "属实。没有理光专用解码路径，Ricoh 只在 lib.rs:225 的 PEF 分支出现，DNG 判定在它之前。canon_pentax_corpus.rs 固定了 GR、GR II、GR IIIx 的哈希并做了 JPEG 比对；GX200、GXR 只固定了哈希。GR III（dng-ricoh-gr3.dng）只在 corpus.rs 里做了“能否解码”测试，但 coverage.tsv 照样把它标成 verified。另一处文档缺陷：coverage.tsv 把这些 verified 行的出处写成 body_corpus.rs，而该文件里并没有任何 Ricoh/Pentax 条目。",
+     "evidence": [
+      "crates/raw/src/lib.rs:195-227",
+      "crates/raw/tests/it/canon_pentax_corpus.rs:1-10,145-161",
+      "xtask/src/raw_samples.rs:619-620,1912-1913,1922-1923,2107-2108,2232-2233",
+      "docs/raw/coverage.tsv:1081-1099",
+      "grep ricoh crates/raw/tests/it/body_corpus.rs → 0"
+     ]
+    },
+    {
+     "id": "formats:F11",
+     "status": "confirmed",
+     "note": "属实。file_local_look 不含 Dng（有测试断言）；dng_tone_eligible 只对“有自带矩阵、色调曲线为恒等或缺失”的 DNG 拟合色调；裁切只认 DefaultCropOrigin/Size，代码里没有理光 maker note 解析。",
+     "evidence": [
+      "crates/engine/src/camera_preview/colour.rs:17-34,48-71,88-91",
+      "crates/engine/src/camera_preview/look_fit.rs:17,209",
+      "crates/engine/src/camera_preview/tests.rs:945",
+      "crates/raw/src/dng.rs:340-345"
+     ]
+    },
+    {
+     "id": "formats:F12",
+     "status": "confirmed",
+     "note": "属实。Make 以 PENTAX/RICOH 开头，且有 CFA 或 Exif CFAPattern，就判为 Pef（排在 DNG 判定之后）。K-3 Mark III、K-1、K-70、KF 的 PEF，以及 KP、645Z、K-1 Mark II 的 DNG 都有 jpeg_check=true；K-3 III Monochrome 只固定了哈希。coverage.tsv 第 1021 行把 K-1 II 标为 unverified，与语料不一致。#1271 边缘行问题和像素偏移不合成都有文档记载，crates/raw/src 里 grep pixel shift 无结果。",
+     "evidence": [
+      "crates/raw/src/lib.rs:203-227",
+      "crates/raw/tests/it/canon_pentax_corpus.rs:124-161",
+      "docs/raw/coverage.tsv:1013,1021,1028-1034,1046",
+      "docs/raw-parity.md:163-164,196"
+     ]
+    },
+    {
+     "id": "formats:F13",
+     "status": "confirmed",
+     "note": "属实。PEF 在 relative_wb_format 里；spectral*、kelvin* 中没有 Pentax/Ricoh 条目，assets/camera-profiles 也只有 Sony/Nikon/Fuji/Canon。JPEG 拟合失败后会依次尝试 spectral，再退回中性矩阵。PEF 的 header probe 需要读整个文件。",
+     "evidence": [
+      "crates/catalog/src/model.rs:349-364",
+      "crates/engine/src/camera_preview/colour.rs:93-110",
+      "ls assets/camera-profiles",
+      "crates/raw/src/sparse.rs:295-300"
+     ]
+    },
+    {
+     "id": "formats:F14",
+     "status": "confirmed",
+     "note": "属实（另外 Phase One H 20、H 25 的 TIF 也是 unsupported）。preview 来自 coverage.py 的静态扩展名规则，不是实测结果。",
+     "evidence": [
+      "docs/raw/coverage.tsv:566-587,668-676,1053-1080",
+      "docs/raw/coverage.py:105-106",
+      "docs/raw-parity.md:101,176"
+     ]
+    },
+    {
+     "id": "formats:F15",
+     "status": "confirmed",
+     "note": "属实。三个 tsv 中 Quattro 的计数都是 0，全仓 grep quattro/merrill 也是 0。Sigma 只有 DP1/DP1s/DP2/SD9/SD10/SD14 的 X3F（preview）、fp/fp L（verified）和 BF（unverified）。",
+     "evidence": [
+      "docs/raw/coverage.tsv:1229-1237",
+      "grep -c -i quattro docs/raw/*.tsv → 0",
+      "docs/raw-parity.md:105,195"
+     ]
+    },
+    {
+     "id": "formats:F16",
+     "status": "confirmed",
+     "note": "属实。raw_ifd 接受 LINEAR_RAW；cpp 允许 1/3/4；demosaic 对 cpp==3 原样返回；AI Denoise 拒绝 cpp!=1 或非 Bayer。docs/denoise.md 也明写 Foveon 和已去马赛克的 DNG 不受支持。",
+     "evidence": [
+      "crates/raw/src/dng.rs:13-18,264-269",
+      "crates/raw/src/demosaic.rs:74-90",
+      "crates/engine/src/denoise/products.rs:181-184",
+      "crates/raw/src/binned.rs:27",
+      "docs/denoise.md:297-298"
+     ]
+    },
+    {
+     "id": "formats:F17",
+     "status": "corrected",
+     "note": "“没有解码器插件机制、decode_with 是写死的 match”属实，但钩子方案描述不完整。(1) with_fs 还会安装 reduced_loader（网格缩略图专用）和 denoise.loader，只包装 file_loader/file_probe/preview_loader 的话，网格缩略图仍会走原实现。(2) 绕过钩子、直接调用 lightcraft_raw 的路径不止 AI Denoise、Convert to DNG 和相机外观拟合，还有 DNG 导出、HDR/全景合并、camera profile 校准，以及侧车方向重读。(3) 钩子在 app 二进制 crate 里安装，不存在运行时加载，所以必须给 apps/lightcraft 打补丁（相当于 fork）或另写一个入口二进制。",
+     "evidence": [
+      "crates/engine/src/files/fs.rs:131-144",
+      "crates/engine/src/media.rs:69-73",
+      "crates/engine/src/export/prepare.rs:267-270",
+      "crates/engine/src/merge.rs:116",
+      "crates/engine/src/camera_profiles.rs:204",
+      "crates/engine/src/sidecar.rs:414",
+      "apps/lightcraft/src/session.rs:259,282,284"
+     ]
+    },
+    {
+     "id": "formats:F18",
+     "status": "corrected",
+     "note": "工时出处混用了。gaps.md:37 第 20 项对一个更宽的列表（还包括 ARQ pixel shift、老 FinePix）估 35–75 小时；“45–85 小时、每小时约 0.01”出自 raw-parity.md:282 第 9 项（压缩 SRW、3FR、IIQ、X3F、KDC、DCR、GPR）。其余内容属实：clean-room/ 下只有 crw；AGENTS.md:28 和 115 禁止复制 LibRaw/rawspeed 等 GPL 代码；AGENTS.md:116 还要求产品“Pure Rust，无 C/C++ 依赖”。",
+     "evidence": [
+      "docs/gaps.md:37",
+      "docs/raw-parity.md:272-282",
+      "docs/roadmap.md:75",
+      "ls -R clean-room",
+      "AGENTS.md:28,115,116"
+     ]
+    },
+    {
+     "id": "rawjpeg:F1",
+     "status": "confirmed",
+     "note": "属实。ImportOptions 没有配对字段；commit_prepared 为每个文件推一个 Op::AddPhoto，最后作为一个 Batch 提交；全仓 grep pairRawJpeg/rawJpegPairs/raw_jpeg 无实现。",
+     "evidence": [
+      "crates/engine/src/import/types.rs:46-80",
+      "crates/engine/src/import/commit.rs:257-328",
+      "docs/parity-checklist.md:72-89"
+     ]
+    },
+    {
+     "id": "rawjpeg:F2",
+     "status": "confirmed",
+     "note": "属实。导入审阅可以按类型勾选；JPEG/JPG 合并为一类（#344）。",
+     "evidence": [
+      "crates/ui-egui/src/dialogs/import.rs:113-126,175-186"
+     ]
+    },
+    {
+     "id": "rawjpeg:F3",
+     "status": "confirmed",
+     "note": "属实。Stem 命名下 RAW 优先占用 IMG_0001.xmp，其余文件用 <file>.xmp；Full 命名本身无歧义；ImportStems 按同样规则排名（#1905）。这只是防止侧车互相覆盖，不会合并显示。",
+     "evidence": [
+      "crates/engine/src/sidecar.rs:16-22,44-52,928-938",
+      "crates/engine/src/import_move.rs:39"
+     ]
+    },
+    {
+     "id": "rawjpeg:F4",
+     "status": "confirmed",
+     "note": "属实。Stack 是目录数据，photos[0] 为顶部，通过 AddStack/RemoveStack/SetStack 修改，可撤销、写入日志。",
+     "evidence": [
+      "crates/catalog/src/model.rs:20-38",
+      "crates/catalog/src/lib.rs:173-183,1029-1043",
+      "crates/catalog/src/stacks.rs:1-8"
+     ]
+    },
+    {
+     "id": "rawjpeg:F5",
+     "status": "confirmed",
+     "note": "属实。补充：gap 可以设为 0（`.max(0.0)`），这样只合并同一秒的拍摄。GR DNG+JPG 和 IIQ+JPG 若 EXIF 时间相同就能堆叠，但同秒内的连拍也会被并进来。X3F 没有 EXIF，仍不适用。排序时 DNG/IIQ 排在 JPG 前，X3F 排在 JPG 后；第一张作封面，所以 X3F 恰好是 JPEG 当封面。",
+     "evidence": [
+      "crates/catalog/src/stacks.rs:205-231",
+      "crates/engine/src/cmd/organize.rs:259-283",
+      "crates/meta/src/container.rs:34-81"
+     ]
+    },
+    {
+     "id": "rawjpeg:F6",
+     "status": "confirmed",
+     "note": "属实。补充：格式标签只在方形网格且打开“显示文件名”时绘制（位于 `if square && app.ui.show_filenames` 块内）。",
+     "evidence": [
+      "crates/ui-egui/src/panels/grid.rs:850-877,942-953,1263-1293"
+     ]
+    },
+    {
+     "id": "rawjpeg:F7",
+     "status": "confirmed",
+     "note": "属实。targets() 只取 ids/id 或当前选择，不会展开到整个堆叠；删除时 mark_deleted 会把照片移出堆叠。",
+     "evidence": [
+      "crates/engine/src/lib.rs:1438-1454",
+      "crates/engine/src/cmd/library/selection.rs:66-76"
+     ]
+    },
+    {
+     "id": "rawjpeg:F8",
+     "status": "confirmed",
+     "note": "属实。stack.group 的启用条件是 has_selection，cmd! 宏默认 explicit_targets=false，所以没有选中照片时即使传 ids 也会被拒；执行后选择变为 single(top)。stack.auto 启用条件为 always。控制端口只监听 loopback，没有认证。",
+     "evidence": [
+      "crates/engine/src/cmd/organize.rs:168-192,259-266",
+      "crates/engine/src/cmd.rs:70-73,105-113,135",
+      "crates/engine/src/lib.rs:588-590",
+      "docs/control-protocol.md:1-10,46-53",
+      "docs/mcp.md:141,174"
+     ]
+    },
+    {
+     "id": "rawjpeg:F9",
+     "status": "confirmed",
+     "note": "属实。photo_summary 不含路径；catalog.query 默认 limit 200；photo.inspect 序列化整个 Photo 并附带 stack 信息；Filter 有 folder/subfolders/importedFrom 字段。",
+     "evidence": [
+      "crates/engine/src/cmd/query.rs:12-34,82-94,161-176",
+      "crates/catalog/src/query.rs:18-73",
+      "crates/engine/src/library.rs:1011-1020"
+     ]
+    },
+    {
+     "id": "rawjpeg:F10",
+     "status": "corrected",
+     "note": "X3F 是 preview-only 属实。IIQ 只有在命中某条通用 TIFF 规则时才是 preview-only；规则全部不满足时，lightcraft_raw::probe 返回 None，文件会作为普通小 TIFF（kind=Image）导入。即便识别成功、但没有 JPEG，显示的也是 IFD0 的 RGB 缩略图，而不是“内嵌 JPEG”。“代码里没有用同目录相机 JPEG 当替身”的结论属实。",
+     "evidence": [
+      "crates/raw/src/lib.rs:244-249",
+      "crates/engine/src/files/probe.rs:185-232",
+      "crates/engine/src/files/preview.rs:12-27",
+      "crates/engine/src/files/tests.rs:1553-1564"
+     ]
+    },
+    {
+     "id": "rawjpeg:F11",
+     "status": "confirmed",
+     "note": "属实。fit_preview 要求 matrix_is_fallback 且格式属于 file_local_look；代理边长 PROXY=96；proxies() 只解码 RAW 自身字节里的预览；文档也写明没有 JPEG 替换。",
+     "evidence": [
+      "crates/engine/src/camera_preview/colour.rs:8,17-34",
+      "crates/engine/src/camera_preview/look_fit.rs:10-20",
+      "crates/engine/src/camera_preview/proxy.rs:87-101",
+      "docs/camera-preview-colour.md:3"
+     ]
+    },
+    {
+     "id": "rawjpeg:F12",
+     "status": "confirmed",
+     "note": "PR #4046 已用 git fetch 核实：head 90cf6d0a，6 个提交（作者日期 2026-11-10），基于 f6b57b0b，后者是 main 的祖先。diffstat 为 26 个文件 +1035/-19。内容方面：新增 raw_jpeg.rs（伴随文件为 jpg/jpeg/heic/heif/hif，RAW 不能解码时 JPEG 置顶）；新增 pairRawJpeg 选项（默认关），folder.synchronize 时也会配对；新增 stack.rawJpegPairs（启用条件为 always）；新增 fix_selection；撤销步骤名为 \"Stack RAW+JPEG Pairs\"。locales 只改了 de。issue #3439 和 #1230 的状态与标签，本会话 GitHub API 被拒（403），无法核实。",
+     "evidence": [
+      "git ls-remote：refs/pull/4046/head=90cf6d0a4a76a5820ad4ad434bc27c5e0cf56f5d",
+      "PR #4046 版本 crates/catalog/src/raw_jpeg.rs:1-45",
+      "PR #4046 diff crates/engine/src/cmd/library/import.rs、cmd/prefs.rs、import/types.rs、cmd/organize.rs"
+     ]
+    },
+    {
+     "id": "rawjpeg:F13",
+     "status": "confirmed",
+     "note": "属实。main 上 VERSION=12，版本号 10、11 分别对应 masks 和 lens db。PR #1231 的 head 中 VERSION=11，其中 10 对应 Fujifilm recipe，11 对应 RAW+JPEG pair links（Op::AddPair/RemovePair/RejectPair），与 main 的编号冲突。",
+     "evidence": [
+      "crates/catalog/src/journal.rs:60-91",
+      "PR #1231 head 62c1a2dc：crates/catalog/src/journal.rs:50-56,82"
+     ]
+    },
+    {
+     "id": "rawjpeg:F14",
+     "status": "confirmed",
+     "note": "属实。import_batch_done 由引擎命令和 UI 导入任务共同调用；Edit In 的副本会 stack.group 到原图上；合并结果会 stack_with_ops 与源文件堆叠。",
+     "evidence": [
+      "crates/engine/src/cmd/library/import.rs:94",
+      "crates/ui-egui/src/dialogs/import/task.rs:347",
+      "crates/engine/src/cmd/library/specs.rs:1363",
+      "crates/engine/src/cmd/convert.rs:196-199",
+      "crates/engine/src/merge.rs:445-447",
+      "crates/engine/src/sidecar.rs:801,820"
+     ]
+    },
+    {
+     "id": "rawjpeg:F15",
+     "status": "confirmed",
+     "note": "Pentax/Ricoh 的统计（60 个机型、40 verified、20 unverified、0 preview）属实。前提：IIQ 是否进入 preview-only 取决于真实文件能否命中 TIFF 识别规则（见 rawjpeg:F10）。",
+     "evidence": [
+      "docs/raw-parity.md:99,101,105",
+      "PR #4046 raw_jpeg.rs RawJpegPair::stack_order"
+     ]
+    }
+   ],
+   "missed": [
+    "上游自己把插件生态列为缺口：docs/gaps.md:36 第 19 项写着“Plug-in ecosystem: no Lightroom SDK equivalent … ⬜，40–80h + owner decision”，docs/file-format-parity.md:60 中 Lightroom 插件一栏也是 ⬜；全仓 grep plugin 只有这两处。由此可以确认：现在没有运行时加载模块的机制，“主程序照常更新、额外功能以模块载入”无法原生实现。可选的路线只有三种：外部进程（控制协议/MCP/CLI）、打补丁的 fork、或以数据文件形式扩展（见下两条）。",
+    "AI Denoise 的模型可以外挂，这是现有唯一一种不改代码的“模块化”扩展点：Settings ▸ Install from file… 可安装 ONNX 文件加旁边的 denoise-model.json，模型目录可用 LIGHTCRAFT_DENOISE_MODELS 指定，也有 denoise.models.* 命令（docs/denoise.md:133-164、288-293）。限制是合同为 bayerToRgb，docs/denoise.md:297-298 明写“X-Trans, Foveon, demosaiced DNG and non-RAW images remain unsupported”。另外可以把降噪交给局域网内另一台电脑的 GPU（docs/denoise.md:243）。桌面版默认启用 denoise feature（apps/lightcraft/Cargo.toml [features] default=[\"denoise\"]）。",
+    "对 X3F 和 IIQ（preview-only）目前唯一可用的降噪，是在内嵌 8 位 JPEG（或 IFD0 缩略图）上跑 6 个手动降噪滑块：edit.rs:301-305 中 control(..., true) 恒为启用，AI Denoise 显示 NotApplicable（denoise/session.rs:143-147）。",
+    "钩子方案还漏了几点。with_fs 同时安装了 reduced_loader（网格缩略图）和 denoise.loader（fs.rs:131-138）。绕过钩子的路径除已列出的外，还有 DNG 导出（export/prepare.rs:267-270）、HDR/全景合并（merge.rs:116，lightcraft_merge::load_frame_with）、camera profile 校准（camera_profiles.rs:204）和侧车方向重读（sidecar.rs:414）。这些钩子在二进制 crate apps/lightcraft/src/session.rs:259/282/284 中安装，所以“外挂解码模块”实际需要打补丁或 fork 这个 app crate。",
+    "PEF 的颜色也可以通过数据文件扩展：`lightcraft-cli calibrate` 能用多张照片拟合出该机型的 JSON 配色档案，放进 LIGHTCRAFT_CAMERA_PROFILES 或 <config>/camera-profiles 即可生效，不改代码（crates/engine/src/camera_profiles.rs:1-12、docs/camera-preview-colour.md:158）。另外可以用 profile.import 导入 .dcp（crates/engine/src/cmd/dcp_profiles.rs:98）。这两种方式都能改善 PEF 在逐张 JPEG 拟合之外的颜色一致性。",
+    "Edit In（photo.editExternal）只会渲染一份 TIFF/PSD 副本交给外部编辑器，从不把原始 X3F/IIQ 交出去（crates/engine/src/cmd/convert.rs:174-200、405-409）。所以不能借 Edit In 调用 Sigma Photo Pro 或 Capture One 去显影原始文件。可行的零代码流程是：在外部软件里把 X3F/IIQ 显影成 16 位 TIFF，导入后用 stack.group 和原文件堆叠。",
+    "AGENTS.md:116 规定“Pure Rust in the product. No C/C++ dependencies.”。因此向上游贡献 X3F/IIQ 解码器时不能包装 C 库（例如 x3f 工具），AGENTS.md:115 还禁止参考 GPL 代码。外部转换工具作为独立进程不受这条限制。",
+    "零代码的“近似合并”办法：stack.auto 的 gap 可以设为 0（organize.rs:259-283，`.max(0.0)`；对话框滑块范围 0–86400），这样同一秒拍下的 GR DNG+JPG、IIQ+JPG 会被并成折叠堆叠，按文件名排序后 RAW 在前。代价是同秒连拍也会被合并，而 X3F 没有 EXIF 时间，这个办法对它无效。另一个办法是用库过滤器 Filter.kind 只显示 RAW（crates/catalog/src/query.rs:42），把 JPEG 隐藏起来。",
+    "对 IIQ 尤其要注意：测试注释（crates/engine/src/files/tests.rs:1553-1556）引用了“a 150 MP file renders 296x220”，说明至少有一个真实的 IQ4 150MP 文件，LightCraft 能拿到的图像只有 296x220 的 IFD0 缩略图。如果这类文件里没有更大的 JPEG，preview-only 下的显示、编辑和导出都会被限制在这个尺寸，实际不可用。所以对 IIQ 来说，先用 Adobe DNG Converter 转成 Bayer DNG 几乎是必经之路，转换后还能使用 AI Denoise。",
+    "文档缺陷：coverage.tsv 中 Ricoh/Pentax 的 verified 行（如第 1081-1084、1013、1028 行）把证据写成 crates/raw/tests/it/body_corpus.rs，但该文件里没有任何 Ricoh/Pentax 条目，真正固定哈希的是 canon_pentax_corpus.rs。此外 GR III 只有 corpus.rs 的“能否解码”测试，却也被标成 verified（coverage.tsv:1083）。",
+    "PR #4046 还会在 folder.synchronize 时配对，并把 .heic/.heif/.hif 也当作伴随文件；配对以库偏好 import.pairRawJpeg 保存，库浏览（Local）模式下永不配对（PR #4046 版本 crates/engine/src/cmd/prefs.rs、cmd/library/import.rs）。已存在 watched-folder 自动导入（docs/parity-checklist.md LR-IMP-AUTO），外部配对脚本可以在自动导入之后执行。"
+   ]
+  },
+  "v_web": {
+   "verdicts": [
+    {
+     "id": "web_x3f:F1",
+     "status": "confirmed",
+     "note": "属实。检索结果显示 Sigma 官方 dp2 Quattro 规格页的 RAW 记录尺寸为 T 5,424×3,616、M/B 2,712×1,808，总像素约 33MP。2,720×1,808 只出现在 photorumors 等转录，以及 Sigma 自家 sd Quattro 页的“有效像素”一栏。所以 2,712 是 RAW 输出尺寸，2,720 是部分资料里的层尺寸，两者都存在，不算矛盾。",
+     "evidence": [
+      "https://www.sigma-global.com/en/cameras/dp2-quattro/specification.html（WebSearch 摘要：HIGH TOP 5,424×3,616 MIDDLE 2,712×1,808 BOTTOM 2,712×1,808；WebFetch 被沙箱拦截）",
+      "https://photorumors.com/?p=79621（2,720 版本）"
+     ]
+    },
+    {
+     "id": "web_x3f:F2",
+     "status": "confirmed",
+     "note": "我按公开 FOVb 规范另写解析器独立复核过。_SDI8284.X3F 文件头字节为 46 4f 56 62 01 00 04 00，即版本 4.1。目录共 3 项：IMA2 预览（fmt 18，5424×3616）、CAMF、IMA2 raw（fmt 35=0x23，5888×3672），没有 PROP。SDQH5085 同为 4.1，raw fmt 0x27（6656×4480）。Merrill _SDI8040 为 3.0，带 PROP。x3fuse-core format.md 的版本表写'4.0 Quattro / 4.1 sd Quattro'，与 DP2Q 固件 1.05 实测为 4.1 不符，这一点也成立。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3f_test_files/_SDI8284.X3F（od 与 python 解析）",
+      "x3fuse-core docs/src/format.md:60-71, :130-142"
+     ]
+    },
+    {
+     "id": "web_x3f:F3",
+     "status": "confirmed",
+     "note": "规格部分：检索到 Sigma 规格页写有 'Lossless compression RAW data (14-bit), DNG (No compression RAW Data 12-bit), JPEG, RAW+JPEG'。x3fuse-core format.md 记载 TRUE 为三平面独立码流，Quattro 的 M/B 用 Catmull-Rom 做 2×2 扩展；CAMF 有 type 2/4/5，其中 type 5 用于 Quattro，CAMF 里存黑电平遮光区、白平衡、矩阵、空间增益和坏点表。Kalpanika changes.txt 的 x3f_050 写有 'CAMF type5 (i.e. Quattro) is now working'。约 8.5 bit/样本是推断：34,453,792 字节对应 T 5888×3672 加两个半分辨率平面，计算结果吻合。",
+     "evidence": [
+      "https://www.sigma-global.com/en/cameras/dp2-quattro/specification.html（WebSearch 摘要）",
+      "x3fuse-core docs/src/format.md:144-186",
+      "Kalpanika x3f doc/changes.txt（x3f_050 条目）"
+     ]
+    },
+    {
+     "id": "web_x3f:F4",
+     "status": "confirmed",
+     "note": "属实。PDF 标题为 'FOVb File Format Specification - External.doc'，作者 dicklyon，创建于 2004-06-09。版本历史最后一行是 1.2（23 May 2004）。文中写明 'Image encodings other than types 3, 11, and 18 have been removed from this public document'。",
+     "evidence": [
+      "pdfinfo .../scratchpad/ext/mewiki/w/docs/x3f-raw-format.pdf",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/out_spec.txt:1-11"
+     ]
+    },
+    {
+     "id": "web_x3f:F5",
+     "status": "confirmed",
+     "note": "SPP 6.9.0 的官方新闻日期为 2025-04-17。检索不到 6.9.1、7.0 或任何 2026 年版本。Sigma dp1 Quattro 支持页写明：固件 2.00 及以上拍的 X3F/X3I 需要 SPP 6.5.4 及以上（6.5.4 发布于 2017-08-04）。'SPP 不能导出 DNG'是没找到相反证据，并没有直接证实。",
+     "evidence": [
+      "https://www.sigma-global.com/en/news/2025/04/17/010931/（WebSearch 摘要）",
+      "https://www.sigma-global.com/en/support/firmware/dp1-quattro（WebSearch 摘要：6.5.4 or later）",
+      "https://press.sigmaphoto.com/corporate/08/sigma-photo-pro-6-5-4-software-download"
+     ]
+    },
+    {
+     "id": "web_x3f:F6",
+     "status": "corrected",
+     "note": "'Merrill 和 Quattro 从未被 Adobe 支持'成立。但'支持 SD9/SD10/SD14/SD15、DP1/DP1s/DP1x、DP2/DP2s/DP2x'说多了：LightCraft 仓库里解析的 Adobe 官方支持表（Wayback 2026-10-03 抓取）中，Sigma X3F 只有 SD9、SD10、SD14、DP1、DP1s、DP2 六款。SD15、DP1x、DP2s、DP2x 不在官方表里，只有论坛说法称 SD15 能用。Sigma Photoshop 插件页把这些旧机型的用户引向 ACR，但这不等于 Adobe 列表里有它们。2014 年 Adobe 员工那句 'no direct support planned' 我没能核实。",
+     "evidence": [
+      "docs/raw/adobe-cameras.tsv:1-3, :1231-1239",
+      "https://community.adobe.com/t5/lightroom-classic-discussions/sigma-dp2-x3f-dateien-lightroom/m-p/8965937（WebSearch 摘要）",
+      "docs/raw-parity.md:195"
+     ]
+    },
+    {
+     "id": "web_x3f:F7",
+     "status": "confirmed",
+     "note": "在 LibRaw a9a14b1（与 GitHub HEAD 一致）中逐条核对过。0.20（2020-07-23）的 Changelog 写有 'Foveon X3F support changed: it is supported only if USE_X3FTOOLS defined'，下面附 Imported code policy 原文，含 'the authors refuse to add code to reject unexpected input'。0.17（2015-08-15）加入 dp0–dp3 Quattro。许可为 LGPL 2.1 或 CDDL 1.0（2016-12-27 起）。2010 年 Foveon 被移入 demosaic pack GPL2。master 的 unpack_thumb.cpp、identify.cpp、cameralist.cpp 仍由 #ifdef USE_X3FTOOLS 控制，src/x3f/ 还在。",
+     "evidence": [
+      "LibRaw Changelog.txt:995-1006, :1090-1125, :1630, :1690, :1520-1524, :1856-1865, :2362-2372",
+      "LibRaw src/metadata/identify.cpp:705; src/tables/cameralist.cpp:1077",
+      "LibRaw doc/API-datastruct.html:1464-1466"
+     ]
+    },
+    {
+     "id": "web_x3f:F8",
+     "status": "confirmed",
+     "note": "我另外克隆了 darktable-org/dtdocs，supported-file-formats.md:19 原文为 'With the exception of Fujifilm X-Trans cameras, darktable does not decode images from cameras with non-Bayer sensors (e.g. Sigma cameras with the Foveon X3 sensor)'。RawTherapee 是 GPL-3。camconst.json 的 Sigma 条目只有 SD9、SD10、SD14、SD1、SD1 Merrill、DP1-3 Merrill、sd Quattro、fp，没有 dp Quattro。RELEASE_NOTES.txt:12 泛称支持 Foveon。pixls 论坛帖没能直接访问。",
+     "evidence": [
+      "https://github.com/darktable-org/dtdocs content/overview/supported-file-formats.md:19",
+      "RawTherapee rtengine/camconst.json:3023-3077",
+      "RawTherapee RELEASE_NOTES.txt:12; LICENSE:1-2"
+     ]
+    },
+    {
+     "id": "web_x3f:F9",
+     "status": "corrected",
+     "note": "Pro8 8.0.7.0（2017-06-13）加入 dp0–dp3 Quattro，有功能限制、不支持 X3I、不支持 32 位 Windows，这些都属实。Impress 当时也报道 LR、DxO OpticsPro、Capture One Pro 不能显影。但'产品已停止更新'只适用于 Pro8。SILKYPIX 产品线还在更新（检索到 Pro12 12.0.5.0、Pro11 11.0.18.0，日期 2025-11-11）。Pro9–Pro12 是否仍支持 dp Quattro X3F 没能核实，有第三方站点称仍支持。它是 Windows/macOS 的 GUI 候选，值得用户自己确认。",
+     "evidence": [
+      "https://www.silkypix.com/en/?p=384（WebSearch 摘要）",
+      "https://dc.watch.impress.co.jp/docs/news/1064957.html（WebSearch 摘要）",
+      "https://www.silkypix.com/en/?p=4083（Pro12 12.0.5.0，2025-11-11）",
+      "https://shige-art.net/en/?p=11924（未核实的第三方说法）"
+     ]
+    },
+    {
+     "id": "web_x3f:F10",
+     "status": "corrected",
+     "note": "主体属实：doc/copyright.txt 是三条款 BSD 风格许可（在白名单 BSD-3-Clause 内），作者 Roland Karlsson、Erik Karlsson、Mark Roden，2015。HEAD e8b48ca 的日期为 2017-06-23，是 sd Quattro H 黑区修复的合并，tag 0.57。0.54 写有 '4.x (Quattro) remains incomplete' 和 'Turn off spatial gain compensation for Quattro'。但'0.53 版提到偶发偏绿'在 doc/changes.txt 里找不到，0.53 条目只有 'Lots of work, mainly adding conversion to color'。527 commits、57 open issues 因 GitHub API 在本会话不可用，无法核实。",
+     "evidence": [
+      "Kalpanika x3f doc/copyright.txt:1-31",
+      "Kalpanika x3f doc/changes.txt:1-14",
+      "git ls-remote https://github.com/Kalpanika/x3f HEAD → e8b48cac0de9"
+     ]
+    },
+    {
+     "id": "web_x3f:F11",
+     "status": "confirmed",
+     "note": "属实。readme.txt 写着默认输出 DNG，内容是 'denoised but unconverted RAW data plus color conversion info'。-tiff 写的是 'out of gamut colors are not handled correctly…colorful skies'。另有 -unprocessed、-meta。install_opencv.sh 指向 erikrk/opencv，makefile 链接 opencv_photo/imgproc/core。补充一点：x3fuse-core 已在 2026-06-09 完全去掉 OpenCV。",
+     "evidence": [
+      "Kalpanika x3f doc/readme.txt:10-25, :58-77",
+      "Kalpanika x3f install_opencv.sh:27-28; src/makefile:55-69",
+      "x3fuse-core docs/src/port-plan.md:193（'OpenCV removed entirely, 2026-06-09'）"
+     ]
+    },
+    {
+     "id": "web_x3f:F12",
+     "status": "confirmed",
+     "note": "属实。LICENSE 为 Apache 2.0，NOTICE 保留了 Kalpanika 的 BSD 原文，workspace 版本 0.4.1，tag v0.4.1（2026-10-27，与 GitHub HEAD 00f9ef2 一致）。crates.io API 显示 x3f-core 最高版本 0.4.0，Apache-2.0，2026-10-25。README 写明：-dng 默认输出 LinearRaw，BlackLevel 0/WhiteLevel 65535，BaselineExposure 承载 ISO 提亮；-compress 用 lossless JPEG（Compression=7）；-denoise 默认 10；-denoiser nlm|bm3d；wgpu GPU 失败时退回 CPU；还有 -qtop、-dng-highlight-recovery、实验性 -color-mode（README 自称 DNG 实现 'not ready for release'）、X3I 合并。",
+     "evidence": [
+      "x3fuse-core README.md:1-21, :70-118, :222-232",
+      "x3fuse-core LICENSE:1-3; NOTICE:1-20; Cargo.toml:10-14",
+      "https://crates.io/api/v1/crates/x3f-core（curl 返回 0.4.0 Apache-2.0 2026-10-25）"
+     ]
+    },
+    {
+     "id": "web_x3f:F13",
+     "status": "confirmed",
+     "note": "属实。x3f-sys 的 build-dependencies 有 bindgen 0.71 和 cc 1.2，csrc/ 下有 x3f_printf.c 和 x3f_version.c。src 里含 'unsafe' 的行共 1702 行（这是行数统计，不是 unsafe 块数），#[no_mangle] 共 136 处，3 个文件用了 static mut。spp-alignment.md:3-8 写明参考的是 SPP 6.9.0.0 ARM64 引擎的 'decompiler records, original instructions, reconstructed kernels'。这与 LightCraft AGENTS.md:27（无 unsafe）、:28（clean room）、:91（unsafe 只允许在 sysmem/wincolor）、:115（不得复制 GPL/LGPL）、:116（Pure Rust，无 C/C++ 依赖）冲突。",
+     "evidence": [
+      "x3fuse-core crates/x3f-sys/Cargo.toml:42-44; crates/x3f-sys/csrc/",
+      "x3fuse-core docs/src/spp-alignment.md:1-8; docs/COLOR-MODES-PLAN.md:75-80",
+      "AGENTS.md:27, :28, :91, :115, :116"
+     ]
+    },
+    {
+     "id": "web_x3f:F14",
+     "status": "confirmed",
+     "note": "属实。port-plan.md:67（M5a）写的是 Catmull-Rom a=-0.75 模仿 OpenCV INTER_CUBIC 加 Yis4T BMT/YUV，'not bit-exact to the legacy OpenCV path'。pipeline.md:188 写高光恢复关闭时 'lime/yellow highlights'，:215 写 'lime bright detail and purple dark detail'，:219 写 Quattro 配置文件光源为 D65。PORT-PLAN.md:98 写有 'Quattro uses the BData/C8x_y tables in the Quattro DLL'。",
+     "evidence": [
+      "x3fuse-core docs/src/port-plan.md:67",
+      "x3fuse-core docs/src/pipeline.md:182-222",
+      "x3fuse-core docs/PORT-PLAN.md:98"
+     ]
+    },
+    {
+     "id": "web_x3f:F15",
+     "status": "confirmed",
+     "note": "属实。x3fuse 的 LICENSE 是 GPL v3，README 写明是 macOS 应用、捆绑 x3fuse-core 0.3.0，列出 DP0–DP3 Quattro、sd Quattro、sd Quattro H 为已测试。Merrill/Quattro 的 DNG 在 Lightroom、Photoshop、darktable、RawTherapee、RapidRAW、Pixelmator、Preview 中测试过。README 提醒 DNG 不可逆、要保留 X3F；想在目标编辑器降噪就把 Denoise 设为 Off；不支持 X3I。另外 README 给的样张数据显示 DNG 比原 X3F 大（SD14：12.2MB → 28.1MB，压缩后 17.6MB）。",
+     "evidence": [
+      "x3fuse LICENSE:1-2",
+      "x3fuse README.md:1-47, :100, :168-223"
+     ]
+    },
+    {
+     "id": "web_x3f:F16",
+     "status": "confirmed",
+     "note": "属实。rawloader 的 x3f.rs:149 返回 'X3F decoding not implemented yet'，许可 LGPL-2.1。rawler 的 x3f.rs:153、:161 是 todo!()，许可 LGPL-2.1。crates.io 上 x3f 0.0.5 是 MIT OR Apache-2.0（2026-02-05），README 写 'intentionally does not perform any image processing'、'pre-alpha'，参考的是 libopenraw 托管的规范。x3fdectools 是 GPL 这一点没有核实。",
+     "evidence": [
+      "rawloader src/decoders/x3f.rs:148-150; Cargo.toml:9",
+      "dnglab rawler/src/decoders/x3f.rs:153-161; rawler/Cargo.toml:8",
+      "x3fcrate/x3f-0.0.5/README.md:7, :12, :27-28; https://crates.io/api/v1/crates/x3f"
+     ]
+    },
+    {
+     "id": "web_x3f:F17",
+     "status": "confirmed",
+     "note": "主体属实（来自检索摘要）。固件 2.00 给 dp0–dp3 Quattro 加入 12-bit 无压缩 DNG 和 SFD（X3I）。手册写明 DNG 不能和 JPEG 同时记录，DNG 不能调白平衡和色彩模式细节。2.00 约在 2017-04-26 发布后因背部按键失灵暂停，2.01 于 2017-04-28 发布。DP2Q 的 DNG 具体尺寸、2.02 的修复内容、PhotometricInterpretation 都没能核实，原报告也已注明。",
+     "evidence": [
+      "https://dc.watch.impress.co.jp/docs/news/1057074.html（WebSearch 摘要）",
+      "https://www.sigma-global.com/en/support/firmware/dp2-quattro/（WebSearch 摘要）",
+      "https://drivers.softpedia.com/blog/sigma-dp-quattro-users-should-update-their-firmware-get-version-2-01-515261.shtml"
+     ]
+    },
+    {
+     "id": "web_x3f:F18",
+     "status": "confirmed",
+     "note": "x3f_test_files 的 README 原文写 _SDI8284 '(Copyright Mark Roden)'，以及 'not published into the public domain for any commercial purposes'。rawspeed 文档写 raw.pixls.us 新样本为 CC0，旧样本有 CC BY-NC-SA 4.0。检索也没找到 raw.pixls.us 上 CC0 的 dp2 Quattro 样张。Imaging Resource 的样张标明版权归该站、all rights reserved。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ext/x3f_test_files/README.md",
+      "rawspeed docs/ReferenceSampleArchive.rst:31-37",
+      "https://old.imaging-resource.com/PRODS/sigma-dp2-quattro/DP2QINBI0400.X3F.HTM（WebSearch 摘要）"
+     ]
+    },
+    {
+     "id": "web_x3f:F19",
+     "status": "confirmed",
+     "note": "代码层面全部属实。lib.rs:124-125 定义 X3f，:182-183 用 FOVb 识别；is_supported（:142-156）里没有 X3f；tests.rs:264、:267 断言不支持并返回 Unsupported；preview.rs:289-290 对 X3f 调 scan_for_jpeg；files.rs:20 的导入扩展名含 x3f；load.rs:196 是 BaselineExposure 增益；color.rs:159 是 ForwardMatrix；profile.rs:432 是 HueSatMap。补充：preview-only 照片的编辑作用在内嵌 JPEG 上（media/source.rs:396-398）。重要限制：LinearRaw DNG 虽然能解码，但 AI Denoise 不对它运行，见 missed。",
+     "evidence": [
+      "crates/raw/src/lib.rs:124-125, :142-156, :182-183",
+      "crates/raw/src/tests.rs:257-267",
+      "crates/raw/src/preview.rs:289-290",
+      "crates/engine/src/import/files.rs:15-21",
+      "crates/engine/src/files/load.rs:190-196; crates/raw/src/color.rs:155-161; crates/raw/src/profile.rs:428-436",
+      "crates/engine/src/media/source.rs:396-398"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F1",
+     "status": "confirmed",
+     "note": "代码属实。lib.rs:136 的 OtherTiff 注释含 IIQ；:247-248 thumbnail_shell、is_preview_container 等判为 OtherTiff；:365-370 给出原因字符串；:435 对 OtherTiff 返回 Unsupported。files/tests.rs:1557-1561 用 IMG_0001.IIQ 测 preview_only，tests/import.rs:2420-2460 测 iiq 导入为 preview only。coverage.tsv:1055-1080 中 Phase One 的 IIQ 机型为 preview，TIF 机型为 unsupported；Leaf Credo IIQ（:584-587）也是 preview。issue #859 因 GitHub API 无权限、检索也找不到，无法核实。",
+     "evidence": [
+      "crates/raw/src/lib.rs:136, :247-248, :353-371, :435",
+      "crates/engine/src/files/tests.rs:1554-1570",
+      "crates/engine/src/tests/import.rs:2420-2460",
+      "docs/raw/coverage.tsv:584-587, :1053-1080"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F2",
+     "status": "confirmed",
+     "note": "ExifTool PhaseOne.pm:68-82 原文：0 Uncompressed，1 'RAW 1' 和 2 'RAW 2' 两者都注释 '#? (encrypted)'（不只 RAW 2），3 'IIQ L'（now L14），5 'IIQ S'，6 'IIQ Sv2'（S14 = IIQ 14 Smart 和 Sensor+），8 'IIQ L16'（16 Extended 和 16 Large）。PRONOM fmt/1061 写有 'Large'（lossless）和 'Small'（lossy）。",
+     "evidence": [
+      "exiftool lib/Image/ExifTool/PhaseOne.pm:68-82",
+      "https://www.nationalarchives.gov.uk/PRONOM/fmt/1061（WebSearch 摘要）"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F3",
+     "status": "confirmed",
+     "note": "Adobe 表中 P20/P21/P25/P30/P45 系列和 H20/H25 的扩展名是 TIF；P40+、P65+ 和 IQ 系列是 IIQ。检索确认 IQ4 150MP 的 5 档为 IIQ 16 Extended / 16 Large / 14 Large / 14 Smart（near lossless）/ 14 Sensor+（1/4 分辨率，37.7MP）；Phase One 规格表称作 'IIQ L 16 Extended, IIQ L 16, IIQ L, IIQ S, IIQ S 14+'。7100×5324 这个尺寸没有核实。",
+     "evidence": [
+      "docs/raw/adobe-cameras.tsv:1055-1082",
+      "https://www.captureintegration.com/?p=8011（WebSearch 摘要）",
+      "https://servix.marcando.be/mediastorage/servix/FSDocument/A0/1403/xf_iq4_technical_specs.pdf（WebSearch 摘要）"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F4",
+     "status": "confirmed",
+     "note": "属实。ExifTool PhaseOne.pm 里有 SensorDefects（:285）、AllColorFlatField1/2/3（:293/:333/:358）、RedBlueFlatField（:323）、LinearizationCoefficients1/2（:368/:373）、BlackLevel 0x021d、BlackLevelData 0x223。LibRaw Changelog:365-367 写 use_p1_correction 默认开，针对 'PhaseOne compressed files'，做线性化和坏点映射；:448-450 是 05.no-phase-one-correction.patch。RawTherapee camconst:3432-3436 的注释说 dcraw 解码器会按 IIQ 元数据做校正，且矩阵借自 Adobe DNG Converter。CCD 分块（tiling）一说来自论坛，没有直接核实。",
+     "evidence": [
+      "exiftool lib/Image/ExifTool/PhaseOne.pm:94-95, :145-150, :285-373",
+      "LibRaw Changelog.txt:229-231, :365-367, :448-450, :767",
+      "RawTherapee rtengine/camconst.json:3432-3436"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F5",
+     "status": "confirmed",
+     "note": "检索确认：LCC 由加漫射板的参考拍摄在 Capture One 中生成，再套用到照片上；Capture One 支持文章说校准文件 'unique to each sensor'，只能用于同一台相机。原文没有直接写'序列号'，但意思等同。LCC 不在 IIQ 内，外部解码器拿不到。",
+     "evidence": [
+      "https://support.captureone.com/hc/en-us/articles/360002404757-How-do-I-calibrate-a-lens-if-I-am-experiencing-problems-with-lens-cast（WebSearch 摘要）",
+      "https://www.captureintegration.com/?p=33322（WebSearch 摘要）"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F6",
+     "status": "confirmed",
+     "note": "表格部分在仓库内核实：IQ3 100MP Trichromatic 为 ACR 10.4，IQ4 150MP 为 12.2，IQ4 150MP Achromatic 为 13.2，后两者标 '** see note'；表中没有 IQ4 100MP Trichromatic。脚注 'S14 and S14+ raw compression modes are unsupported' 经检索确认出自 Adobe 支持页和 DNG Converter 13.2 发布说明（随 IQ4 150MP Achromatic 首次出现）。对照 ExifTool，S14/S14+ 就是 Smart 和 Sensor+，因此用户如果用 IQ4 默认的 S14 档，Adobe 路线走不通。Leaf 压缩文件不支持一说没有核实。",
+     "evidence": [
+      "docs/raw/adobe-cameras.tsv:1-3, :1066-1068",
+      "https://helpx.adobe.com/camera-raw/kb/camera-raw-plug-supported-cameras.html（WebSearch 摘要）",
+      "https://www.lightroomqueen.com/whats-new-in-lightroom-classic-10-2/（WebSearch 摘要）"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F7",
+     "status": "confirmed",
+     "note": "属实。COPYRIGHT 为 LGPL 2.1 或 CDDL 1.0；0.20 发布于 2020-07-23；0.21 发布于 2022-07-01，含 'Phase One/Leaf IIQ-S v2 support'；0.22 发布于 2025-12-25，含 use_p1_correction；cameralist.cpp 的 Phase One 条目到 IQ4 150MP 为止，含 IQ180 IR、IQ260 Achromatic，没有 IQ4 100MP Trichromatic；snapshot 202611（2026-11-04）加入 Ricoh GR IV。",
+     "evidence": [
+      "LibRaw COPYRIGHT:1-13",
+      "LibRaw Changelog.txt:1-28, :229-231, :511-516, :995-997",
+      "LibRaw src/tables/cameralist.cpp:1040-1105"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F8",
+     "status": "confirmed",
+     "note": "逐条解析 cameras.xml 后属实。P20+、P25+、P30、P40+、P45（P45+ 为别名）、P65+、IQ140、IQ150、IQ180 为支持；IQ250 为 no-samples；P20、P21、P21+、P30+、IQ160、IQ260、IQ280、IQ3 50/60/80MP 为 unknown-no-samples；H 25、P25、IQ3 100MP、IQ3 100MP Trichr、IQ4 150MP 为 supported=\"no\"。dtdocs 写明 rawspeed 失败时回退 LibRaw。",
+     "evidence": [
+      "rawspeed data/cameras.xml:17503-17729（P45+ 别名在 :17604）",
+      "rawspeed LICENSE:1-2",
+      "dtdocs content/overview/supported-file-formats.md（RawSpeed→LibRaw fallback）"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F9",
+     "status": "confirmed",
+     "note": "属实。RawTherapee 为 GPL-3，camconst 的 Phase One 条目只到 IQ3 100MP（:3482），没有 IQ4。dnglab 为 LGPL-2.1，README 列有 Phase One IIQ 和 Leaf IIQ/MOS；SUPPORTED_CAMERAS.md:692-709 列有 IQ4 150MP、iXM-100、iXM-RS150F、iXU 等，值得注意的是还把 IQ3 100MP 和 IQ3 100MP Trichr 标为 Yes，而 rawspeed 对这两款标 no。rawloader 为 LGPL-2.1，README 列有 Leaf IIQ。",
+     "evidence": [
+      "RawTherapee LICENSE:1-2; rtengine/camconst.json:3432-3485",
+      "dnglab LICENSE:1-2; README.md:78-92; SUPPORTED_CAMERAS.md:692-709",
+      "rawloader LICENSE:1; README.md:30-36"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F10",
+     "status": "corrected",
+     "note": "Apple 部分需要修正。二手报道称 Apple 在 2026 年 9 月随 iOS/macOS 27 加入的 Phase One 机型是 IQ150、IQ160、IQ260、IQ3 100MP Trichromatic、iXG 100MP、iXH 150MP。'IQ1 100MP'在检索中没有出现，无法证实。Capture One 支持全部 IIQ 变体、diglloyd 的 IQ4 在 ACR 下 color bleed 报告，都只来自检索摘要，没有直接核对。",
+     "evidence": [
+      "https://www.macg.co/macos/2026/09/apple-ajoute-onze-nouveaux-vieux-appareils-dans-sa-prise-en-charge-des-raw-en-photo-avec-macos-27-et-ios-27-311203（WebSearch 摘要）",
+      "https://www.diglloyd.com/blog/2022/20220208_1208-PhaseOneIQ-ColorBleed-ACR-CaptureOnePro.html（WebSearch 摘要）"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F11",
+     "status": "confirmed",
+     "note": "属实。rawspeed 文档写 raw.pixls.us 新样本为 CC0（85% 以上），旧样本为 CC BY-NC-SA 4.0。ExifTool 的 git ls-tree 显示 t/images/PhaseOne.iiq 为 3364 字节，README 写许可为 'Perl Artistic License or GPL'。raw.pixls.us 主动征集 IIQ 一点无法直接访问核实。",
+     "evidence": [
+      "rawspeed docs/ReferenceSampleArchive.rst:31-40",
+      "exiftool git ls-tree HEAD t/images/PhaseOne.iiq → 3364; README:171-176"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F12",
+     "status": "confirmed",
+     "note": "属实。AGENTS.md:28 要求 clean room，:115 点名禁止复制 LibRaw、rawspeed、rawloader、rawler、dcraw 派生代码和 Adobe 相机矩阵。docs/orf-compression.md:1-3 写压缩 ORF 因出处未解决而撤回。raw-parity.md:282 写 7 种长尾格式合计 +0.6、45–85 小时；:122 写中画幅及其他格式权重 0.5%。",
+     "evidence": [
+      "AGENTS.md:28, :115",
+      "docs/orf-compression.md:1-5",
+      "docs/raw-parity.md:122, :282",
+      "docs/gaps.md:37"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F13",
+     "status": "corrected",
+     "note": "'GR 系列全部输出 DNG'属实。日期需要修正：GR IV 于 2025-05-22 宣布开发，2025-08-20 正式发布，9 月中旬出货，14-bit DNG。GR IV Monochrome 是 2026-01-15 正式发布，2026-02-13 才开售，不是'2026-01-15 上市'。GR IV HDF 按 PetaPixel（2025-12-16）的说法于 2026 年 1 月下旬上市。另外：Adobe 表（Wayback 2026-10）只列 GR IV（ACR 17.5）和 GR IV Monochrome（18.2），没有 GR IV HDF；LibRaw 202611 也只列 GR IV。rawspeed 把 GR IV HDF 作为 GR IV 的别名处理（cameras.xml:18600），这一点属实。",
+     "evidence": [
+      "docs/raw/adobe-cameras.tsv:1083-1101",
+      "LibRaw src/tables/cameralist.cpp（Ricoh 条目）",
+      "rawspeed data/cameras.xml:18588-18600",
+      "https://dc.watch.impress.co.jp/docs/news/2077836.html（WebSearch 摘要：1/15 发布、2/13 发售）",
+      "https://petapixel.com/2025/12/16/ricohs-nostalgia-fueled-gr-iv-hdf-arrives-soon-and-adds-a-new-electronic-shutter",
+      "https://old.imaging-resource.com/news/2025/08/20/ricoh-announces-the-highly-anticipated-gr-iv-and-new-compact-gf-2-flash"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F14",
+     "status": "confirmed",
+     "note": "检索确认 GR II 为 12-bit、GR III 起为 14-bit。GR III 裁切模式会保留全幅数据，只用 DefaultCrop 元数据声明裁切：pixls 用户报告和 ART issue #270（ART 不套用 DefaultCrop）都支持这一点。LightCraft dng.rs:340 读取 DefaultCropOrigin/Size。压缩方式的矛盾和镜头校正 opcode 仍未定论，原报告已如实标注。",
+     "evidence": [
+      "crates/raw/src/dng.rs:335-345",
+      "https://www.photographyblog.com/reviews/ricoh_gr_iii_review（WebSearch 摘要）",
+      "https://discuss.pixls.us/t/dng-recover-edges/21699（WebSearch 摘要）"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F15",
+     "status": "confirmed",
+     "note": "属实。coverage.tsv 中 GR、GR II、GR IIIx 为 verified（body_corpus），GR III 为 verified（corpus.rs，xtask RAW_SAMPLES），GX200 为 verified（仅钉哈希）；GR III/IIIx HDF、GR IV、GR IV Monochrome、GR Digital I–IV、GX100、各 GXR 单元为 unverified。canon_pentax_corpus.rs 钉住了 gr、gr-ii、gr-iiix、gx200、gxr 的哈希，并注明 GX200 无内嵌 JPEG、GXR 预览方向不同。raw-parity.md:119 写 Pentax/Ricoh 为 1.5% 权重、99% 能用、80% 在已验证机身上。",
+     "evidence": [
+      "docs/raw/coverage.tsv:1081-1099",
+      "crates/raw/tests/it/canon_pentax_corpus.rs:1-10, :143-150",
+      "xtask/src/raw_samples.rs:617-621, :1910-1914",
+      "docs/raw-parity.md:119, :196"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F16",
+     "status": "confirmed",
+     "note": "代码部分属实：raw-parity.md:163 写 PEF 支持未压缩、Huffman、packed 12-bit，缺 area 标签时边缘行列被裁掉（#1271），:164 写 Pentax pixel shift ⬜ 'frames not combined'。我 grep 整个 crates 目录，没有 pixel shift 处理代码（只有 raster 测试里一个同名的无关函数）。RawTherapee RELEASE_NOTES:12 写支持 Pentax Pixel Shift。手册和 ACR 9.5.1 相关说法来自检索摘要。",
+     "evidence": [
+      "docs/raw-parity.md:163-164",
+      "grep -rn -i 'pixel.shift' crates --include=*.rs → 仅 crates/raster/src/sample.rs:116（无关测试）",
+      "RawTherapee RELEASE_NOTES.txt:12"
+     ]
+    },
+    {
+     "id": "web_iiq_ricoh:F17",
+     "status": "confirmed",
+     "note": "核心事实属实：Adobe DNG Converter 免费但专有，只有 Windows（含 arm64 安装包）和 macOS 版，没有 Linux 版，有命令行模式。具体最低系统版本（Win10 22H2+、macOS 13+）没能从 Adobe 官方页核实（helpx 无法访问）。转出的 CFA DNG 会走 LightCraft 的 DNG 解码路径（raw-parity.md:167），也能用 AI Denoise（Bayer）。IQ4 Achromatic 转出的是无 CFA 的 DNG，不能用 AI Denoise。",
+     "evidence": [
+      "https://www.wingetgui.com/apps/Adobe-DNGConverter（WebSearch 摘要：x64/arm64）",
+      "docs/raw-parity.md:167",
+      "crates/engine/src/denoise/products.rs:181-189"
+     ]
+    }
+   ],
+   "missed": [
+    "AI Denoise 只对 Bayer raw 起作用，这会改变 X3F 外部转换路线的降噪建议。代码 crates/engine/src/denoise/products.rs:181-183 明确拒绝 cpp!=1 或非 Bayer CFA 的文件（原文 'only Bayer raw files can be denoised (this one has another sensor layout or is already demosaiced)'），docs/denoise.md:299-300 写 'Bayer RAW only. X-Trans, Foveon, demosaiced DNG and non-RAW images remain unsupported'。所以 x3fuse-core 输出的 LinearRaw DNG（3 通道）在 LightCraft 里只能用手动亮度/色彩降噪（docs/parity-checklist.md:209-210，LR-EDIT-DETAIL-NR/CNR），用不上内置 BM3D AI Denoise。web_x3f 方案 A 建议的“-denoise 0，把降噪留给 LightCraft”因此会丢掉 BM3D 级别的降噪；可以考虑在转换时用 x3fuse 的 -denoiser bm3d 加适中强度，或者接受 LightCraft 的手动降噪。同样拿不到 AI Denoise 的还有：preview-only 的 X3F/IIQ（内嵌 JPEG），以及无 CFA 的 GR IV Monochrome、K-3 Mark III Monochrome、IQ4 Achromatic DNG。能用 AI Denoise 的是 Ricoh 彩色 DNG/PEF 和 IIQ 经 Adobe DNG Converter 转出的 CFA DNG。桌面版默认带 denoise feature（apps/lightcraft/Cargo.toml:13 default = [\"denoise\"]），web 版没有。",
+    "内置降噪器不需要下载模型即可使用，各处文档状态不一致：代码 crates/denoise-core/src/builtin.rs:1 写明 'what AI Denoise runs when no model has been installed, so it works out of the box'，docs/denoise.md:9-20 也是这么写的（BM3D，可用 GPU）。但用户给的 README.zh-hans.md:325 仍写“AI 降噪 ⬜”，README.md:374 写的是“🚧 Bayer, user-installed weights”，两处都已过时，以代码为准。另外 AI Denoise 还支持用户自装 ONNX 模型（docs/denoise.md:133-145，Install from file… 加 denoise-model.json），这是 LightCraft 唯一类似插件的扩展点，但同样只支持 Bayer。",
+    "LightCraft 没有插件或可加载模块机制。docs/gaps.md:36 列为缺口 19：'Plug-in ecosystem: no Lightroom SDK equivalent'，估计 40–80 小时，并需要 owner decision。我 grep crates 里的 plugin，只在 crates/film 命中；Cargo.lock 里的 libloading 是图形依赖带进来的传递依赖，不是插件加载器。所以“主程序照常更新、额外格式通过模块载入”在 LightCraft 里做不到：要么把解码器做进上游 crates/raw（同时满足 AGENTS.md:27/28/115/116 的纯 Rust、无 unsafe、clean-room 要求），要么在外部预处理后，通过现有的 CLI、JSON-lines 控制通道（lightcraft --control 7980）或 MCP 服务器（docs/mcp.md:1-20，lightcraft-cli mcp 可无界面或 --connect 运行中的应用）导入。外部预处理是唯一不需要分叉、又能跟随上游更新的路线。",
+    "RAW+JPEG 合并显示：LightCraft 不会自动把同名 RAW 和 JPEG 配成一个条目，导入后是两张独立照片。可用的机制有：(a) 手动堆叠 stack.group，或按拍摄时间自动堆叠 stack.auto（crates/catalog/src/stacks.rs:205-208 auto_stack_groups；docs/parity-checklist.md:109 LR-LIB-STACK，网格和胶片窗格显示计数徽章，可折叠）。注意自动堆叠按时间间隔分组，不按文件名，连拍会被并进同一组。(b) 导入对话框可以按文件类型整体勾选或取消，例如只导入 raw、不导入旁边的 JPEG（docs/parity-checklist.md:72，issue #344）。(c) XMP 方面，同名 raw+JPEG 各有各的 sidecar（docs/parity-checklist.md:172，issue #1905；crates/engine/src/sidecar.rs:44-52）。对于 preview-only 的 X3F/IIQ，raw 条目本身显示的就是内嵌相机 JPEG。",
+    "preview-only 的 raw（X3F、IIQ）可以“编辑”，但编辑对象是内嵌 JPEG，不是传感器数据：crates/engine/src/media/source.rs:396-398 写 'described (and will be shown and edited) from its embedded preview'，docs/orf-compression.md:5 写 'Preview-only editing and export operate on that rendered preview, not the raw sensor data'。DP2Q 的 X3F 内嵌全尺寸 5424×3616 JPEG，所以可以编辑这张 8-bit 相机 JPEG，但做不到真正的 raw 编辑。",
+    "外部编辑器往返已有现成入口：Photo ▸ Edit In ▸ “Open Original in Other Editor (RAW, no copy)” 会把原始文件（例如 X3F）直接交给在 设置 ▸ 常规 ▸ 外部编辑 里配置的程序，例如 SPP 或 Capture One（docs/parity-checklist.md:412，LR-EXP-PSD；cmd:photo.openOriginalInExternal；crates/engine/src/cmd/convert.rs）。外部程序导出的 TIFF 不会自动回到图库，需要重新导入再手动堆叠。",
+    "x3fuse-core 已在 2026-06-09 完全去掉 OpenCV 依赖，现在唯一的降噪器是纯 Rust NLM，另有 BM3D（docs/src/port-plan.md:193）。构建只需要 Rust 1.88、C 编译器和 libclang（README.md:9）。这降低了方案 A 在 Linux 上的构建门槛，但 x3f-sys 里仍有大量 unsafe 和 C shim，只能作为外部进程使用。",
+    "dnglab 的 SUPPORTED_CAMERAS.md:699-700 把 IQ3 100MP 和 IQ3 100MP Trichromatic 列为 Yes（模式 'all'），而 rawspeed 对这两款标 supported=\"no\"（cameras.xml）。如果用户的后背是 IQ3 100MP，dnglab convert（方案 2b，仅限用户私有使用，LGPL）可能比 rawspeed/darktable 更可行，但需要实测。",
+    "Adobe 路线对 IQ4 有硬限制：S14 和 S14+（即 IIQ 14 Smart 和 Sensor+）不受支持，而 S14 是 IQ4 的出厂默认档（captureintegration 摘要：'The default on the back is actually S14'）。如果用户按默认设置拍摄，Adobe DNG Converter 方案大概率失败，需要改拍 IIQ L/L16，或改走 Capture One / dnglab。",
+    "本会话的 WebFetch 对 sigma-global.com、docs.darktable.org 等站点都被网络策略拦截（getaddrinfo ENOTFOUND），对 storytold/lightcraft 和 Kalpanika/x3f 的 GitHub API 调用也返回 403（会话未启用该仓库）。所以 issue #859、Kalpanika 的 issue/commit 数量、Adobe 和 Sigma 页面原文只能依据检索摘要；如需逐字核实，需要放行 www.sigma-global.com、helpx.adobe.com、docs.darktable.org、raw.pixls.us。"
+   ]
+  }
+ }
+}

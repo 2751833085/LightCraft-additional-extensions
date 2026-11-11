@@ -1,0 +1,2247 @@
+{
+ "research": {
+  "separate_app": {
+   "summary": "结论：在用户自己的仓库里另做一个独立桌面程序，复用 LightCraft 的 engine 和大部分 crates/ui-egui，只换一套 LrC 式布局，技术上可行，但不改上游代码就做不到。必须给 ui-egui 打一个约 100–250 行的小“布局接缝”补丁，并尽量提交上游。原因是 lightcraft_ui_egui 虽然把 LightcraftApp、几乎所有 panels 模块和各面板的 show(app, ui) 都设成了 pub，但每帧的入口 LightcraftApp::ui() 固定调用私有的 draw_window。这套布局（topbar、strip、CentralPanel 里的 docking::show）写死在 app/frame.rs:473-478。输入、模态屏障、帧尾记账等函数都是 pub(super)/pub(crate)，外部 crate 既替换不了布局，也复刻不了这些步骤。另外，胶片条、直方图、历史/版本、左栏各分节都在私有子模块里，而 LrC 布局恰好要用到它们。独立程序还要复制 apps/lightcraft 约 3.8k 行非测试代码（窗口渲染器回退、服务注入、偏好、日志、macOS 原生菜单、控制服务器等），并在自己的根 Cargo.toml 里照抄上游的 [patch.crates-io]（egui/winit fork 固定到具体 commit）。这是必须的：ui-egui 调用了只有 fork 才有的 Context::set_language，而 dependency 的 patch 不会传给下游。我做的解析实验证实：不加 patch 时 egui 解析成 crates.io 上的原版 0.37.0；加上后才是 fork。上游改动非常频繁：过去 30 天 main 合入 222 次，ui-egui 有 825 个非合并提交，src 改了 +94k/−26k 行；发版大约每 2 天一个 tag；catalog 格式从 v6 升到 v12。如果用户同时在同一个图库上用官方 LightCraft，独立程序必须紧跟上游，否则会被更新格式的图库拒绝打开（不会损坏数据）。两个程序不能同时打开同一图库（catalog.lock 是 OS 文件锁）。ui.json 应分开存放；预设（在图库的 presets.json 里）和已下载的模型（在 config 目录）可以直接共用。更新通道也要靠补丁：ui-egui 把 craft-update 写死为 storytold/lightcraft。不改的话，独立程序里的“检查更新”会把它更新成官方版。用进程外 UI 通过控制协议或 MCP 驱动无头引擎，不适合做主界面：出图走同步整图渲染、写临时 PNG 再 base64（1600px 一帧约 4–8MB），而本地 UI 是 GPU 纹理零拷贝。综合下来，推荐两步走。第一步零代码：用现有停靠系统把 Presets 挪到左栏，先拿到约六成 LrC 观感。第二步走方案 C：独立程序加接缝补丁，同时向上游提 PR（呼应 issue #1217）。初始约 5–8 人周，之后按周跟进，每次 0.5–1.5 人日。",
+   "claims": [
+    {
+     "id": "C1",
+     "claim": "ui-egui 根模块把绝大多数子模块设为 pub（brush_live、control、dialogs、docking、headless、i18n、icons、menus、panels、render、shortcuts、sidebar、startup、state、tasks、theme、widgets、window_place 等），私有的有 command_error、drop_overlay、find_similar、focus_scan、frame_rate、missing_sweep、app、auto_settings、caches、clock、services。pub 重导出包括 CommandError、ControlRequest/Response、dialogs::{credits,import,merge,print_view,slideshow_export,updates_ui,lightroom_destination}、menus::{menu_level,menubar}、UiState、widgets::{album_picker,button,date_picker,progress,rating,text_field}、FilterValues/LibraryCounts/RulesView、monotonic_ms/now_ms、Services 及各类 *Fn 回调类型，另有 pub const UPDATE_APP / SCREEN_PROFILE，以及 pub struct Perf / QuitPrompt / LightcraftApp / HoverPreview / Caches。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:12-16 (pub const UPDATE_APP)",
+      "crates/ui-egui/src/lib.rs:18-55 (pub mod 列表；20,25,27-29,38 为私有 mod)",
+      "crates/ui-egui/src/lib.rs:71-107 (pub use 重导出)",
+      "crates/ui-egui/src/lib.rs:90-94 (mod app; mod auto_settings; mod caches; mod clock; mod services 私有)",
+      "crates/ui-egui/src/lib.rs:112,115,133,149,558,604"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C2",
+     "claim": "LightcraftApp 是 pub struct，大部分字段是 pub（session、ui、services、renderer、caches、canvas_rect、image_rect、hover_preview、library_problem 等），公开方法有 new(session, services)、run/run_typed、logic、ui、raw_input_hook、shutdown、set_startup_update_check。外部 crate 可以构造并驱动它（官方桌面程序就是这么做的）。但字段 control_rx、pending_screenshots、fonts_ready、next_widgets 是私有的，updates_rt、notice_input 是 pub(crate)。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:149-199,270,273-274,285,362,392",
+      "crates/ui-egui/src/lib.rs:177,181 (pub(crate) updates_rt / notice_input)",
+      "crates/ui-egui/src/app.rs:26,199,205,613,627,673",
+      "crates/ui-egui/src/app/input.rs:128 (pub fn raw_input_hook)",
+      "crates/ui-egui/src/dialogs/updates_ui.rs:52 (pub fn set_startup_update_check)",
+      "apps/lightcraft/src/main.rs:148-184 (eframe::App 只调用 self.0.logic / raw_input_hook / ui)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C3",
+     "claim": "不 fork 就换不了布局：pub fn ui() 固定执行 sync_theme → ui_pass（pub(super)：快捷键、拖放导入、外部编辑器回传、模态屏障）→ draw_window（pub(super)）→ finish_ui_pass（pub(crate)）。整窗布局写死在 draw_window 的第 473-478 行（topbar::show → library_problem::banner → strip::show → CentralPanel{docking::show}）。外部 crate 若自己重写 draw_window，用不到 library_problem::{begin_draw,prepare_ui_pass,shield_pass}、notices::{restore_prompt_pointer,hide_background_pointer}、dialogs::prepare、end_frame、next_widgets 这些 pub(crate)/私有项，也就调用不了 ui_pass，会丢掉快捷键、拖放、模态屏障和控制协议用到的 widget 注册表。",
+     "evidence": [
+      "crates/ui-egui/src/app.rs:673-684",
+      "crates/ui-egui/src/app/frame.rs:252 (pub(super) fn ui_pass), :287-297 (shortcuts::handle、import_dropped_files)",
+      "crates/ui-egui/src/app/frame.rs:369 (pub(crate) finish_ui_pass), :397 (pub(super) draw_window), :471-478 (固定布局)",
+      "crates/ui-egui/src/panels/library_problem.rs:180,232,242,250 (pub(crate))",
+      "crates/ui-egui/src/panels/notices.rs:371,379 (pub(crate))",
+      "crates/ui-egui/src/dialogs.rs:214 (pub(crate) fn prepare)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C4",
+     "claim": "面板以整块为粒度对外可调用：panels.rs 里 30 个子模块全是 pub，各面板入口均为 pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui)，包括 topbar、strip（右侧工具条）、bottombar、left、right（按 app.ui.right 分派 Edit/Info/Keywords/Versions…）、edit（全部调整分节）、presets、grid、detail、filterbar、compare::show_compare/show_survey/show_reference、people、slideshow；也有 docking::show 和 dialogs::show。所以外部 crate 能调用 panels::...::show(app, ui)。",
+     "evidence": [
+      "crates/ui-egui/src/panels.rs:3-32",
+      "crates/ui-egui/src/panels/topbar.rs:22; strip.rs:17; bottombar.rs:22; left.rs:44; right.rs:31; edit.rs:39; presets.rs:87; grid.rs:53; detail.rs:134; filterbar.rs:96; compare.rs:528,567,632; people.rs:59; slideshow.rs:291",
+      "crates/ui-egui/src/docking.rs:346; crates/ui-egui/src/dialogs.rs:230"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C5",
+     "claim": "LrC 布局需要的几块细粒度组件是私有的：胶片条（detail.rs 的私有 mod filmstrip，函数 pub(crate)，且只在 Detail 视图里画），直方图（edit 的私有 mod histogram，pub(crate)），历史/版本/活动、Info、Keywords、Crop（right.rs 的私有 mod），左栏 albums/folders/dates/keywords 分节（left.rs 私有 mod）。要做全局底部胶片条、左栏 History/Snapshots、独立直方图，都得改上游可见性。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail.rs:18 (mod filmstrip;)",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:58 (pub(crate) fn filmstrip)",
+      "crates/ui-egui/src/panels/edit.rs:23; crates/ui-egui/src/panels/edit/histogram.rs:51",
+      "crates/ui-egui/src/panels/right.rs:14-17,19 (mod crop/history/info/keywords; use history::{activity, versions})",
+      "crates/ui-egui/src/panels/left.rs:14-20"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C6",
+     "claim": "现有停靠系统只有 4 个固定面板（Canvas、Library、Tools、Presets），Library 默认在左（Start），其余在右（End）。保存到 UiState.docking，类型是 craft_ui::docking::Workspace<ui_egui::docking::Panel>，DOCKING_VERSION=1。校验只要求照片区单独成组，其它面板可以自由移动、拆分、浮动、关闭，所以 Presets 能挪到左侧 dock，与 Library 并列或叠放。这个重排可以拖拽完成，也可以用 ui.dock 命令完成，并随 ui.json 保存。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:14-19,40-42,58,85,94-106,136-158",
+      "crates/ui-egui/src/state.rs:30-33",
+      "docs/control-protocol.md:404-421"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C7",
+     "claim": "craft-ui 的 docking 是对面板类型泛型的（Workspace<P>），支持 Split（Horizontal/Vertical）、Tabs、Stack（手风琴）、Dock（只有 Side::Start/End 两侧）。独立程序可以定义自己的 Panel 枚举（如 Navigator、History、Filmstrip），直接用 craft_ui::docking 搭 LrC 式布局，底部胶片条用纵向 Split 实现；但胶片条本身的绘制函数在上游是私有的（见 C5）。craft-libs main HEAD 正是固定的 rev c5a1cbf（2026-10-31）。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs/crates/ui/src/docking/model.rs:28-50",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs/crates/ui/src/docking/dock_model.rs:23-26",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs/crates/ui/src/layout/geometry.rs:6-11",
+      "Cargo.toml:13 (craft-ui rev c5a1cbfb…)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C8",
+     "claim": "apps/lightcraft 是纯 bin crate（没有 lib），别人无法当依赖用，只能复制。它共 6035 行，其中测试 tests.rs 661 行、logging/tests.rs 367 行，加上各文件里的 cfg(test) 部分，非测试代码约 3.8k 行。主要文件：main.rs 494（参数解析、eframe 启动、GPU 崩溃/丢设备恢复、WindowTextures 零拷贝显示）、window_gpu.rs ~290（渲染器探测和回退链）、session.rs 313（Services：文件对话框线程、打开 URL、显示文件位置、PNG 编码、写文件等）、editors.rs ~278（用外部编辑器打开）、native_menu.rs ~653（只用于 macOS 原生菜单）、control_server.rs ~288（TCP JSON-lines 传输）、prefs.rs 250（ui.json 读写）、logging ~356、appearance ~150、hdr_display ~130、launch ~158、dialog_filter ~64、colord/profile_file/screen_profile/win_screen_profile（屏幕 ICC）共约 190。",
+     "evidence": [
+      "apps/lightcraft/Cargo.toml (只有 [package]，default-run=\"lightcraft\"，没有 [lib])",
+      "apps/lightcraft/src/*.rs 行数：wc -l 共 6035；首个 #[cfg(test)] 行号：control_server.rs:289, editors.rs:279, native_menu.rs:654, window_gpu.rs:291",
+      "apps/lightcraft/src/main.rs:86-123,225-490",
+      "apps/lightcraft/src/session.rs:5 (use super::*; 依赖 main.rs 的命名空间)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C9",
+     "claim": "把 lightcraft-ui-egui 作为外部依赖时，workspace 继承（version/edition/workspace=true 的依赖）可以正常解析。我在 scratchpad 里建了一个工作区外的探针 crate，用 path 依赖指向上游副本，cargo metadata 成功，共 553 个包。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/consumer/Cargo.toml",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/meta-nopatch.json (craft-ui 来自 git rev c5a1cbf；lightcraft-ui-egui 0.18.0)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C10",
+     "claim": "根 Cargo.toml 的 [patch.crates-io] 把 egui 全家和 winit 固定到 storytold fork，这个 patch 不会传给下游。不在自己的根 manifest 里照抄，egui 就会解析成 crates.io 原版 0.37.0（探针已证实），而 ui-egui 调用了 fork 独有的 Context::set_language（原版 0.37.0 的 context.rs 里没有，fork 6d518fc 的 context.rs:2658 才有），编译会失败。fork 比 0.37.0 多 85 个提交。照抄 patch 后，探针解析到 fork 的 egui。",
+     "evidence": [
+      "Cargo.toml:190-205",
+      "crates/ui-egui/src/app.rs:635 (ctx.set_language(Some(...)))",
+      "docs/egui-037-migration-plan.md:855-863 (\"craft-ui's own [patch] does not propagate: LightCraft's root patch is what gives eframe/egui-winit the fork\")",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/egui-fork：git show up-0.37.0:crates/egui/src/context.rs 没有 set_language；git show 6d518fc…:crates/egui/src/context.rs:2658 有；git log up-0.37.0..6d518fc = 85",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/meta-nopatch.json (egui registry 0.37.0) vs meta-patch.json (egui git storytold/egui?rev=6d518fc…)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C11",
+     "claim": "下游还要自己补齐这些不会随依赖带过来的设置：[profile.dev.package.\"*\"] opt-level=2，以及 profile.dist/web（profile 只在根 workspace 生效，否则 debug 构建里的渲染会很慢）；engine 的 sam、denoise 特性（官方 app 在 apps/lightcraft/Cargo.toml 里开），heif 可选；CRAFT_FONTS_DIR 环境变量（不设置时 CJK 显示方框，相对路径会按 lightcraft 检出目录解析，git 依赖下得用绝对路径），发版固定的 craft-fonts rev 是 b076417b…；最好再用上游 tag 的 Cargo.lock 作为初始锁文件，否则会解析出与上游不同的依赖版本（探针输出里有 'Adding … (available: …)'）。.cargo/config.toml 只有一个 xtask 别名，不需要搬。ui-egui 和 engine 的 build.rs 只读仓库内文件（locales、contributors）和本地环境变量，不联网，在 git 检出里能正常工作。",
+     "evidence": [
+      "Cargo.toml:142-188",
+      "apps/lightcraft/Cargo.toml (features: default=[\"denoise\"], heif; lightcraft-engine features [\"sam\"])",
+      "crates/engine/build.rs:1-31,53-61",
+      "crates/ui-egui/src/theme.rs:294-297",
+      "docs/releasing.md:57-75; .github/workflows/release.yml:79",
+      "/home/user/storytold/lightcraft/.cargo/config.toml ([alias] xtask)",
+      "crates/ui-egui/build.rs:25-34,111-121"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C12",
+     "claim": "lightcraft-ui-egui 不能发布到 crates.io，只能通过 git 或 path 依赖使用：它 include_bytes!/include_str! 了 crate 目录外的文件（assets/fonts/Inter-*.ttf、docs/whats-new.md、assets/camera-profiles/*.json），build.rs 还读取 ../../contributors，workspace 依赖全是没有 version 的 path 依赖。用 git 依赖时 cargo 会检出整个仓库，这些相对路径都能找到。仓库没用 git LFS（没有 .gitattributes，字体就是实际文件）。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:13",
+      "crates/ui-egui/src/theme.rs:305-306",
+      "crates/ui-egui/build.rs:112",
+      "Cargo.toml:21-54 (lightcraft-* = { path = ... } 没有 version)",
+      "在 /home/user/storytold/lightcraft 里 find -name .gitattributes 没有结果；ls -la assets/fonts 显示 411640 字节的 ttf"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C13",
+     "claim": "上游改动非常频繁（统计窗口 2026-10-11 至 2026-11-10，用 blobless clone 统计）：main 上 first-parent 合入 222 次、非合并提交 1904 个。其中 crates/ui-egui 非合并 825 个（first-parent 81），crates/ui-egui/src 改了 303 个文件 +94,200/−26,209 行；panels/ 非合并 400 个；docking.rs 16 个（+448/−271）；app/frame.rs 16 个（这个文件和 app.rs 都是窗口期内从 lib.rs 拆出来的新文件，lib.rs 删了 1352 行）；state.rs 68 个；lib.rs 142 个；crates/engine 553 个；engine/src/lib.rs 70 个；apps/lightcraft/src 93 个（20 个文件 +4765/−1539，main.rs 被拆成 session/prefs/launch 等文件）；根 Cargo.toml 99 个。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/lc-history：git log --oneline --no-merges --since=2026-10-11 -- <path> | wc -l；git log --first-parent …",
+      "同一 clone：git diff --shortstat 0dd6593d HEAD -- <path>（0dd6593d 是窗口内第一个 first-parent 提交，2026-10-11）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C14",
+     "claim": "发版节奏：从 v0.1.0（2026-10-02）到 v0.20.0（2026-11-09）共 20 个 tag，约每 2 天一个。tag 在 release 分支上，等于 main 的某个快照加一个只改 Cargo.toml/Cargo.lock 的版本号提交（v0.20.0 = main@f6b57b0b + 'Release 0.20.0'），所以 main 上的 workspace 版本仍是 0.18.0。最近一周（v0.18.0→v0.20.0）的改动：ui-egui/src 87 个文件 +7778/−889，frame.rs +32/−4，app.rs +46/−5，lib.rs +30/−3，docking.rs 没变，panels 25 个文件 +1626/−251，apps/lightcraft/src 10 个文件 +349/−40，根 Cargo.toml +9/−2。",
+     "evidence": [
+      "git ls-remote --tags https://github.com/storytold/lightcraft",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/lc-history：git log -1 --format=%ci <tag>；git show --stat v0.20.0；git merge-base origin/release HEAD = f6b57b0b",
+      "同一 clone：git diff --shortstat v0.18.0 v0.20.0 -- <path>"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C15",
+     "claim": "catalog 格式 30 天内从 v6 升到 v12，而旧版程序遇到更新格式的图库会拒绝打开（不会修改它）。如果独立程序固定在较旧的 tag，而用户用新版官方 LightCraft 打开过同一图库，独立程序就打不开了。所以独立程序得跟官方程序同步升级，跟进节奏由上游决定。",
+     "evidence": [
+      "crates/catalog/src/journal.rs:77,91 (pub const VERSION: u32 = 12)",
+      "crates/catalog/src/lib.rs:69-71",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/lc-history：git show 0dd6593d:crates/catalog/src/journal.rs → VERSION = 6"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C16",
+     "claim": "共存情况：图库用 OS 文件锁（catalog.lock，try_lock），同一时间只能被一个进程打开，提示里显示的程序名取自 exe 文件名。预设和收藏存放在图库目录的 presets.json 里，换个程序打开同一图库会自动共用。键位表存在 ui.json 的 settings.keymap 里。ui.json 的路径由 apps/lightcraft/src/prefs.rs 决定（<config>/ui.json），独立程序复制这部分代码时可以改文件名。engine 的 config_dir（写死为 LightCraft/lightcraft，可用 LIGHTCRAFT_CONFIG_DIR 覆盖）还存放相机配置、降噪/人脸/SAM3 模型、lensfun、geonames，这部分应当共用，免得重复下载。UiState 是 #[serde(default)]，没有用 flatten 保留未知字段，旧版写回 ui.json 时会丢掉新版才有的字段，所以 ui.json 应各用各的。",
+     "evidence": [
+      "crates/catalog/src/lock.rs:9,88,104-113",
+      "crates/engine/src/library.rs:4-11,363-364,470,499",
+      "crates/ui-egui/src/state/settings.rs:178",
+      "apps/lightcraft/src/prefs.rs:19-21,36-41",
+      "crates/engine/src/config.rs:39-65,113-139",
+      "crates/ui-egui/src/state.rs:21-23"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C17",
+     "claim": "更新通道写死在 ui-egui 里：UPDATE_APP = craft_update::suite::LIGHTCRAFT（仓库 storytold/lightcraft），Updater 和 CheckResultDialog 都直接引用 crate::UPDATE_APP 和 ui-egui 自己的 CARGO_PKG_VERSION。独立程序可以关掉启动检查（set_startup_update_check(false)），但 Help ▸ Check for Updates…（app.checkForUpdates）仍会去查官方发布，在支持自更新的平台上可能把独立程序替换成官方 LightCraft。要有自己的发布通道，就得打补丁把 App 改成可注入，用 App::new(id, name, desc, \"<owner>/<repo>\") 指向自己的仓库。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:12-16",
+      "crates/ui-egui/src/dialogs/updates_ui.rs:34,52-54,77-80,131",
+      "crates/ui-egui/src/menus/ui_commands.rs:260",
+      "apps/lightcraft/src/main.rs:226-230,367",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs：git show 1b34eba4:crates/update/src/suite.rs:11"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C18",
+     "claim": "进程外 UI 不适合做主界面。控制协议的请求在 UI 线程上逐帧处理（超时 60 秒），只能操控正在运行、自带窗口的官方程序，替代不了它的 UI。无头模式（lightcraft-cli mcp）走 stdio JSON-RPC，除 ui.render 以外的 ui.* 方法都会报错。出图路径是 session.render_now 同步整图渲染 → 写临时 PNG → 读回 → base64 放进 JSON（JPEG 还要先解码再重新编码），回复上限 64 MiB。按估算，1600px 长边的照片 PNG 约 3–6MB，base64 后约 4–8MB 一帧，加上渲染耗时，每次更新至少要几百毫秒，远达不到拖滑块时的 16–50ms。本地 UI 用的是 GPU 纹理零拷贝（register_native_texture），而且没有能流式传输缩略图的接口。",
+     "evidence": [
+      "docs/control-protocol.md:3-20",
+      "docs/mcp.md:9-21,143,183",
+      "crates/mcp/src/headless.rs:141-150,163-165",
+      "crates/ui-egui/src/control.rs:511-536 (render_now)",
+      "crates/mcp/src/tools.rs:500-528,542-565",
+      "apps/lightcraft/src/main.rs:88-123"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C19",
+     "claim": "上游态度：issue #1217「optional Lightroom Classic–style interface (separate modules)」（2026-10-12 创建，open，ui 标签，6 条评论；评论我读不到，原因见开放问题）正好提出了模块切换器、经典左栏和底部胶片条。docs/ui-parity.md 却写着 'no Classic module switcher (by design)'。另有 #303 插件系统（open）、#2338 LrC 键位方案 PR（open）。没有搜到“外部 UI 嵌入/布局钩子”相关的 issue 或 PR（gh search 关键词：'custom layout'、'plugin extension'、'embed ui-egui'、'module picker'、'Navigator panel'、'filmstrip bottom'、'#1217'）。",
+     "evidence": [
+      "gh api search/issues q='repo:storytold/lightcraft is:issue \"optional Lightroom Classic\"' → #1217（body、comments=6）",
+      "docs/ui-parity.md:25",
+      "gh search → #303 Plugin system, #2338 feat(ui): Lightroom Classic keymap profile",
+      "docs/architecture.md:21 (ui-egui 标为 'swappable' L5)"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C20",
+     "claim": "上游自己也在为“下游照抄 patch”这件事头疼：PR #3414 删掉了未使用的 egui patch 条目，因为它们会让离线/vendor 构建失败。说明 patch 清单本身也在变（照抄的那份要跟着更新）。目前 HEAD 仍保留 egui_demo_lib、egui_inspection、egui_system_font_provider 这几条。",
+     "evidence": [
+      "gh search → PR #3414 'drop the unused egui patches that break offline builds' (open, 2026-10-30)",
+      "Cargo.toml:200-204"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C21",
+     "claim": "品牌：代码使用 MIT OR Apache-2.0 双许可，可以再分发；但 docs/brand/ 下的 ArtCraft 名称、字标和 logo 是商标，不在开源许可范围内。窗口标题里 'LightCraft — <库名>' 是写死的。独立程序应换用自己的名称、APP_ID 和图标。",
+     "evidence": [
+      "NOTICE:1-8",
+      "crates/ui-egui/src/app/frame.rs:347-353",
+      "apps/lightcraft/src/main.rs:73-84"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C22",
+     "claim": "没有完成实际编译验证：用 cargo check 验证“无 patch 时编译失败”的那一步被权限分类器拒绝（会执行外部 build 脚本），所以“缺 patch 编译失败”这一结论来自源码比对（C10），没有实际编译过；我也没有尝试构建整个项目（wgpu/candle 依赖链在 4 核机器上预计要 20–40 分钟）。",
+     "evidence": [
+      "本会话中的 Bash 调用 'cargo check -p lightcraft-ui-egui' 被 auto mode classifier 拒绝",
+      "nproc=4, 15 GB RAM"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "options": [
+    {
+     "name": "A. 零代码：在官方 LightCraft 里用现有停靠系统重排",
+     "how": "在官方程序里把 Presets 拖到左侧 dock，和 Library 并列或叠放（Stack），Tools 留在右侧（Edit 模式下直方图本来就在滑块上方），也可以用 ui.dock move/resizeSplit 命令一次性写好，保存到 ui.json 的 docking 字段。LrC 风格的 F5–F8、G/D 等快捷键用现有键位编辑器调整。",
+     "pros": "不写代码、不 fork，上游更新照常；马上就能得到一个“左：目录+预设 / 中：照片 / 右：直方图+调整”的布局，大约有 LrC 六成观感。",
+     "cons": "只有 4 个面板（Canvas/Library/Tools/Presets）；topbar、右侧工具条、bottombar 位置固定；没有模块切换器（Library/Develop）；胶片条只在 Detail 视图出现、不能常驻底部；左栏放不了 History/Snapshots/Navigator。",
+     "effort": "0.5–1 人日（试几种排法，导出 ui.dock 命令备用）。",
+     "keeps_upstream_updates": "5/5：用的就是官方程序，只改了用户偏好；唯一风险是 DOCKING_VERSION 升级时布局会重置一次（docking.rs:58-69）。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:94-106 (默认 workspace)",
+      "docs/control-protocol.md:404-421 (ui.dock)",
+      "crates/ui-egui/src/state.rs:30-33"
+     ]
+    },
+    {
+     "name": "B. 独立二进制，原样依赖上游 tag 的 ui-egui（不打任何补丁）",
+     "how": "在 LightCraft-additional-extensions 里新建 bin crate，用 git+tag 依赖 lightcraft-engine 和 lightcraft-ui-egui，照抄 [patch.crates-io] 和 profile，复制 apps/lightcraft 外壳，再试图只用 pub 面板函数自己拼窗口。",
+     "pros": "上游代码一行不动；engine 和面板的改进会随 tag 自动带过来。",
+     "cons": "做不出不同的布局：LightcraftApp::ui() 一定会画官方布局（frame.rs:473-478）。要是绕开它自己画，就调用不了私有的 ui_pass/finish_ui_pass/end_frame 和那些 pub(crate) 屏障函数，快捷键、拖放导入、模态屏障、控制协议的 widget 注册表全都失效；胶片条、直方图、历史面板也调不到。即使硬写，也得复刻 600–1000 行私有逻辑，而且碰不到私有字段。",
+     "effort": "不可行；硬做 3–6 人周，产品还是残缺的，每次升级都可能坏。",
+     "keeps_upstream_updates": "1/5：依赖本身能跟上，但无法实现目标布局，等于没解决问题。",
+     "hook_points": [
+      "crates/ui-egui/src/app.rs:673-684",
+      "crates/ui-egui/src/app/frame.rs:252,369,397"
+     ]
+    },
+    {
+     "name": "C. 独立二进制 + 最小“布局接缝”补丁（自维护 lightcraft fork 分支，按 tag 变基）【推荐】",
+     "how": "1) 在 lightcraft 的 fork 分支上打约 100–250 行补丁：给 LightcraftApp 增加 pub 布局钩子（例如 ui_with_layout(ui, FnMut(&mut LightcraftApp, &mut egui::Ui))），只替换 frame.rs:473-478 的主区域，保留所有屏障和记账逻辑；把 detail::filmstrip、edit::histogram、right::history 等少数函数改为 pub；让 UPDATE_APP 可注入（updates_ui.rs:34,131）；让窗口标题的品牌名可配置（frame.rs:348-352）。2) 在自己的仓库里新建 bin crate，用 git rev 依赖 fork 分支的 lightcraft-engine 和 lightcraft-ui-egui；照抄根 [patch.crates-io]（Cargo.toml:190-205）、profiles（:142-188）、features（sam/denoise/heif），初始 Cargo.lock 从上游 tag 拷来；CI 里用绝对路径设置 CRAFT_FONTS_DIR（craft-fonts@b076417b）。3) 复制 apps/lightcraft 约 3.8k 行非测试代码，并修改 APP_ID、图标、ui.json 文件名、更新 App；不改 engine 的 config_dir，以共享模型。4) 新布局代码 1.5–3k 行：顶部模块切换器（Library/Develop，用 app.run('view.*') 和 app.ui.right 实现，不新增功能），Library 模块是 left::show + grid + right(Info/Keywords)，Develop 模块是 presets/历史 + detail + right(Edit) + strip，底部常驻胶片条，用 craft_ui::docking 加自己的 Panel 枚举或固定 egui::Panel 排布，自己的布局状态单独存文件。",
+     "pros": "engine 和面板内容 100% 复用，“只改排版、不改内容”；可以和官方 LightCraft 并存安装（不同 exe 名、APP_ID、ui.json）；补丁面小（只碰 frame.rs、lib.rs 和几处可见性），容易变基；补丁本身适合提交上游。",
+     "cons": "要维护 fork 分支，还要手工同步复制来的 apps/lightcraft（近 30 天被大改：+4765/−1539）；上游每加一个新面板或工具条按钮，只有在走同一个 pub 面板函数时才会自动出现；要自建发布、签名、打包（上游 packaging 有 44 个文件、约 2.3k 行脚本）；catalog 格式升级时必须及时跟进（30 天里 v6→v12）。",
+     "effort": "初始约 5–8 人周（一名熟悉 Rust/egui 的开发者）：补丁 2–4 人日；复制并改造桌面外壳 3–5 人日；Cargo/CI 和 pin 同步脚本 2–3 人日；LrC 布局与快捷键 2–4 人周（要覆盖 PhotoGrid/SquareGrid/Detail/Compare/Survey/Reference/People 七种视图，以及拖拽反馈、Lights Out、第二窗口等，docking.rs:437-444、frame.rs:479-501）；三平台打包和更新通道 1–2 人周。维护：建议每周跟一次 tag，每次 0.5–1.5 人日（变基补丁 0.5–2 小时，因为 frame.rs 在 v0.18→v0.20 只改了 +32/−4 行；同步外壳 2–6 小时，参考 v0.18→v0.20 的 +349/−40；修复 pub API 变动 1–4 小时；冒烟测试 1–2 小时）。",
+     "keeps_upstream_updates": "3/5：engine、面板、对话框、翻译都随 tag 自动更新；补丁冲突面小。但外壳是复制来的，要手工同步；新增的布局元素也要手工接入；而且受 catalog 格式升级所迫，必须紧跟。",
+     "hook_points": [
+      "crates/ui-egui/src/app/frame.rs:471-478 (主区域替换点)",
+      "crates/ui-egui/src/lib.rs:149 (增加布局钩子字段/方法)",
+      "crates/ui-egui/src/panels/detail.rs:18 + detail/filmstrip.rs:58",
+      "crates/ui-egui/src/panels/edit.rs:23 + edit/histogram.rs:51",
+      "crates/ui-egui/src/panels/right.rs:15",
+      "crates/ui-egui/src/dialogs/updates_ui.rs:34,131",
+      "crates/ui-egui/src/app/frame.rs:348-352",
+      "apps/lightcraft/src/main.rs:73-84,174-184,367",
+      "apps/lightcraft/src/prefs.rs:36-41"
+     ]
+    },
+    {
+     "name": "D. 把接缝补丁做成上游 PR（C 的升级版，可再加“桌面外壳库化”）",
+     "how": "把 C 的补丁整理成通用功能（“可替换主布局 + 若干组件公开 + 可注入更新 App”），向 storytold/lightcraft 提 PR，关联 issue #1217。更进一步可以提议把 apps/lightcraft 拆成 lib+bin，公开 run(options, layout)，下游的外壳代码就能从 3.8k 行降到约 100 行。合并后，独立程序直接用 git tag 依赖上游，不再需要 fork。",
+     "pros": "不再需要自维护 fork 和复制的外壳，维护成本最低；对上游也有价值（插件 #303、Classic #1217 都能用上）。",
+     "cons": "能否合并取决于维护者：ui-parity.md:25 写着 Classic 模块切换器 'by design' 不做，而且上游有 440 个待审 PR（#2580），审核排队可能要几周；合并前仍得按 C 来维护。",
+     "effort": "在 C 的补丁基础上再花 3–5 人日（测试、文档、沟通），日历时间 1–4 周；合并后每次跟进 0.25–0.5 人日（只需改 tag、同步 patch 和 profile、编译冒烟）。",
+     "keeps_upstream_updates": "4/5（合并后）：直接用上游 tag，不维护 fork；仍需同步 [patch.crates-io] 和 profile（这一点下游绕不过去），也仍受 catalog 格式升级约束。",
+     "hook_points": [
+      "issue #1217",
+      "crates/ui-egui/src/app/frame.rs:471-478",
+      "apps/lightcraft/src/main.rs (拆成 lib)"
+     ]
+    },
+    {
+     "name": "E. 直接 fork 整个 lightcraft，在 ui-egui 原地改布局（对照方案）",
+     "how": "在 fork 里直接修改 frame.rs/docking.rs，新增 layout 模块并扩展 Panel 枚举；需要并存时，把 apps/lightcraft 的 exe 名、APP_ID、更新 App 改掉。定期从上游 main 或 tag 合并。",
+     "pros": "不用复制外壳，所有东西都在一个 workspace 里，构建配置天然一致（patch、profile、features、Cargo.lock 全部继承）。",
+     "cons": "冲突面取决于改动范围：只碰 frame.rs（30 天 16 个提交）和 docking.rs（16 个）时还好；一旦改到 panels/（400 个）或 state.rs（68 个）、lib.rs（142 个）就会频繁冲突；改了 Panel 枚举或 docking 序列化后，ui.json 和官方程序不兼容，得用独立的 config 或 ui.json。",
+     "effort": "初始 3–5 人周；维护每次 0.25–1 人日（改动集中在少数文件时），深度改 panels 则每次 1–3 人日。",
+     "keeps_upstream_updates": "3/5：改动小时与 C 接近，改得越深越接近 2/5；好处是省去了外壳同步。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:14-52,346-467",
+      "crates/ui-egui/src/app/frame.rs:471-478"
+     ]
+    },
+    {
+     "name": "F. 进程外 UI：独立 UI 进程通过控制协议或 MCP 驱动无头引擎",
+     "how": "另写一个 UI 进程，经 lightcraft-cli mcp（stdio JSON-RPC，无头 Session）或 --control TCP 发 engine.execute 命令，用 render_photo/ui.render 取图。",
+     "pros": "和上游代码完全解耦，协议层相对稳定；适合做辅助控制面（例如 MIDI 旋钮或单独的滑块面板，docs/control-protocol.md:263-300 的 External controllers 就是这个用途）。",
+     "cons": "拿来当主界面性能不可接受：同步整图渲染 → 临时 PNG → base64，一帧 4–8MB、几百毫秒，丢掉 GPU 零拷贝、渐进渲染和缩略图缓存；无头模式不支持 ui.*；图库锁不允许两个进程共用同一图库；全部面板都得重写（相当于 ui-egui 的 6.8 万行）。",
+     "effort": "3–6+ 人月，交互体验仍明显不如本地。",
+     "keeps_upstream_updates": "2/5：engine 的功能经协议自动可用（单看 engine 能到 4/5），但 UI 功能完全不会跟上，体验也差。",
+     "hook_points": [
+      "crates/mcp/src/tools.rs:542-565",
+      "crates/ui-egui/src/control.rs:511-536",
+      "docs/mcp.md:9-21"
+     ]
+    },
+    {
+     "name": "G. 只复用 engine，从零写新的 UI crate（利用 L5 可替换的设计）",
+     "how": "不依赖 ui-egui，在 engine（L4）上用 egui 或别的 Rust GUI 重写全部 UI，视觉语言照着 LightCraft 仿。",
+     "pros": "布局完全自由；engine 的更新直接受益。",
+     "cons": "违背“不动具体内容”的目标：要重写 6.8 万行 UI，包括所有面板、对话框、快捷键、翻译；上游 UI 改进一律带不过来。",
+     "effort": "6–12+ 人月。",
+     "keeps_upstream_updates": "2/5：engine 能跟上，UI 功能和修复都跟不上。",
+     "hook_points": [
+      "docs/architecture.md:12-21"
+     ]
+    }
+   ],
+   "open_questions": [
+    "上游维护者是否愿意接受“可替换主布局”的接缝 PR？issue #1217 的 6 条评论读不到（这个会话的 gh REST 和 GitHub MCP 都无权访问 storytold/lightcraft，只有 search API 能用），而 docs/ui-parity.md:25 写着 Classic 模块切换器 'by design' 不做。",
+    "用户会不会在同一个图库上同时使用官方 LightCraft？如果会，独立程序必须跟上 catalog 格式升级（30 天里 v6→v12），维护节奏会变成刚性要求。",
+    "目标平台有哪些？macOS 原生菜单（约 650 行）和签名/公证，Windows 的自更新和 MSI，是否都要做？这直接影响 C 方案的打包工作量（1–2 人周）。",
+    "“和 LightCraft 类似的设计”是否包含沿用现有的 topbar、右侧工具条和 bottombar？如果要重做这些条，需要公开的私有组件更多，补丁会变大。",
+    "LrC 左栏需要的 Navigator、Snapshots/History 目前不是独立面板（Navigator 是 Detail 里的叠加层，History 在 right 的私有模块里）。把它们单独拆出来，算不算“改动内容”？",
+    "缺少 [patch.crates-io] 时会编译失败、带上 patch 后能编译通过，这两点都没有实际编译验证（cargo check 被权限拒绝）；需要用户授权后，在有足够时间的机器上实际编译一次（4 核约 20–40 分钟）。",
+    "docs/brand/LICENSE-brand.txt 是否也覆盖 assets/app-icon 里的山猫图标？独立程序的名称和图标需要单独确认商标问题。"
+   ]
+  },
+  "ui_arch": {
+   "summary": "结论：用 Rust 重做 LightCraft 的界面布局是可行的，而且不需要重写。现有界面本身就是纯 Rust 的 egui（crates/ui-egui）。桌面版和 Web 版都走同一个入口 LightcraftApp::ui，所以只改 ui-egui 就够了，engine 和 craft-libs 都不用动。窗口布局是 app/frame.rs 里一段固定顺序：顶栏、横幅、工具条、中央停靠区，再加 docking.rs 的停靠面板和画布里的底栏，布局代码总共约 1.4k 行；ui-egui 中非纯测试文件约 67.6k 行。各面板内容基本由自包含的函数绘制（left::show、presets::show、right::show、edit::show、grid::show、detail::show 等），签名统一为 (&mut LightcraftApp, &mut egui::Ui[, PhotoId])，换一种排布也可以直接调用。布局和内容交织的地方有五处：胶片条由各视图自己画在自身矩形底部，网格视图里没有；直方图写在 Tools 面板顶部，只在 Edit 时出现；底栏画在画布面板里面；Tools 是由 app.ui.right 驱动的单一模式容器，这个状态同时控制画布上的工具，非测试代码里约 60 处引用；画布内容必须在面板之后绘制，悬停预览依赖这个顺序。现有停靠系统（craft_ui::docking）只管 Library、Tools、Presets 三个面板，能拖动、分栏、叠放、合并成标签、窗口内浮动、关闭后回到原位、调列宽、折叠成图标；顶栏、工具条、底栏、胶片条、直方图、Edit 各分区、Navigator 都不能停靠。布局保存在 <config>/ui.json 的 docking 和 dockingVersion=1 两个字段里，可以手工编辑，也可以用 control 协议的 ui.dock、ui.dock.reset、ui.set {docking} 修改；锁定、命名工作区和原生独立窗口在 LightCraft 里都没开放。今天不改代码，能做到“左列 Library+Presets 上下叠放、右侧 Tools、调整侧栏分区顺序”。做不到的是：LrC 式模块切换器、通栏且网格视图里也有的胶片条、直方图下面的一排工具按钮、独立的 Histogram/History/Navigator 面板，以及按模块分别记忆的布局。上游最小改动建议分层做：先加一个不新增 Panel 变体的“Classic 面板预设”，约 50–80 行业务代码；再用一个 AppSettings 开关打开工具横排（参考已关闭未合并的 PR #3158，+338/−20，其中约 150 行是业务代码）、通栏胶片条和顶栏模块页签，合计约 30–60 小时、700–1000 行业务代码。新增 Panel 枚举变体会让上游版本读不懂 ui.json：上游会丢弃停靠布局，并在本次运行中不保存设置，所以这一层要放在最后，并处理好兼容。上游文档明确写着“no Classic module switcher (by design)”。相关的 issue #1217 仍开着，#2187 的模块栏补丁没被采纳，工具横排 PR #3158 已关闭未合并，因此模块切换器能否进上游不确定，长期维护 fork 的成本主要来自 frame.rs、detail.rs、compare.rs 这几个高频变动的文件。现有 1314 个 UI 测试都假设默认布局；只要默认布局不变、新布局做成可选，测试基本不会坏，因为 widget id（panel:left_panel 等）跟着面板内容走，不跟所在的侧边。没有像素基准图测试；项目这次没有编译，原因是本机没有构建缓存，全量编译耗时太长。",
+   "claims": [
+    {
+     "id": "C1",
+     "claim": "桌面版和 Web 版都通过 LightcraftApp::ui 渲染，ui 依次调用 ui_pass、draw_window、finish_ui_pass。布局全部在 crates/ui-egui 里，宿主应用不参与排版。",
+     "evidence": [
+      "apps/lightcraft/src/main.rs:183 (self.0.ui(ui))",
+      "apps/lightcraft-web/src/web.rs:903 (self.app.ui(ui))",
+      "crates/ui-egui/src/app.rs:673-683 (ui -> ui_pass/draw_window/finish_ui_pass)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C2",
+     "claim": "窗口级布局是 draw_window 里的固定顺序：panels::topbar::show（egui::Panel::top \"top_bar\"）→ library_problem::banner（Panel::top）→ panels::strip::show（Panel::right \"tool_strip\"，固定宽度 48）→ CentralPanel → docking::show，之后是各种覆盖层。全屏预览走另一条路径：只有 CentralPanel 加 detail/slideshow。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:444-470 (fullscreen 分支)",
+      "crates/ui-egui/src/app/frame.rs:471-501 (顺序与覆盖层)",
+      "crates/ui-egui/src/panels/topbar.rs:37",
+      "crates/ui-egui/src/panels/strip.rs:19-23",
+      "crates/ui-egui/src/panels/library_problem.rs:1330",
+      "crates/ui-egui/src/theme.rs:167-173 (top_bar_h 42, bottom_bar_h 48, strip_w 48, film_h 142)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C3",
+     "claim": "停靠系统只有 4 个面板：Canvas、Library、Tools、Presets。DockArea 的面板体回调调用自包含的内容函数，并按内容（不是按侧边）注册 widget id：Library→panels::left::show + \"panel:left_panel\"，Tools→panels::right::show + \"panel:right_panel\"，Presets→panels::presets::show。Canvas 只先建一个子 Ui，等所有面板画完后再画，这样悬停预览会先发布。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:12-19 (enum Panel)",
+      "crates/ui-egui/src/docking.rs:394-424 (body dispatch, register panel:left_panel/right_panel)",
+      "crates/ui-egui/src/docking.rs:425-445 (canvas 延后绘制)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C4",
+     "claim": "在画布面板内部，底栏（egui::Panel::bottom \"bottom_bar\"）先画，然后 CentralPanel 按 app.ui.view 分派到 grid::show、detail::show、compare::show_compare/show_survey/show_reference、people::show。底栏属于画布，不是窗口级区域。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:425-444",
+      "crates/ui-egui/src/panels/bottombar.rs:22-27"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C5",
+     "claim": "Tools 是单一的模式容器：right::show 按 app.ui.right 分派到 10 个内容函数（edit::show、profiles::show、crop、remove、masking::show、red_eye、info、keywords、versions、activity），直方图只在 Edit 时画在滚动区之上。app.ui.right 同时决定画布上的工具行为（裁剪覆盖层、拖动、遮罩叠加、快捷键、空格抓手），非测试代码中约 60 处引用，所以 Edit 和 History/Info 不能同时显示。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right.rs:62-95",
+      "crates/ui-egui/src/panels/detail.rs:153,437,1115-1190",
+      "crates/ui-egui/src/shortcuts.rs:702,767",
+      "crates/ui-egui/src/space_hand.rs:32",
+      "grep 'ui\\.right\\b' 非测试文件：menus/run.rs 29、detail.rs 8、docking.rs 7、strip.rs 5、shortcuts.rs 4、right.rs 3 等"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C6",
+     "claim": "胶片条不是独立的布局区域：Detail、Compare、Survey、Reference 各自在自身矩形底部预留 film_h 并调用 filmstrip(app, ui, rect)，Grid 视图没有胶片条，宽度也只等于画布列宽（LrC 是整个窗口宽）。filmstrip 函数本身接收一个 rect，并自己声明 Region 地标，可以原样搬到别的位置。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail.rs:134-144",
+      "crates/ui-egui/src/panels/compare.rs:190-199,529,569,633",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:58-77 (announce_region Filmstrip)",
+      "crates/ui-egui/tests/it/landmarks.rs:57-62 (\"the grid has no filmstrip\")",
+      "docs/control-protocol.md:406 (\"the photo view and filmstrip stay together\")"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C7",
+     "claim": "Edit 面板的 Light/Color/Effects/Detail/Optics/Calibration 分区是 edit::show 这一个函数里的内联闭包（section(app, ui, &d, id, title, |..|)），顺序写死在代码里，不能单独停靠或重排，只能折叠、展开或进入 Solo 模式（open_sections、single_panel、section.* 命令）。",
+     "evidence": [
+      "crates/ui-egui/src/panels/edit.rs:38 (pub fn show)",
+      "crates/ui-egui/src/panels/edit.rs:151,174 以及 200 行后的 section(...) 调用（effects/detail/optics/calibration）",
+      "crates/ui-egui/src/panels/edit/sliders.rs:183-217 (section helper)",
+      "crates/ui-egui/src/state.rs:75-80",
+      "crates/ui-egui/src/menus/ui_commands.rs:146-155 (section.* / view.soloSections)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C8",
+     "claim": "Navigator 只是放大时画在画面右下角的覆盖层（app.ui.navigator），不是面板。直方图只能在 Tools 里出现，但绘制函数 edit::histogram(app, ui, id) 是 pub(crate) 的独立函数，可以单独调用。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:8-44",
+      "crates/ui-egui/src/panels/edit/histogram.rs:51",
+      "crates/ui-egui/src/panels/edit.rs:32"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C9",
+     "claim": "量化：布局编排代码约 1.4k 行（frame.rs draw_window 约 120 行、docking.rs 约 550 行非测试代码、topbar.rs 289、strip.rs 约 88、bottombar.rs 约 358），ui-egui 非纯测试文件约 67.6k 行。顶层布局调用点约 5 个窗口级加 4 个停靠面板体；内容入口有 6 个视图入口、11 个 Tools 模式入口加直方图，签名基本统一为 (&mut LightcraftApp, &mut egui::Ui[, PhotoId])，只有 filmstrip 额外接收 rect。",
+     "evidence": [
+      "wc/cat 统计：find crates/ui-egui/src -name '*.rs' 排除 tests 文件 → 67609 行",
+      "crates/ui-egui/src/app/frame.rs:397-514",
+      "crates/ui-egui/src/docking.rs:1-547",
+      "crates/ui-egui/src/panels/right/*.rs: pub(super) fn crop/remove/red_eye/info/keywords/versions/activity (crop.rs:71,275,421; info.rs:3; keywords.rs:3; history.rs:3,133)"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C10",
+     "claim": "现有停靠系统运行时能做的事：拖动标签移动单个面板，拖动组栏移动整组，拖动列栏移动整列；落点决定行为——标签条处合并为标签，组的上下三分之一处叠放为新组，左右三分之一处新建列，中间合并标签，空窗口边缘新建 dock，照片四边可分割；可以在应用窗口内浮动；关闭后回到记录的位置，找不到位置就回各自的 home 列；可以在 panel_limits 范围内调列宽（Library 200–480，Tools 250–520，Presets 250–520，画布最小宽 360）；可以最小化组；可以把列折叠成图标（没有图标时显示标签首字母）。画布受保护：不能浮动、关闭、合并成标签，必须单独成组。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:71-74 (permissions)",
+      "crates/ui-egui/src/docking.rs:136-159 (validate 画布独占一组)",
+      "crates/ui-egui/src/docking.rs:358-385 (new_dock_zones、各菜单标签)",
+      "crates/ui-egui/src/docking.rs:539-547 (panel_limits)",
+      "crates/ui-egui/tests/it/docking_workflows.rs:101-155 (整组拖动、上下叠放、新建列、合并标签)",
+      "craft-libs@c5a1cbf crates/ui/src/docking/render/iconic.rs:243-245 (首字母图标)",
+      "craft-libs@c5a1cbf docs/ui-docking.md:217-300 (Gestures)",
+      "上游 PR #2839 正文（dock 列、默认布局 268/270/300）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C11",
+     "claim": "craft-ui 支持、但 LightCraft 没开放的功能：原生独立窗口（只启用了 serde feature，没有 native-windows）；命名工作区和锁定命令（run() 强制把命令标记为 ui.dock，window.workspace* 与 window.workspace.lock 走不进来）；“重置到用户保存的布局”（ui.dock.reset 总是回到 default_workspace，并隐藏 Library 和 Presets）；顶部或底部的 dock（Side 只有 Start/End，底部只能用分割画布的方式实现）。Workspace.locked 在渲染时会生效，但只能通过 JSON 设置。",
+     "evidence": [
+      "Cargo.toml:15 (craft-ui features = [\"serde\"])",
+      "craft-libs@c5a1cbf crates/ui/src/docking/mod.rs:11-12,18-19 (native-windows feature gate)",
+      "crates/ui-egui/src/docking.rs:215-230 (run 只解析 ui.dock)",
+      "craft-libs@c5a1cbf crates/ui/src/docking/command.rs:133-150 (Workspace/NewWorkspace/DeleteWorkspace/Lock)",
+      "crates/ui-egui/src/docking.rs:323-330 (reset → default_workspace，隐藏 Library 和 Presets)",
+      "crates/ui-egui/src/docking.rs:396 (.locked(workspace.locked))",
+      "craft-libs@c5a1cbf crates/ui/src/docking/dock_model.rs:23-26 (Side::Start/End)",
+      "grep 'window.workspace|NewWorkspace|Lock Workspace' 在 lightcraft crates/apps 中无命中"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C12",
+     "claim": "持久化：布局保存在 UiState 的 docking 字段（craft-ui Workspace：{version:2, layout, hidden, saved, locked}）和 dockingVersion 字段（DOCKING_VERSION=1），文件是 <config>/ui.json。config 目录：macOS 为 ~/Library/Application Support/LightCraft，Windows 为 %APPDATA%\\LightCraft，Linux 为 $XDG_CONFIG_HOME/lightcraft 或 ~/.config/lightcraft；LIGHTCRAFT_CONFIG_DIR 或便携目录优先。加载时先执行 drop_outdated，再做 validate；布局无效时只丢弃 docking 并提示，本次运行不写设置；整个文件损坏时另存为 ui.json.corrupt-<time>。Web 版把 ui.json 存在浏览器存储里，同样执行 drop_outdated。",
+     "evidence": [
+      "crates/ui-egui/src/state.rs:29-33",
+      "crates/ui-egui/src/docking.rs:56-69",
+      "apps/lightcraft/src/prefs.rs:36-41,57-120",
+      "crates/engine/src/config.rs:51-65",
+      "craft-libs@c5a1cbf crates/ui/src/docking/workspace.rs:11-33,51",
+      "apps/lightcraft-web/src/web.rs:598-602"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C13",
+     "claim": "可以用文件或命令导入、编辑布局：应用关闭时手工改 ui.json；通过 control 协议（lightcraft --control 7980 或 LIGHTCRAFT_CONTROL_PORT）发送 engine.execute ui.dock（open/close/activate/float/move，zone 可为 tab/center/left/right/top/bottom/above/below，或直接传 {action:<Action>}，可以用 MovePanel 到 NewDock、ResizeColumn、SetIconic 等）、ui.dock.reset，或 ui.set {\"docking\": {...}}。注意 ui.set 是 deep_merge，要整体替换时先发 {\"docking\": null}。lightcraft-cli snapshot --script 也能无头执行同样的请求并截图。",
+     "evidence": [
+      "docs/control-protocol.md:3,404-421",
+      "crates/ui-egui/src/control.rs:14,394-431 (ui.set)",
+      "crates/develop/src/presets.rs:146-160 (deep_merge：对象递归合并，非对象直接替换)",
+      "crates/ui-egui/src/menus/run.rs:149-150",
+      "crates/ui-egui/src/menus/ui_commands.rs:61-62",
+      "apps/lightcraft-cli/src/main.rs:7"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C14",
+     "claim": "今天不改代码能接近 LrC 的程度：把 Presets 放到左列 Library 下方（拖到 Library 组的下三分之一，或 ui.dock move presets→library zone=below），Tools 留在右侧；侧栏分区可以重排或隐藏（比如让 Folders 排在 Albums 前面）；F6、F7、F8 分别切换胶片条、左面板、右面板。做不到：顶部模块切换器；直方图下方的横排工具（工具条固定在窗口最右，不能停靠）；通栏且所有视图都有的胶片条；Histogram、History、Navigator 作为独立面板（History 和 Edit 互斥）；按模块（视图）分别记忆左右面板内容（布局是全局一份）。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:792-808 (测试：Move Presets anchor Library Placement::Group{below:true} 合法并能存取)",
+      "docs/control-protocol.md:410 (above/below)",
+      "crates/ui-egui/src/sidebar.rs:1-6,214-260 (分区排序与隐藏)",
+      "crates/ui-egui/src/menus/ui_commands.rs:180-182 (view.sidebarSection/MoveSection/Reset)",
+      "docs/ui-parity.md:74 (F6/F7/F8)",
+      "crates/ui-egui/src/app/frame.rs:475 (strip 固定在 dock 之外)",
+      "crates/ui-egui/src/menus/run.rs:198-201,343-346 (切换视图不改面板)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C15",
+     "claim": "兼容性风险：Panel 是 serde 枚举，如果 fork 增加新变体（如 histogram、history），上游版本读到这样的 ui.json 会反序列化失败：桌面版丢弃 docking、弹提示、本次不保存设置。如果只在 AppSettings 或 UiState 里加带 serde(default) 的字段，两边都能读，因为全仓库没有 deny_unknown_fields；但上游版本重写文件时会丢掉这些字段。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:12-19",
+      "apps/lightcraft/src/prefs.rs:57-68,89-95",
+      "crates/ui-egui/src/state/settings.rs:107-109 (serde(default), 无 deny_unknown_fields)",
+      "grep deny_unknown_fields crates/ui-egui/src → 无命中"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C16",
+     "claim": "上游的立场和先前的尝试：ui-parity.md 写明“no Classic module switcher (by design)”。Issue #1217（可选的 LrC 式模块界面，标签 ui，6 条评论）仍开着；#1787（LightCraft Classic）以 duplicate 关闭；#2187 附带了模块栏补丁 zip，没有被合并；PR #3158（直方图下横排工具）已关闭未合并；PR #3227（从工具图标关闭或合并面板）和 #3820（Shift+Tab 隐藏全部面板）仍开着。评论内容读不到：仓库 API 返回 403，只能用 search API。",
+     "evidence": [
+      "docs/ui-parity.md:25",
+      "gh api search/issues: #1217 [open] labels=ui comments=6",
+      "#1787 [closed] state_reason=duplicate",
+      "#2187 [open]（附件 zip 下载返回 403）",
+      "#3158 [closed] merged_at=null",
+      "#3227 [open]、#3820 [open]",
+      "docs/roadmap.md:79 (M15 Classic modules 🚧)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C17",
+     "claim": "可以用 PR #3158 校准工作量：它把竖排工具条改成 Tools 面板顶部的横排工具，并固定直方图。自身改动 9 个文件，+338/−20：frame.rs +5（只在 Tools 不可见时画竖条）、right.rs +15/−5（直方图和 strip::row 固定在滚动区上方）、strip.rs +约110（row()）、view.rs 把 RIGHT_WIDTH 默认值改为 318，测试约 +190（新增 tests/tool_row.rs 172 行，accessibility.rs 改 13 行）。",
+     "evidence": [
+      "git fetch origin pull/3158/head; git diff --stat 4956a554 6c7396da（PR head 6c7396da）",
+      "同一 diff 的 crates/ui-egui/src/app/frame.rs、panels/right.rs、state/view.rs 片段"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C18",
+     "claim": "测试基础设施的约束：src/tests、headless/tests.rs、tests/it 里共有 1314 个 #[test]（含内联测试共 1968 个）。widget id 按面板内容注册，与所在侧边无关，所以重新排布不会让 panel:left_panel 等 id 失效；MCP crate 不引用任何面板 id。但很多测试假设默认布局：tests/panels.rs 从 right.left() 往左拖来加宽，并断言默认宽度 268/270；landmarks.rs 断言存在“Tool strip”工具栏、网格中没有 Filmstrip；accessibility.rs 断言工具条按钮名；strip.rs 断言按钮位置。没有像素基准图：h.snapshot 只返回 ColorImage 供就地检查，仓库里没有 snapshots 目录。",
+     "evidence": [
+      "grep -rn '#\\[test\\]' crates/ui-egui/src/tests src/headless/tests.rs tests | wc -l → 1314",
+      "crates/ui-egui/src/docking.rs:411,416",
+      "grep 'panel:' crates/mcp/src → 无命中",
+      "crates/ui-egui/src/tests/panels.rs:37-80",
+      "crates/ui-egui/tests/it/landmarks.rs:40-62",
+      "crates/ui-egui/tests/it/accessibility.rs:294-318",
+      "crates/ui-egui/src/panels/strip.rs:261-276",
+      "crates/ui-egui/src/headless.rs:453-456; find -type d -name snapshots → 无"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C19",
+     "claim": "上游 30 天内的改动频率（2026-10-12 起，非 merge 提交）：frame.rs 16 次（近 14 天 11 次）、topbar.rs 16、docking.rs 15（近 14 天 1 次）、detail.rs 79、compare.rs 26、edit.rs 34、state.rs 54、strip.rs 2、ui_commands.rs 3。fork 补丁越少碰 frame.rs、detail.rs、compare.rs，就越容易跟上上游。",
+     "evidence": [
+      "git fetch --depth=1500 origin main; git log --no-merges --since=2026-10-12 -- <file> | wc -l"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C20",
+     "claim": "不改 ui-egui、另写一个外部 crate 来重新组合窗口做不到：panels::* 的 show 函数大多是 pub，但帧编排用到的 ui_pass、draw_window 是 pub(super)，notices 和 library_problem 的 prepare_ui_pass、shield_pass、finish_ui_pass 是 pub(crate)，next_widgets 是私有字段，而模态屏蔽帧、widget 注册表交换都依赖它们。所以任何新布局都要在 ui-egui 内部打补丁，最好的方式是在 draw_window 加一个可选的布局分支。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:252,397 (pub(super))",
+      "crates/ui-egui/src/panels/notices.rs:409,506,513 (pub(crate))",
+      "crates/ui-egui/src/panels/library_problem.rs:180,232,250",
+      "crates/ui-egui/src/lib.rs:285 (next_widgets 私有)",
+      "crates/ui-egui/src/lib.rs:39 (pub mod panels)"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C21",
+     "claim": "视图和面板相互独立，所以 LrC 的“模块”可以映射为“视图 + 面板可见性 + 停靠布局”的组合：Library 对应 view.photoGrid 加左面板；Develop 对应 view.detail 加 panel.edit（快捷键 G、D、E 已有）；Print 目前是对话框（dialog.print，⌘P），其主体 print_view::body 可以复用；Slideshow 对应 view.slideshow。",
+     "evidence": [
+      "crates/ui-egui/src/menus/run.rs:198-205,343-346,599-602,1214-1216",
+      "crates/ui-egui/src/dialogs.rs:2159 (Dialog::Print => print_view::body)",
+      "crates/ui-egui/src/menus/ui_commands.rs:63-74,136-148,212"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C22",
+     "claim": "没有编译或运行项目：本机没有 target 缓存，只有 4 核，ui-egui、egui/wgpu、engine 全量编译预计远超“快速”的范围。以上结论全部来自阅读代码、craft-libs@c5a1cbf 源码、git diff 和上游搜索 API。",
+     "evidence": [
+      "ls /home/user/storytold/lightcraft/target → 不存在; nproc=4"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "options": [
+    {
+     "name": "O1 零代码：只用现有停靠系统和 ui.json 或控制脚本配置",
+     "how": "在应用里拖动：把 Presets 标签拖到 Library 组的下三分之一，叠放到左列；Tools 留在右侧；F7 打开左栏，在侧栏标题菜单里调整分区顺序（Folders 在前，Albums 当 Collections 用）；按需用 F6 切换胶片条、Cmd+Shift+H 切换直方图。也可以写成脚本，用 lightcraft --control 7980 或 lightcraft-cli snapshot --script 依次发送：engine.execute ui.dock.reset → view.leftPanel → panel.presets → ui.dock {operation:move, panel:presets, target:library, zone:below}。结果会自动保存到 <config>/ui.json 的 docking 字段，可以备份或分发这个片段，替换前先 ui.set {docking:null}。",
+     "pros": "不碰任何代码，完全跟随上游更新；布局由 craft-ui 校验，非法布局会自动回退；几分钟就能完成。",
+     "cons": "只能挪动 Library、Tools、Presets 三个面板。工具条仍是窗口最右侧的竖条；胶片条只在 Detail、Compare、Survey、Reference 里出现，宽度只有画布那么宽；没有模块切换器；History 和 Edit 互斥；布局是全局一份，不能按模块记忆；锁定只能写 JSON。",
+     "effort": "0.5–1 小时（只是摆放和验证）；写一个可复用的 JSONL 脚本加 1 小时。",
+     "keeps_upstream_updates": "5/5：没有代码差异，只要 DOCKING_VERSION 不变（当前为 1），保存的布局就一直有效；上游如果升级这个版本，会重置一次布局。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:215-230 (ui.dock 解析)",
+      "crates/ui-egui/src/control.rs:394-431 (ui.set)",
+      "apps/lightcraft/src/prefs.rs:36-41 (ui.json 路径)",
+      "crates/ui-egui/src/sidebar.rs:214-260 (分区排序)"
+     ]
+    },
+    {
+     "name": "O2 上游友好的小补丁：内置“Classic 面板预设”（不加新 Panel 变体）",
+     "how": "在 docking.rs 现有 docked() 旁边加 classic_workspace()：Start dock 一列放 Library 组和下方的 Presets 组，End dock 放 Tools，宽度沿用 LEFT_WIDTH/RIGHT_WIDTH/PRESETS_WIDTH。command_impl 的 reset 分支接受 {preset:\"classic\"}，选 classic 时不隐藏 Library 和 Presets；在 ui_commands.rs 里加一条 Window 菜单命令（如 ui.dock.classic「Classic Panel Layout」），并在 run.rs:149 分派。home() 和 home_side() 只在 Tools 位于 Start 时把 Presets 的默认位置改到 Library 下方。可以顺带开放 window.workspace.lock（锁定布局），把 run() 的标签白名单扩展到 Lock，约 10 行。",
+     "pros": "改动小、语义清楚、默认布局不变，现有测试不受影响；ui.json 格式不变，上游和 fork 能互读；最有机会被上游接受，因为它只是一个停靠预设，不涉及模块切换器。",
+     "cons": "只能解决面板位置，工具条、胶片条、模块切换器、独立直方图都还是老样子。",
+     "effort": "3–6 小时：业务代码约 50–80 行（docking.rs 约 40、ui_commands.rs 2、run.rs 3、home 逻辑约 10），测试约 60–100 行（参照 docking.rs:692-748 的列断言风格），再在 docs/control-protocol.md:404-421 加一行文档。估算依据：docking.rs 已有 docked()/columns() 测试工具，可以直接照着写。",
+     "keeps_upstream_updates": "5/5（被上游合并）或 4/5（作为 fork 补丁）：docking.rs 近 14 天只有 1 次提交，冲突概率低。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:91-110 (docked/default_workspace)",
+      "crates/ui-egui/src/docking.rs:112-128 (home)",
+      "crates/ui-egui/src/docking.rs:39-42 (home_side)",
+      "crates/ui-egui/src/docking.rs:319-340 (command_impl reset 分支)",
+      "crates/ui-egui/src/menus/ui_commands.rs:61-62",
+      "crates/ui-egui/src/menus/run.rs:149-150"
+     ]
+    },
+    {
+     "name": "O3 可选的“Classic 布局”开关（AppSettings.classic_layout）：工具横排、通栏胶片条、顶栏模块页签",
+     "how": "在 AppSettings 里加一个 serde(default) 的布尔开关，设置界面 Interface 页放一个复选框，命令 view.classicLayout。开关打开时：(a) 照 PR #3158 的做法，在 frame.rs:475 只在 Tools 不可见时画竖条，right.rs:62-66 改为直方图加 strip::row() 固定在滚动区上方，strip.rs 新增 row()（约 110 行）；(b) 在 frame.rs:473-478 的 CentralPanel 之前加一个 egui::Panel::bottom(\"filmstrip\")，高度 t.film_h，调用 detail::filmstrip(app, ui, rect)，这样所有视图（含 Grid）都有，宽度覆盖整个窗口；同时让 detail.rs:138-144 和 compare.rs:190-199 在开关打开时跳过自己的胶片条，并保留 canvas_rect 的计算；(c) 在 topbar.rs:61-65 的 right_icons 之前画 Library | Develop | Print | Slideshow 文字页签，并按 topbar.rs:48-55 调整搜索框留白；新命令 view.module {module} 映射到已有的 view.photoGrid + left_panel、view.detail + panel.edit、dialog.print、view.slideshow；可选在 UiState 里加带 serde(default) 的 module_workspaces: HashMap<String, Workspace>，切换模块时保存当前布局、恢复目标模块的布局。",
+     "pros": "视觉语言完全复用 Tokens、icon_button 和现有面板；面板内容和 engine 都不动；默认关闭，上游测试全部照常通过；三部分可以分开提交或合并；ui.json 新字段两边都能读（上游会忽略）。",
+     "cons": "会碰 frame.rs、detail.rs、compare.rs、topbar.rs 这些高频变动文件，fork 需要经常 rebase；模块切换器与上游“by design”的立场冲突，合并前景不确定（#2187、#3158 都没被合并）；开关打开时一些测试要分支覆盖（landmarks“grid 无胶片条”、tool strip 的 a11y 名称）；裁剪覆盖层和胶片条的裁剪关系（PR #4021）、Lights Out 的 canvas_rect 需要回归检查；新增文案要进 18 个语言目录，缺翻译会静默显示英文。",
+     "effort": "合计约 20–40 小时，业务代码约 450–650 行，测试约 350–500 行。分项：(a) 工具横排 4–8 小时，参照 #3158 的约 150 行业务代码加约 190 行测试；(b) 通栏胶片条 4–8 小时，约 60–90 行业务代码加约 80 行测试（frame.rs 约 15、detail/compare 各约 5–10、landmarks/filmstrip 测试）；(c) 模块页签和 view.module 8–16 小时，约 150–250 行业务代码（topbar 约 70、命令约 40、按模块保存布局约 60–100），测试约 150 行，另加文档（control-protocol、ui-parity、whats-new）。估算依据：仓库要求每个 UI 改动都有 headless 或 kittest 测试、AccessKit 命名、注册 widget id、tr() 文案，#3158 中测试代码比业务代码还多。",
+     "keeps_upstream_updates": "3/5（fork 自维护）：frame.rs 近 14 天 11 次提交、compare.rs 9 次、detail.rs 6 次，小块冲突会经常出现但好解决。如果开关被上游接受则为 4–5/5。",
+     "hook_points": [
+      "crates/ui-egui/src/app/frame.rs:471-478 (窗口级区域顺序：Panel::bottom 胶片条、条件 strip)",
+      "crates/ui-egui/src/panels/right.rs:62-66 (直方图和工具横排)",
+      "crates/ui-egui/src/panels/strip.rs:12-81 (提取按钮表，新增 row())",
+      "crates/ui-egui/src/panels/detail.rs:134-144 (视图内胶片条)",
+      "crates/ui-egui/src/panels/compare.rs:190-199",
+      "crates/ui-egui/src/panels/topbar.rs:40-66,172-227 (模块页签位置、搜索框宽度)",
+      "crates/ui-egui/src/menus/ui_commands.rs:59-100 (新命令)",
+      "crates/ui-egui/src/menus/run.rs:147-200 (分派)",
+      "crates/ui-egui/src/state/settings.rs:107-109 (AppSettings 开关)",
+      "crates/ui-egui/src/state/view.rs:362-368 (RIGHT_WIDTH 默认值，横排后可改为 318)"
+     ]
+    },
+    {
+     "name": "O4 拆出新的停靠面板：Histogram、History、Navigator（以及 Snapshots=Versions）",
+     "how": "在 docking.rs 的 Panel 枚举里加 Histogram/History/Navigator 变体，并补齐 ALL、id、label、home_side、home_width、panel_limits 和面板体分派（约 6 处 match）。在 UiState 里加可见性标志，在 sync() 和 publish_visibility() 里接上，在 Window 菜单加 panel.* 命令。Histogram 面板体调用 edit::histogram(app, ui, id)，它显示时 right.rs 不再画直方图；History 和 Versions 面板体把 right/history.rs 的 activity、versions 改为 pub(crate) 后直接调用，独立面板显示时 Tools 里对应的模式要禁用或合并，避免同一个 egui Id 在一帧里出现两次。Navigator 要新写一个面板版小地图，复用 filmstrip.rs:8-44 的计算，但需要从画布拿到 image rect 和 zoom/pan，并注意画布在面板之后绘制的顺序。",
+     "pros": "最接近 LrC 的左栏（Navigator、Presets、Snapshots、History）和右栏（Histogram 在顶）；面板仍由 craft-ui 管理，可以自由拖动。",
+     "cons": "Panel 是 serde 枚举，新增变体后上游版本读到 fork 写的 ui.json 会丢弃布局，并在本次运行中不保存设置，需要额外的兼容层（比如把新面板的位置存在单独的键里）；会碰到 app.ui.right 的模式语义（约 60 处）；Navigator 实际上是新内容，偏离了“不改内容”的原则；测试量最大。",
+     "effort": "12–25 小时：业务代码约 250–400 行（docking 约 60、状态和命令约 60、histogram/history 接线约 30、Navigator 面板约 100–150、兼容层约 50），测试约 200 行。估算依据：每个新面板要覆盖打开、关闭、存取、校验测试（参照 docking.rs:588-830），Navigator 还要为绘制顺序（docking.rs:394-395）做特殊处理。",
+     "keeps_upstream_updates": "2/5：枚举和 ui.json 的兼容问题会长期存在；docking.rs、right.rs、state.rs 都要改，state.rs 30 天内有 54 次提交。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:12-52 (Panel 定义)",
+      "crates/ui-egui/src/docking.rs:232-269 (from_ui/sync/publish_visibility)",
+      "crates/ui-egui/src/docking.rs:403-424 (面板体分派)",
+      "crates/ui-egui/src/docking.rs:539-547 (panel_limits)",
+      "crates/ui-egui/src/panels/right.rs:24-25,62-66",
+      "crates/ui-egui/src/panels/right/history.rs:3,133",
+      "crates/ui-egui/src/panels/edit/histogram.rs:51",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:8-44",
+      "apps/lightcraft/src/prefs.rs:57-68 (兼容性)"
+     ]
+    },
+    {
+     "name": "O5 全新的 Rust UI 前端（重写 ui-egui，或另起一个 crate 直接调用 engine Session）",
+     "how": "另写一个 crate（比如用 egui、iced 或 slint），只依赖 lightcraft-engine，自己实现网格、放大镜、滑块、遮罩、裁剪、对话框等全部界面；或者 fork ui-egui 后重写 frame、docking 和所有面板。",
+     "pros": "布局完全自由，可以 1:1 复刻 LrC 的模块化窗口。",
+     "cons": "ui-egui 非测试代码约 67.6k 行，加上测试约 116k 行。重写等于重做全部交互细节（AccessKit、i18n、快捷键、control 协议、headless 测试），远远超出“只改布局”的范围；外部 crate 碰不到 pub(crate) 和 pub(super) 的帧编排；几乎无法继续合并上游的 UI 修复。",
+     "effort": "500–1500 小时以上（按 ui-egui 的代码量和测试密度粗估），不推荐。",
+     "keeps_upstream_updates": "1/5：只能继续合并 engine 层的更新，上游的 UI 改进全部需要手工移植。",
+     "hook_points": [
+      "crates/ui-egui/src/app.rs:673-683",
+      "crates/ui-egui/src/app/frame.rs:252,397 (pub(super) 帧编排)",
+      "crates/ui-egui/src/lib.rs:148-160 (LightcraftApp 字段)"
+     ]
+    }
+   ],
+   "open_questions": [
+    "上游维护者在 issue #1217 下的 6 条评论和 PR #3158 关闭的原因没能读到（仓库 API 返回 403，只能用 search API），所以不清楚可选的 Classic 布局或模块切换器能否被上游接受；值得到 GitHub 页面上人工看一下。",
+    "用户想要的 Print“模块”是否接受继续用现在的 Print 对话框（dialog.print），还是需要把 print_view::body 搬进画布做成整窗视图？后者工作量会再增加约 4–8 小时。",
+    "通栏胶片条在 Grid 视图里是否必须有（LrC 有），以及是否接受胶片条位于底栏之下、整窗宽（LrC 的做法），而不是现在的“画面 → 胶片条 → 底栏”且只有画布宽？",
+    "按模块分别记忆布局时，两个模块之间要不要共用侧栏分区状态（SidebarLayout）和右侧当前模式（app.ui.right）？这会影响 view.module 的语义和测试范围。",
+    "iconic 列在没有图标时用首字母显示（craft-ui render/iconic.rs:243-245），这种效果在 LightCraft 里是否可以接受，没有实际运行验证。",
+    "craft-libs 的固定版本 c5a1cbf 落后于其 main（081078b），新版 docking 是否有对 Classic 布局有用的新能力（比如 DockDirection、命名工作区的辅助函数）还没有评估；fork 不应自行升级这个版本。",
+    "项目这次没有编译和运行；O2、O3 的行数和工时是根据代码阅读和 PR #3158 的 diff 推算的，需要实际做一个原型（比如用 lightcraft-cli snapshot --demo --script 截图）来校准。"
+   ]
+  },
+  "upstream_route": {
+   "summary": "结论：把类似 Lightroom Classic（LrC）的布局做进上游 LightCraft，技术上可行，而且应该在现有的 egui 界面加 craft_ui::docking 之上做。用别的 Rust GUI 框架从零重写不划算：许可证、GPU 纹理共享、Web 构建、上游同步这四个方面至少有一个会卡住，工作量也是重新排布的几十倍。\n\n现状：上游刻意沿用云端 Lightroom 9.6 的单窗口布局。docs/ui-parity.md:25 写明“no Classic module switcher (by design)”，KEYC-MODULES 一行标为 🚫，所以“模块切换器”要维护者先拍板，属于产品决策，不是普通 PR。\n\n可以利用的地方：craft-ui 的 docking（钉住的版本 c5a1cbf）已经支持左右两侧停靠、多栏、上下堆叠的分组、手风琴式 Stack、只显示图标的栏、Reset 用的保存布局、锁定，以及由应用自己实现的命名工作区命令。LightCraft 只用到其中一部分：只有 ui.dock 和 Window ▸ Reset Panel Layout，没有布局预设、没有命名工作区，设置里也没有布局选项。\n\n真正要做的工作：现在的 Tools 面板一次只显示一个模式（Edit/Info/Keywords/Versions/History），Histogram 固定在 Edit 顶部，Navigator 是叠在照片上的小图，胶片带画在照片区域里面、网格视图里没有。要做成 LrC 那样，需要把这些内容拆成能单独停靠的面板，并把胶片带移到 dock 外面、横跨整个窗口宽度。好在这几块的绘制函数本身已经可以单独调用，风险主要在 app.ui.right 有 119 处引用（14 个文件），要逐一改命令跳转。\n\n上游需求是有的：#1217（open）专门请求可选的 Classic 风格界面，#1787 和 #2062 已作为它的重复关闭。Classic 键位层也已经有 PR #2338，但被 #2580 整合计划列进了“C9 产品决策”待裁定，所以布局方案应该和 #2338 配合，不要重复做。#1217 的 6 条评论没法直接读（REST 接口返回 403）；用搜索 API 探测，评论里出现过 Classic/LrC/support/thanks 这类词，没有 layout/docking/module/panel，所以看起来是用户附议，维护者还没表态。\n\n建议的上游路线：\n1. 先在 #1217 留言认领，并给出设计方案。\n2. PR A：增加布局预设“Lightroom（默认）| Lightroom Classic”，只用现有面板，加上横跨全宽的胶片带。约 6–12 小时 agent 工时 / 24–48 小时人工。\n3. PR B：把 Histogram、Navigator、History、Snapshots、Info、Keywords 拆成可停靠面板。约 15–30 / 60–120 小时。\n4. PR C：等维护者同意后，再做 Library/Develop 模块切换器，每个模块一套工作区，配合 #2338。约 10–20 / 40–80 小时。\n\n三步合计约 30–60 小时 agent 工时 / 120–240 小时人工，不含排队审核。上游目前有 834 个 open PR，最近 10 天合并了 123 个，排队和冲突风险都高，所以必须拆成小 PR，一个 PR 只做一件事。\n\n从零重写的情况：ui-egui 约 67.6k 行非测试代码、36.8k 行测试、1,968 个测试、194 个 UI 命令，估计要 1,500–3,000 小时人工（250–600 小时 agent），而且之后几乎收不到上游界面的更新。\n\n本次没有编译项目：工作区很大，依赖 egui fork 和多个 git 依赖，不是很快能编完的。",
+   "claims": [
+    {
+     "id": "C1",
+     "claim": "上游明确沿用 Lightroom 9.6（云端版桌面应用）的单窗口布局，Classic 模块切换器是“刻意不做”；模块快捷键行标为 🚫。",
+     "evidence": [
+      "docs/target-app-parity.md:26-28（Lightroom 9.6 ... for the interface LightCraft's layout follows）",
+      "docs/ui-parity.md:25（Layout and views 行：no Classic module switcher (by design) or output modules）",
+      "docs/parity-checklist.md:781（KEYC-MODULES | 🚫 | no modules in LightCraft）",
+      "crates/ui-egui/Cargo.toml:7（\"LightCraft egui frontend (Lightroom-style UI); swappable\"）",
+      "docs/architecture.md:21"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C2",
+     "claim": "现有的布局自定义功能：Library/Tools/Presets 三个面板可以自由停靠、拆分、浮动、关闭（Canvas 受保护）；Window ▸ Reset Panel Layout（ui.dock.reset）；控制通道命令 ui.dock；侧栏宽度可拖；左侧栏各分区可排序、隐藏、折叠；F6/F7/F8 切换显示。没有的：命名工作区、布局预设、锁定工作区的界面、设置里的布局选项。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:14-19（enum Panel { Canvas, Library, Tools, Presets }）, :71-74（permissions）, :94-106（docked() 默认布局）, :323-344（command_impl：reset 恢复默认并隐藏 Library/Presets）",
+      "crates/ui-egui/src/menus/ui_commands.rs:61-62（ui.dock 'Arrange Panel'、ui.dock.reset 'Reset Panel Layout' 在 Window 菜单）",
+      "crates/ui-egui/src/menus/run.rs:149-151",
+      "docs/control-protocol.md:404-421",
+      "docs/parity-checklist.md:474-479（LR-BEHAV-SIDEBAR-*、LR-BEHAV-PANEL-RESIZE）, :780（KEYC-PANELS）",
+      "搜索方式：在 crates/ui-egui/src 里 grep 'window.workspace' 无结果；在 dialogs/settings/*.rs 里 grep -i 'workspace|layout|dock' 只有 egui::Layout 和文字排版相关的结果；grep 'locked' 只在 docking.rs:396 把 workspace.locked 传给 DockArea，没有命令能切换它"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C3",
+     "claim": "钉住版本的 craft-ui docking 已经具备做 LrC 布局所需的大部分底层能力：左右停靠、多栏、栏内上下堆叠分组、手风琴 Node::Stack、只显示图标的栏、Workspace.saved（Reset 用）、locked，以及由应用实现的命名工作区命令。限制是停靠只能在 Start/End 两侧，没有底部 dock，所以横跨全宽的胶片带要画在 DockArea 外面。",
+     "evidence": [
+      "craft-libs @c5a1cbf（克隆在 scratchpad/ui/craft-libs）crates/ui/src/docking/workspace.rs:11-32（Workspace { version, layout, hidden, saved, locked }）",
+      "crates/ui/src/docking/dock_model.rs:23-26（enum Side { Start, End }）",
+      "crates/ui/src/docking/model.rs:28-50（Node::Split/Tabs/Stack/Dock）, :43-44（dock 必须位于窗口边缘，只能经由水平分割到达）",
+      "craft-libs docs/ui-docking.md:15-21（布局类型）, :109-120（Workspace 方法）, :416-420（window.workspace、.new、.delete 命令）, :451-454（Named workspaces and Reset belong to the app）, :800-804",
+      "Cargo.toml:13（craft-ui rev c5a1cbfb…，features serde）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C4",
+     "claim": "LrC 布局里独立显示的几个区域，在 LightCraft 里都嵌在别的面板内，不能单独停靠：Histogram 只在 RightPanel::Edit 时画在 Tools 顶部；Info/Keywords/Versions(Snapshots)/Activity(History)/Profiles/Crop 等是同一个 Tools 面板的互斥模式；Navigator 是放大照片时叠在照片右下角的小图；胶片带只在 Detail/Compare/Survey/Reference 里画在照片区域内部（网格视图没有）；工具条是 dock 外面固定的 egui::Panel::right。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right.rs:62-66（RightPanel::Edit && app.ui.histogram 时调用 super::edit::histogram）, :81-94（match app.ui.right，一次只显示一个）",
+      "crates/ui-egui/src/state/view.rs:24-38（enum RightPanel）",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:6-12（navigator：放大时画在画布右下角）, :58（filmstrip(app, ui, r: Rect)）",
+      "crates/ui-egui/src/panels/detail.rs:134-144（胶片带在 canvas 内部）",
+      "crates/ui-egui/src/panels/compare.rs:190-199",
+      "crates/ui-egui/src/app/frame.rs:473-478（topbar、strip 在前，CentralPanel 里调用 docking::show）",
+      "crates/ui-egui/src/panels/strip.rs:17-27",
+      "crates/ui-egui/src/docking.rs:404-431（bottombar 和各视图在 Canvas 回调里绘制）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C5",
+     "claim": "要拆出来的内容，绘制函数本身可以复用：versions/activity/info/keywords 的签名都是 (app, ui, PhotoId)，内部不读 app.ui.right；histogram 是 pub(crate)；filmstrip 接受任意 Rect。主要风险在命令跳转：非测试代码里有 119 处读取 app.ui.right，分布在 14 个文件；Tools 面板的 ScrollArea 和临时状态用的是全局 id（right-scroll），同时显示多个实例前需要改 id。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right/history.rs:3（fn versions）, :133（fn activity）",
+      "crates/ui-egui/src/panels/right/info.rs:3；crates/ui-egui/src/panels/right/keywords.rs:3",
+      "crates/ui-egui/src/panels/edit/histogram.rs:51（pub(crate) fn histogram）",
+      "crates/ui-egui/src/panels/right.rs:70、:101-103（id_salt 'right-scroll'、AREA/OFFSET/HOLD 全局键）",
+      "搜索方式：grep -c 'ui.right|RightPanel' 在 right/history.rs、info.rs、keywords.rs、detail/filmstrip.rs、presets.rs 中均为 0；grep 'ui\\.right\\b|RightPanel::' 统计非测试代码共 119 处，分布在 14 个文件",
+      "crates/ui-egui/src/docking.rs:275-302（reveal_command：panel.* 命令映射到 Panel::Tools）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C6",
+     "claim": "上游有明确需求：#1217（open，label ui，2026-10-12）请求可选的 Classic 风格界面，包括顶部模块切换（Library/Develop/Map/Print…）、Classic 左侧面板（Navigator/Folders/Collections）、底部胶片带、Classic 快捷键；#1787、#2062 在 2026-10-19 以 duplicate 关闭；#2187（open）的提案里附带了 module bar 补丁包；#2342/#2343（open，priority: low）要竖向胶片带或照片占满高度的布局；#3600（左右侧胶片带）以 duplicate/not_planned 关闭并打了 backlog 标签。",
+     "evidence": [
+      "gh api search/issues 'repo:storytold/lightcraft is:issue \"optional Lightroom Classic\" in:title' → #1217 正文、labels=[ui]、comments=6",
+      "search 'is:issue 1787' / '2062' → state_reason=duplicate，closed 2026-10-19",
+      "search 'is:issue 2187' → 'Lightroom-style top module bar (Library, Edit, People, Compare, Slideshow)'",
+      "search 'is:issue 3600' → labels [duplicate, priority: low, ui, backlog]，reason not_planned",
+      "search 'is:issue 2342' / '2343'"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C7",
+     "claim": "#1217 下看不到维护者的设计裁定。6 条评论无法直接读取：issues REST 和 GitHub MCP 都被会话拒绝，网页也返回 403。用 in:comments 搜索探测：评论里出现过 Classic、LrC、Lightroom、would、support、thanks，没有出现 layout、docking、workspace、module(s)、panel(s)、by design、keymap、pull request、duplicate、roadmap，所以更像是用户附议。",
+     "evidence": [
+      "gh api repos/storytold/lightcraft/issues/1217/comments → HTTP 403；mcp__github__issue_read → Access denied；curl github.com/.../issues/1217 → 403",
+      "gh api search/issues 'repo:storytold/lightcraft is:issue \"<词>\" in:comments label:ui'：正对照 Classic/thanks/would/support/LrC 能命中 #1217，其余词都没有命中"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C8",
+     "claim": "Classic 键位层已经有 PR：#2338（open，2026-10-19 创建，2026-11-04 rebase，CI 绿）。它加了 KeyProfile（Lightroom | Classic），设为可选，用户自己的绑定优先；docs/classic-keymap.md 里映射了 E=放大视图、D=Develop(Edit)、R=Crop、Q=Remove、K=Brush、⇧T=Guided Upright 等。#2580 的 round-3 整合计划把它和 #2194（菜单重组）、#1554/#1589/#1651（视觉改版）、#2344（可选 LrC 裁剪画布）一起列在“C9 Product calls”，等维护者裁定。",
+     "evidence": [
+      "search 'is:pull-request 2338' → 标题 'Lightroom Classic keymap profile (opt-in, user bindings stay on top)'，正文",
+      "git fetch --filter=blob:none origin pull/2338/head（scratchpad/ui/pr-refs）；git show refs/pr/2338:docs/classic-keymap.md（映射表）；commit a711ce7 feat(keymap)…",
+      "#2580 正文 '### C9 Product calls … #1822 keymap, #2338 LrC keymap profile, #2194 menu reorganisation … #1554/#1589/#1651 visual redesigns'；'### C8 Crop model … #2344 (opt-in LrC canvas, in C-product)'",
+      "docs/ui-parity.md:32（no Classic keymap layer）, :39-41（Classic keymap layer 4–8 h）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C9",
+     "claim": "有一个先例：PR #1680“opt-in mobile arrangement”只用现有 docking 原语拼出另一套工作区（Workspace::mobile、ui.dock.mobile、Node::Stack 手风琴），开约 36 分钟就未合并关闭，原因看不到。它的 head 带着无关提交（drizzle、focus stacking 等合并相关提交），更像是分支不干净被关，不一定是否定这个思路。",
+     "evidence": [
+      "search 'is:pull-request 1680' → created 2026-10-14T05:43:25Z、closed 06:19:03Z、merged_at=null，正文描述 Workspace::mobile/Arrangement",
+      "git log refs/pr/1680 → 066f612 style…、a422ec1 'merge: drizzle by area-weighted accumulation'、ec4810b 'merge: focus stacking…'",
+      "main 上 docs/mobile-layout.md 不存在（ls 报错）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C10",
+     "claim": "适用于 UI PR 的贡献规则：写代码前先在 issue 留言认领，并搜索相关 PR；修改要窄、带测试；一个 PR 只做一件事，标题以 checklist id 开头；cargo xtask ci 通过；要有一个不改就会失败的测试；用户可见的改动要实际运行应用并截图（不能有 Adobe 截图）；同一个 commit 里同步更新 parity-checklist 和 gaps；新代码必须有调用者；改变已保存设置默认值的，要做成默认关闭的设置，并在 docs/whats-new.md 加一行；新快捷键要在 docs/library-shortcuts.md 确认空闲；PR 里不写 agent 署名；不在功能 PR 里改 CI；提交信息一个 task id 一个 commit。",
+     "evidence": [
+      "AGENTS.md:7（Check, then claim … Comment on the issue first）, :9, :10, :12, :16, :20（No agent attribution）",
+      "AGENTS.md:66-71（落地功能时同一 commit 更新 checklist/gaps；cargo xtask parity）, :124-128, :159-170（用控制通道和 ui.screenshot 查看效果）, :183-186",
+      "AGENTS.md:227-229（CI 规则）",
+      "AGENTS.md:9 和 :14（规则 9：许可证不在白名单内要停下来问）",
+      "AGENTS.md:183-184（新功能至少一个不改就会失败的测试）",
+      ".github/PULL_REQUEST_TEMPLATE.md:1-9（标题、一个 PR 一件事）, :24-27（检查项）, :31-34（截图）, :41-43（已保存设置的默认值变化要设为默认关闭并写 whats-new）, :55-62（tr() 和 locales 键、checklist 行、新代码有调用者）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C11",
+     "claim": "本地化：新出现的界面文字必须走 tr()，键要加到 crates/ui-egui/locales/*.json；缺少翻译时显示英文，测试不会失败，所以规则上不强制所有语言都翻译。实践上，现有 docking 字符串在 17 个语言目录里都有翻译，上游也常有 agent 补译的 PR，建议一起补。",
+     "evidence": [
+      "docs/localization.md:14-16（缺少的消息显示英文，不会报错）, :95-96（测试只在目录损坏时失败，不会因缺翻译失败）",
+      ".github/PULL_REQUEST_TEMPLATE.md:57-58（New text on screen goes through tr() and has its key in crates/ui-egui/locales/*.json）",
+      "grep '\"Reset Panel Layout\"|\"Float panel\"|\"Panels\"' crates/ui-egui/locales/*.json → cs、de、es、fi、fr、id、it、ja、ka、pl、pt-br、ru、sv、uk 等都有",
+      "docs/localization-parity.md:16-30（计数方式）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C12",
+     "claim": "上游吞吐量和积压都很大：2026-11-11 有 834 个 open PR；11 月 1 日以来合并 123 个，其中 70 个提到 crates/ui-egui。#2580 记录了按批整合的流程（当时 440 个 open PR）。布局类 PR 和正在进行的面板 PR 冲突概率高：#3031（48 条评论）、#3227、#3820、#1195。",
+     "evidence": [
+      "gh api search/issues 'repo:storytold/lightcraft is:pr is:open' → total_count 834",
+      "'is:pr is:merged merged:>=2026-11-01' → 123；加 'crates/ui-egui' → 70",
+      "#2580 正文（3a/3b/C/D/E 分类，Track 1 UI 顺序合并）",
+      "search 'docking' PR 结果：#3031、#3227、#3820、#1195 都是 open"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C13",
+     "claim": "照片画布和 GPU 渲染管线的衔接点是 egui 专用的：引擎在窗口自己的 wgpu 30 设备上渲染，desktop app 通过 ScreenTextures 用 egui-wgpu 的 register_native_texture / update_egui_texture_from_wgpu_texture 直接显示 GPU 纹理（不回读）；Tex/ScreenTextures 的类型是 egui::TextureId、egui::ColorImage。不共享设备时退回到像素路径（回读、上传）。换框架就要重写这个桥接，而且 wgpu 主版本必须一致。",
+     "evidence": [
+      "Cargo.toml:101（wgpu = { version = \"30\" … }）",
+      "apps/lightcraft/src/main.rs:88-122（WindowTextures：register_native_texture、update_egui_texture_from_wgpu_texture）, :125-150（adopt_window_device）",
+      "crates/ui-egui/src/render.rs:89-122（Tex.native: Option<egui::TextureId>）, :124-142（trait ScreenTextures）",
+      "docs/gpu-pipeline.md:402-412（Drawing renders straight from the GPU）",
+      "apps/lightcraft/Cargo.toml:28（eframe features wgpu、glow…）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C14",
+     "claim": "候选框架的许可证和兼容性（数据来自 crates.io API）：iced 0.14.0 是 MIT，但 iced_wgpu 依赖 wgpu ^27；Slint 1.18.1 是 'GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0'，不在白名单里，而且 i-slint-backend-winit 无条件依赖 i-slint-renderer-skia（C++ Skia）；gpui 0.2.2 是 Apache-2.0，但走 metal/blade-graphics，不用 wgpu；xilem/masonry 0.4.0 是 Apache-2.0，经 vello 0.6 依赖 wgpu ^26；makepad-widgets 1.0.0 是 MIT OR Apache-2.0，用自己的渲染栈；dioxus 0.7.10 是 MIT/Apache，但 dioxus-desktop 依赖 wry（webview），违反 native 应用不得用 webview 外壳的规则；egui_dock 0.21.1（MIT）要求 egui ^0.36；egui_tiles 0.18.0（MIT/Apache）支持 egui ^0.37。",
+     "evidence": [
+      "curl https://crates.io/api/v1/crates/<name>：iced 0.14.0 MIT；slint 1.18.1 GPL-3.0-only OR LicenseRef-Slint-…；gpui 0.2.2 Apache-2.0；xilem/masonry 0.4.0 Apache-2.0；makepad-widgets 1.0.0 MIT OR Apache-2.0；dioxus 0.7.10 MIT OR Apache-2.0；egui_dock 0.21.1 MIT；egui_tiles 0.18.0 MIT OR Apache-2.0",
+      "/dependencies 查询：iced_wgpu 0.14.0 → wgpu ^27.0；vello 0.6.0 → wgpu ^26.0.1（xilem 0.4.0 → vello ^0.6.0）；gpui 0.2.2 → metal ^0.29、blade-graphics ^0.7；dioxus-desktop 0.7.10 → wry ^0.53.5、tao ^0.34；i-slint-backend-winit 1.18.1 → i-slint-renderer-skia（optional=false）；egui_dock 0.21.1 → egui ^0.36；egui_tiles 0.18.0 → egui ^0.37.0",
+      "AGENTS.md:34-49（白名单：ISC、MIT、BSD-2/3、Apache-2.0、OFL-1.1…，没有 GPL 和 LicenseRef-Slint）, :30（no Tauri, Electron or webview shell … Preserve any existing web build）, :116（Pure Rust … No C/C++ dependencies）",
+      "Cargo.toml:190-202（LightCraft 用 [patch.crates-io] 把 egui 全家换成 storytold/egui fork）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C15",
+     "claim": "ui-egui 的规模：294 个 .rs 文件，共 118,556 行；非测试文件约 67,609 行（含内联 #[cfg(test)] 模块），测试文件 36,834 行，#[test] 共 1,968 个；UI_COMMANDS 共 194 条（2026-10-10 时是 143 条）；dialogs 约 11.8k 行，panels 约 25.6k 行。lightcraft、lightcraft-cli（headless snapshot、MCP）、lightcraft-web 三个应用都依赖 ui-egui。",
+     "evidence": [
+      "find crates/ui-egui -name '*.rs' | wc -l → 294；cat | wc -l → 118556；排除 tests 的文件 → 67609；tests 目录 → 36834；grep -rn '#[test]' | wc -l → 1968",
+      "awk 统计 crates/ui-egui/src/menus/ui_commands.rs:60 起 UI_COMMANDS 的条目 → 194；docs/ui-parity.md:13-15（2026-10-10 时为 143）",
+      "apps/lightcraft-cli/Cargo.toml:21、apps/lightcraft-web/Cargo.toml:17、apps/lightcraft/Cargo.toml:23（都依赖 lightcraft-ui-egui）",
+      "crates/ui-egui/tests/it/{docking_workflows,landmarks,accessibility}.rs（kittest 布局和无障碍测试）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C16",
+     "claim": "向后兼容：ui.json 里的 docking 解析失败或校验失败时会被丢弃，并提示“布局无法恢复，本次会话不保存设置”，其他设置照常载入；UiState 不拒绝未知字段。所以给 Panel 增加新变体后，降级到旧版本时会出现这条提示；把 Classic/每模块的工作区放在新字段里，降级是安全的。",
+     "evidence": [
+      "apps/lightcraft/src/prefs.rs:54-75（decode_saved_ui：drop_outdated，docking 反序列化失败则删除）, :86-93（提示 'couldn't be restored … settings won't be saved this session'）",
+      "crates/ui-egui/src/state.rs:21-23（#[serde(default, rename_all)]，没有 deny_unknown_fields）, :29-33（docking、docking_version）",
+      "crates/ui-egui/src/docking.rs:58-69（DOCKING_VERSION=1、drop_outdated）",
+      "apps/lightcraft-web/src/web.rs:602（Web 端走同样的迁移）"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "C17",
+     "claim": "不改代码今天就能部分接近 LrC：Presets 可以拖到左侧 Library 下面（或用 ui.dock move 到 zone below），Tools（顶部带 Histogram）留在右侧，布局会保存到 ui.json。但做不到的有：History/Snapshots/Navigator 放到左侧、胶片带横跨全宽或出现在网格视图里、模块切换。",
+     "evidence": [
+      "docs/control-protocol.md:406（布局保存在 UI 偏好里）, :410（move 支持 target 和 zone:center|tab|left|right|top|bottom|above|below）",
+      "PR #2839 正文（拖到分组上方或下方三分之一处会堆叠成上下分组；在 2026-10-26 合并）",
+      "crates/ui-egui/src/docking.rs:71-74（非 Canvas 面板用默认权限，可以停靠到任意一侧）"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C18",
+     "claim": "维护者的优先级写在文档里：Classic 输出模块是按功能计入的缺口（gap 15 Print 15–25 h；gap 16 Map/Book/Slideshow/publish 60–100 h；ROADMAP 里 Classic output modules 90–150 h）；UI/UX 剩余 32–54 h，其中 Classic keymap layer 4–8 h；当时引入面板 docking 被记为“closes no listed gap”。也就是说，布局和模块切换本身不在缺口排行里。",
+     "evidence": [
+      "docs/gaps.md:32-33（gap 15、16）, :46（gap 28 small Classic shortcuts 2–4 h）, :177（Panel docking (UI.9, #869) closes no listed gap）",
+      "docs/ui-parity.md:39-41（Remaining 32–54 h，含 Classic keymap layer 4–8 h）",
+      "ROADMAP.md:49（UI/UX fidelity ~70%，32–54 h）, :74（Classic output modules 90–150 h）, :158（2026-10-10 UI docking）",
+      "docs/target-app-parity.md:80"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "C19",
+     "claim": "本次没有编译或运行项目：工作区很大（24 个以上 crate，egui 和 craft-libs 都是 git 依赖），不属于很快能编完的情况。以上关于代码的结论都来自阅读源码和 grep。",
+     "evidence": [
+      "Cargo.toml:3（members crates/*、apps/*、xtask）, :13-20（craft-libs git 依赖）, :190-202（egui fork patch）"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "options": [
+    {
+     "name": "O1 零代码：用现有 docking 手动拼一个接近 LrC 的布局",
+     "how": "在当前上游版本里把 Presets 拖到左侧 Library 下面（或者在控制通道执行 engine.execute {\"command\":\"ui.dock\",\"params\":{\"operation\":\"move\",\"panel\":\"presets\",\"target\":\"library\",\"zone\":\"below\"}}），Tools 留在右侧（Edit 顶部自带 Histogram），用 F6/F7/F8 控制显示，再配合等合并的 #2338 Classic 键位。布局会自动保存到 ui.json。",
+     "pros": "不用写代码，立刻能用，和上游 100% 同步；先体验一下，可以判断哪些 LrC 元素是真正需要的。",
+     "cons": "左侧放不了 History/Snapshots/Navigator，胶片带不能横跨全宽、网格视图里也没有，没有 Library/Develop 模块切换，Reset Panel Layout 会回到 Lightroom 默认布局。",
+     "effort": "0.5–1 小时（试摆和保存）。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:346-470（show 处理拖放动作）",
+      "docs/control-protocol.md:404-421"
+     ],
+     "keeps_upstream_updates": "5/5：完全不改代码。"
+    },
+    {
+     "name": "O2 上游 PR A：布局预设“Lightroom（默认）| Lightroom Classic”，只用现有面板，加全宽胶片带",
+     "how": "在 docking.rs 增加 classic_workspace()：左栏是 Library 加下方的 Presets 分组，右栏是 Tools。增加 UI 命令 ui.dock.preset {name}（Window ▸ Panel Layout ▸ Lightroom / Lightroom Classic），UiState 新增 layoutPreset 字段（默认 lightroom，旧文件读作 lightroom）；ui.dock.reset 按当前预设重置。胶片带新增“窗口底部全宽”的位置：在 frame.rs:473-478 的 CentralPanel 之前加一个 egui::Panel::bottom 调用现有的 filmstrip(app, ui, rect)，同时让 detail.rs:134-144 和 compare.rs:190-199 在这种模式下不再在照片区域里画；可选在网格视图也显示胶片带。测试用 kittest headless 写：预设的形状、保存后重新载入、F7/F8 同步、胶片带位置。另外加 locales 键（建议 17 个语言都补译）、更新 control-protocol.md、新增 parity 行（例如 LR-BEHAV-LAYOUT-PRESET）、ui-parity 修订记录、whats-new 一行。开工前先在 #1217 留言认领，并说明和 #3031/#3227/#3820 的关系。",
+     "pros": "改动小，只碰 docking、frame、胶片带三处和一条命令，默认不变，符合“默认关闭的设置加一行 whats-new”的规则；不新增 Panel 变体，降级安全；直接对应 #1217 的“左侧面板加底部胶片带”需求，不涉及有争议的模块切换器。",
+     "cons": "还没有 History/Snapshots/Navigator 左侧面板，也没有模块切换，所以只能算“Classic 风格的排列”；预设切换、F7/F8 同步、Reset 三者的交互要仔细测；可能被要求等 #2338、#3031 的裁定。",
+     "effort": "约 6–12 小时 agent 工时 / 24–48 小时人工。依据：代码约 400–800 行（docking.rs 预设和命令约 150–250 行，frame/胶片带搬迁约 100–200 行，UiState 和菜单约 50–100 行），测试约 300–500 行（可以照 tests/it/docking_workflows.rs 和 src/tests/docking_acceptance.rs 的写法），文档和 17 个 locales 约 1–2 小时，运行应用截图验证约 1 小时。参照 docs/target-app-parity.md:255 的经验值（小行约 6–12 分钟一行）以及 #2839 一类 docking PR 的体量。审核排队另算，很可能要几周（834 个 open PR；#2338 已经等了 3 周以上）。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:94-110（docked/default_workspace）、:323-344（command_impl 的 reset）、:236-273（sync/publish_visibility）",
+      "crates/ui-egui/src/menus/ui_commands.rs:61-62",
+      "crates/ui-egui/src/menus/run.rs:149-151",
+      "crates/ui-egui/src/app/frame.rs:473-478",
+      "crates/ui-egui/src/panels/detail.rs:134-144",
+      "crates/ui-egui/src/panels/compare.rs:190-199",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:58",
+      "crates/ui-egui/src/state.rs:29-33、:48-61",
+      "docs/control-protocol.md:404-421",
+      "docs/parity-checklist.md:479"
+     ],
+     "keeps_upstream_updates": "5/5（合并之后）：用户只要在菜单里选布局，官方应用照常更新；没合并之前等同于 O5。"
+    },
+    {
+     "name": "O3 上游 PR B：把 Histogram、Navigator、History、Snapshots、Info、Keywords 拆成可停靠面板",
+     "how": "给 enum Panel 增加 Histogram、Navigator、History、Snapshots、Info、Keywords 变体。每个面板在自己的 ScrollArea（独立 id_salt）里调用现有函数：edit::histogram、right::history::{activity,versions}、right::info::info、right::keywords::keywords。Navigator 改为面板时读取上一帧 detail.rs 记录的照片和画布几何，加上 Fit/Fill/1:1 按钮（调用现有的 view.zoomFit、view.zoom100 等命令）。Lightroom 默认布局里这些新面板都处于 hidden，行为不变。Classic 预设：左栏放 Navigator、Presets、Snapshots、History、Library；右栏放 Histogram、Tools。reveal_command 和 menus/run.rs 里的 panel.versions、panel.activity、panel.info、panel.keywords、view.histogram 要改成：如果对应面板已经停靠，就显示那个面板，而不是切换 Tools 的模式。同步扩充 landmarks、accessibility、Tab 顺序测试。",
+     "pros": "这是 LrC 布局的核心（左侧 History/Snapshots/Navigator，右侧 Histogram 常驻）；内容函数原样复用，不改“具体内容”；新面板同样能拖动、浮动，Lightroom 用户也能受益。",
+     "cons": "要改 119 处 RightPanel 读取中相关的那部分，容易出现重复显示或命令跳到错的地方；全局 Id 和 ScrollArea 要拆开；降级时会出现“布局无法恢复”的提示（prefs.rs:86-93），可以把 Classic 工作区放到新字段来规避；需要分 2–3 个 PR，和 #3031/#3227 冲突概率高。",
+     "effort": "约 15–30 小时 agent 工时 / 60–120 小时人工。依据：每拆一个面板约 1.5–3 小时（docking 注册、ScrollArea、命令跳转、测试），6 个约 9–18 小时；Navigator 面板因为跨帧取几何多出 2–4 小时；无障碍、地标、Tab 顺序测试 2–4 小时；文档和 locales 2–3 小时。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs:14-56（Panel、label、home_side、home_width）、:275-302（reveal_command）、:404-424（面板回调）、:539-547（panel_limits）",
+      "crates/ui-egui/src/panels/right.rs:31-96",
+      "crates/ui-egui/src/panels/right/history.rs:3、:133",
+      "crates/ui-egui/src/panels/right/info.rs:3",
+      "crates/ui-egui/src/panels/right/keywords.rs:3",
+      "crates/ui-egui/src/panels/edit/histogram.rs:51",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:6-47（navigator）",
+      "crates/ui-egui/src/menus/run.rs:6、:606、:941、:1008",
+      "crates/ui-egui/tests/it/landmarks.rs、accessibility.rs、docking_workflows.rs"
+     ],
+     "keeps_upstream_updates": "5/5（合并之后）；改动面比 O2 大，合并概率低一些。"
+    },
+    {
+     "name": "O4 上游 PR C：Library/Develop 模块切换器、每模块一套工作区，并入 #2338 Classic 键位",
+     "how": "等维护者在 #1217 或 #2580 的 C9 里同意之后再做。UiState 增加 module 字段（library 或 develop），每个模块存一套 Workspace（新字段，降级安全）。切换模块时换工作区并切换视图：Library 对应网格或放大视图，加上 Info/Keywords；Develop 对应 Detail 加 Edit。可以用 craft-ui 预留的 window.workspace {name} 命名工作区命令（由应用实现）。topbar 右侧加文字切换器“Library | Develop | Print | Slideshow”：Print 打开现有的 dialog.print，Slideshow 打开 view.slideshowOptions；Map/Book/Web 没有实现，不放进去，避免出现没有调用者或未完成的功能。快捷键沿用 #2338 的 Classic 配置（G、E、D、⌘⌥1/2 等）。KEYC-MODULES 行从 🚫 改为 🟡，需要维护者同意。",
+     "pros": "最接近 LrC 的使用习惯；复用 craft-ui 已有的工作区机制；Print 和 Slideshow 都已经有，入口可以直接接上。",
+     "cons": "和 docs/ui-parity.md:25“by design”的表述直接冲突，是产品决策，被拒或长期搁置的风险高；依赖 #2338 先合并；两套工作区和 F7/F8、Reset、View 菜单的交互比较复杂。",
+     "effort": "约 10–20 小时 agent 工时 / 40–80 小时人工，另加和 #2338 的协调或 rebase 2–6 小时（ui-parity 对键位层的估计是 4–8 小时，#2338 已经做了大部分）。依据：模块状态和每模块工作区保存 3–6 小时，topbar 切换器 2–4 小时，命令和菜单 2–4 小时，测试 3–5 小时，文档 1 小时。",
+     "hook_points": [
+      "crates/ui-egui/src/panels/topbar.rs:22",
+      "crates/ui-egui/src/state.rs:29-33",
+      "crates/ui-egui/src/docking.rs:323-344",
+      "crates/ui-egui/src/menus/ui_commands.rs:185-186、:212（view.slideshow、view.slideshowOptions、dialog.print）",
+      "craft-libs docs/ui-docking.md:416-420、:451-454",
+      "docs/parity-checklist.md:781（KEYC-MODULES）、:789（KEYC-DEVELOP）",
+      "PR #2338（refs/pr/2338：crates/ui-egui/src/keymap_profiles.rs、docs/classic-keymap.md）"
+     ],
+     "keeps_upstream_updates": "5/5（合并之后），但被接受的概率最低；如果被拒，只能退到 O5。"
+    },
+    {
+     "name": "O5 下游补丁分支：只维护一组布局层补丁，持续 rebase 上游",
+     "how": "把 O2 到 O4 的改动作为一组补丁放在自己的 fork 上（集中在 docking.rs、frame.rs、topbar.rs、detail.rs、compare.rs、right.rs 和新的面板模块），定期 rebase 到上游 main，用 cargo xtask ci 和 headless snapshot 回归。",
+     "pros": "不用等维护者裁定，马上能得到完整的 LrC 布局；引擎和内容完全来自上游。",
+     "cons": "上游改 ui-egui 很频繁（11 月 1–10 日有 70 个提到 crates/ui-egui 的 PR 合并），docking.rs 和 right.rs 经常被改，rebase 冲突会持续出现；发布、签名、自动更新（craft-update）都要自己维护。",
+     "effort": "首次开发和 O2+O3+O4 相同，约 30–60 小时 agent / 120–240 小时人工；之后每周 rebase 约 1–3 小时，碰上上游大改 docking 时一次 4–8 小时。",
+     "hook_points": [
+      "同 O2-O4",
+      "Cargo.toml:13-20（craft-libs 钉住的 rev 会随上游变化）"
+     ],
+     "keeps_upstream_updates": "3/5：引擎和内容同步，但布局补丁要不断 rebase，上游界面改动越多成本越高。"
+    },
+    {
+     "name": "O6 用其他 Rust GUI 框架从零重写界面（iced / Slint / gpui / Xilem-Masonry / Makepad / Dioxus）",
+     "how": "引擎不动，用新框架重写 ui-egui 的全部内容：67.6k 行界面代码、194 个 UI 命令、34 个对话框文件、控制通道的 widget 注册和截图、headless snapshot（CLI 和 MCP 依赖它）、AccessKit、IME、17 种语言（tr 目录可以复用），以及 GPU 纹理桥接（ScreenTextures）。",
+     "pros": "可以彻底按 LrC 重新设计，不受 egui 的即时模式限制（比如 RTL、复杂文字排版）。",
+     "cons": "许可证或架构几乎都有硬伤。Slint：GPL-3.0 和 LicenseRef-Slint 都不在白名单，按规则必须停下来问维护者，而且 winit 后端会拉进 C++ Skia。Dioxus 桌面端是 wry webview，违反 AGENTS.md:30。gpui 和 Makepad 不用 wgpu，没法和引擎共享 wgpu 30 设备，只能走回读像素的路径，丢掉零拷贝的拖动预览；gpui 还没有 Web 目标，而规则要求保留现有的 Web 构建。iced 0.14（wgpu 27）和 Xilem 0.4（vello 0.6 对应 wgpu 26）跟 LightCraft 的 wgpu 30 主版本不一致，要么降级 crates/gpu（这就动了底层），要么放弃共享纹理。1,968 个界面测试和上游所有后续界面改进都要重做。",
+     "effort": "约 1,500–3,000 小时人工 / 250–600 小时 agent。依据：非测试 67.6k 行加测试 36.8k 行，按人工每小时 50–100 行“已测试的界面代码”算，代码本身约 1,000–2,000 小时，再加上行为对齐、无障碍、IME、截图回归和 GPU 桥接；agent 的估算参照仓库经验值（AI 降噪 12.8k 行约 8.3 小时，德语界面 13.8 小时），但行为对齐和验证的循环占大头。",
+     "hook_points": [
+      "apps/lightcraft/src/main.rs:88-150（GPU 纹理桥接）",
+      "crates/ui-egui/src/render.rs:89-142",
+      "Cargo.toml:101（wgpu 30）、:190-202（egui fork）",
+      "AGENTS.md:14、:30、:34-49、:116"
+     ],
+     "keeps_upstream_updates": "1/5：引擎还能跟着上游，但上游所有界面功能（对话框、面板、快捷键修复）都要手工移植，一两周就会明显落后。"
+    },
+    {
+     "name": "O7 在 egui 里把 docking 换成 egui_dock / egui_tiles",
+     "how": "用 egui_tiles 0.18（egui 0.37）或 egui_dock 0.21（目前要求 egui 0.36）替换 craft_ui::docking，自己重新实现 LrC 的排布。",
+     "pros": "许可证都没问题（MIT/Apache）；egui_tiles 的树形布局很灵活。",
+     "cons": "craft_ui::docking 是 Craft 系列共享库，LightCraft 在 #2839 刚迁移上去，功能也更全（dock 栏、图标栏、命名工作区、原生窗口、ui.dock 协议）；换掉会和上游方向冲突，相当于自建 fork；egui_dock 还不支持 egui 0.37；LightCraft 用的是 storytold 的 egui fork patch，兼容性要另外验证。",
+     "effort": "约 20–40 小时 agent / 80–160 小时人工（替换渲染、迁移保存格式、改 ui.dock 协议和测试），收益为负。",
+     "hook_points": [
+      "crates/ui-egui/src/docking.rs（整个文件）",
+      "crates/ui-egui/tests/it/docking_workflows.rs",
+      "Cargo.toml:13、:190-202"
+     ],
+     "keeps_upstream_updates": "2/5：等于长期分叉 docking 层。"
+    }
+   ],
+   "open_questions": [
+    "#1217 的 6 条评论里，维护者有没有表态？本会话的 REST/MCP 都无法读取（403），只能通过搜索推测是用户附议。需要用户自己看一眼，或者授权读取该仓库。",
+    "维护者会不会在 #2580 的 C9 产品决策里批准 #2338（Classic 键位）？会不会接受一个可选的模块切换器？这和 docs/ui-parity.md:25 的“by design”直接相关，决定 O4 能不能走。",
+    "用户最看重 LrC 的哪些部分：只是 Develop 的左右面板排列（O2+O3 就够），还是必须要 Library/Develop 模块切换（O4）？胶片带要不要出现在网格视图、要不要横跨全宽？",
+    "维护者是否接受给 Panel 新增变体（降级时会出现“布局无法恢复”的提示），还是更倾向于把 Classic 工作区放在 UiState 的新字段里？",
+    "Map/Book/Web 模块在 LightCraft 里没有（⬜/🚫），模块切换器是隐藏它们，还是显示为禁用？按“新代码必须有调用者”的规则，倾向于隐藏。",
+    "用户能否接受上游审核需要较长时间（目前 834 个 open PR，按批整合），还是需要先在下游补丁分支（O5）里用起来？",
+    "#1680（可选移动端布局）被关闭的真实原因不明：是分支不干净还是不接受“另一套布局”的方向？知道这一点可以帮助判断 O2 被接受的概率。"
+   ]
+  }
+ },
+ "verification": {
+  "v_separate": {
+   "verdicts": [
+    {
+     "id": "separate_app:C1",
+     "status": "confirmed",
+     "note": "pub/私有 mod 列表、pub use 重导出、UPDATE_APP、SCREEN_PROFILE 都与 lib.rs 一致。小错一处：QuitPrompt 是 pub enum，不是 pub struct（lib.rs:133）。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:12-16,18-55,71-107,90-94,113-149,558,604",
+      "crates/ui-egui/src/lib.rs:133 (pub enum QuitPrompt)"
+     ]
+    },
+    {
+     "id": "separate_app:C2",
+     "status": "confirmed",
+     "note": "字段可见性已逐个核对：updates_rt、notice_input 是 pub(crate)（177、181）；control_rx、pending_screenshots 是私有（184、185）；fonts_ready 私有（270）；next_widgets 私有（285）。new/run/run_typed/logic/ui/shutdown 都是 pub。桌面宿主除这几个调用外，还调用 renderer.set_screen_textures 和 panels::notices::may_close，两者均为 pub，不影响结论。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:177,181,184,185,270,285",
+      "crates/ui-egui/src/app.rs:26,199,205,613,627,673",
+      "apps/lightcraft/src/main.rs:148-184"
+     ]
+    },
+    {
+     "id": "separate_app:C3",
+     "status": "corrected",
+     "note": "主体正确：ui() 依次调用 ui_pass(pub(super))、draw_window(pub(super))、finish_ui_pass(pub(crate))，布局写死在 frame.rs:473-478；prepare_ui_pass、shield_pass、begin_draw、restore_prompt_pointer、hide_background_pointer、dialogs::prepare 都是 pub(crate)。需修正一点：“丢掉快捷键”不成立，shortcuts::handle 是 pub（shortcuts.rs:369），外部可以直接调。真正拿不到的是：拖放导入 import_dropped_files(pub(super))、外部编辑器回传 check_external_editor(pub(super))、模态屏障、updates_ui::show(pub(crate)，即更新对话框)、widget 注册表 next_widgets。另有遗漏：外部 crate 可以把 app.ui() 放进一个子区域 Ui 里调用（egui 0.37 fork 的 Panel 以 Ui 为作用域），在外面再加自己的区域，见 missed。",
+     "evidence": [
+      "crates/ui-egui/src/app.rs:673-684",
+      "crates/ui-egui/src/app/frame.rs:252,369,397,471-478",
+      "crates/ui-egui/src/shortcuts.rs:369 (pub fn handle)",
+      "crates/ui-egui/src/app/input.rs:29 (pub(super) import_dropped_files)",
+      "crates/ui-egui/src/app/prefs.rs:20 (pub(super) check_external_editor)",
+      "crates/ui-egui/src/dialogs/updates_ui.rs:118 (pub(crate) fn show)",
+      "crates/ui-egui/src/panels/library_problem.rs:180,232,242,250",
+      "crates/ui-egui/src/panels/notices.rs:371,379",
+      "crates/ui-egui/src/dialogs.rs:214"
+     ]
+    },
+    {
+     "id": "separate_app:C4",
+     "status": "confirmed",
+     "note": "panels.rs:3-32 共 30 个 pub mod；各个 show 入口的签名和行号逐一核对无误；docking::show 与 dialogs::show 也是 pub。",
+     "evidence": [
+      "crates/ui-egui/src/panels.rs:3-32",
+      "crates/ui-egui/src/panels/topbar.rs:22",
+      "crates/ui-egui/src/panels/strip.rs:17",
+      "crates/ui-egui/src/panels/edit.rs:39",
+      "crates/ui-egui/src/panels/compare.rs:528,567,632",
+      "crates/ui-egui/src/docking.rs:346",
+      "crates/ui-egui/src/dialogs.rs:230"
+     ]
+    },
+    {
+     "id": "separate_app:C5",
+     "status": "confirmed",
+     "note": "detail.rs:18 是私有 mod filmstrip，filmstrip() 为 pub(crate)（filmstrip.rs:58），navigator 为 pub(super)（filmstrip.rs:8）。edit.rs:23 是私有 mod histogram，edit.rs:32 用 pub(crate) 重导出。right.rs:14-17 的 crop/history/info/keywords 都是私有 mod，left.rs:14-20 同样私有。补充：另有一个 pub 的 panels::histogram 模块（panels.rs:16），里面只有直方图区域拖动的交互辅助函数，不负责绘制，结论不变。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail.rs:18",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:8,58",
+      "crates/ui-egui/src/panels/edit.rs:23,32",
+      "crates/ui-egui/src/panels/histogram.rs:22-132",
+      "crates/ui-egui/src/panels/right.rs:14-28",
+      "crates/ui-egui/src/panels/left.rs:14-20"
+     ]
+    },
+    {
+     "id": "separate_app:C6",
+     "status": "confirmed",
+     "note": "Panel 枚举、home_side、DOCKING_VERSION=1、validate（照片区必须单独成 Tabs 组）都已核对。单元测试 a_saved_dock_layout_round_trips 证实 Presets 可以 Move 到 Library 下方（Placement::Group{below:true}）、通过校验并能存取；集成测试证实 Tools 也能拖进左侧 dock。术语上，“叠放”在 craft-ui 里是同列新建一个 group，不是 Node::Stack 手风琴。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:14-19,40-42,58,94-106,136-158,792-808",
+      "crates/ui-egui/tests/it/docking_workflows.rs:138-153",
+      "crates/ui-egui/src/state.rs:30-33",
+      "docs/control-protocol.md:404-421"
+     ]
+    },
+    {
+     "id": "separate_app:C7",
+     "status": "corrected",
+     "note": "有两处错误。(1) craft-libs 的 main HEAD 已不是 c5a1cbf：git ls-remote 显示 main=5a93050（2026-11-11）。c5a1cbf..main 之间 crates/ui/src/docking 改了 17 个文件 +1519/−75，Group/GroupLocation 新增了 serde 字段 flyout_width。另一维度的开放问题里说 main 在 081078b，与本条矛盾。(2) “底部胶片条用纵向 Split 实现”与 Dock 不兼容：Layout::validate 只给水平 Split 的子节点传递 start/end 边缘标记，纵向 Split 的两个子节点都不算贴边，下面的 Node::Dock 会报 InvalidPlacement。所以要做通栏底部胶片条，只有两种办法：左右两侧不用 Dock、改用普通 Split+Tabs（会失去列折叠成图标等功能）；或者把胶片条画在 DockArea 外面（egui::Panel::bottom）。另外，下游若直接使用 craft_ui::docking，必须与 ui-egui 用完全相同的 rev，否则会编出两份 craft-ui，类型对不上；而上游频繁 repin（10-24 到 10-25 之间就有 6 次）。",
+     "evidence": [
+      "git ls-remote https://github.com/storytold/craft-libs → 5a93050c refs/heads/main",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs: git diff --stat c5a1cbf FETCH_HEAD -- crates/ui/src/docking (17 files, +1519/−75)",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs: git show c5a1cbf:crates/ui/src/docking/model.rs:602-650 (validate: Split→start&&horizontal / end&&horizontal; Dock !at_edge → InvalidPlacement)",
+      "crates/ui-egui/src/docking.rs:91-106",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/verify/lc.git: git log -G'craft-ui = ' -- Cargo.toml (10-24..10-25 repins)"
+     ]
+    },
+    {
+     "id": "separate_app:C8",
+     "status": "confirmed",
+     "note": "apps/lightcraft/Cargo.toml 只有 [package]，没有 [lib]。共 6035 行；去掉 tests.rs、logging/tests.rs 和各文件末尾的 cfg(test) 段，我算出约 3.78k 行非测试代码。另一个复制成本：外壳里也有 include_bytes!(\"../../../assets/...\")（main.rs:79-82），复制到别的仓库时要连资源一起带上。",
+     "evidence": [
+      "apps/lightcraft/Cargo.toml",
+      "wc -l apps/lightcraft/src/**/*.rs = 6035",
+      "apps/lightcraft/src/main.rs:73-84",
+      "apps/lightcraft/src/session.rs:5"
+     ]
+    },
+    {
+     "id": "separate_app:C9",
+     "status": "confirmed",
+     "note": "meta-nopatch.json 共 553 个包，lightcraft-ui-egui 0.18.0 来自 path，craft-ui 来自 git rev c5a1cbf。注意：探针用的是指向 lc-copy 的 path 依赖，不是 git 依赖，而且只做了 cargo metadata，没有编译。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/consumer/Cargo.toml",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/meta-nopatch.json"
+     ]
+    },
+    {
+     "id": "separate_app:C10",
+     "status": "confirmed",
+     "note": "Cargo.toml:190-205 的 patch 清单核对无误。上游 0.37.0 tag（418687f）里没有 set_language；fork 6d518fc 的 context.rs:2658 有。rev-list 0.37.0..6d518fc 共 85 个提交。两份 meta 文件的 egui 来源分别是 registry 和 git fork。ui-egui 在 app.rs:635（logic 函数内）调用了 ctx.set_language。",
+     "evidence": [
+      "Cargo.toml:190-205",
+      "crates/ui-egui/src/app.rs:635",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/egui-fork: git grep 'fn set_language' 6d518fc → context.rs:2658; 0.37.0 → none",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/meta-patch.json"
+     ]
+    },
+    {
+     "id": "separate_app:C11",
+     "status": "confirmed",
+     "note": "profiles 在 Cargo.toml:142-188。engine build.rs 的 resolve() 以 CARGO_MANIFEST_DIR 为基准解析相对路径，git 依赖下会落到 cargo 检出目录，所以要用绝对路径。没有 craft-fonts 时 CJK 显示方框，有 build warning，theme.rs:295-297 也有说明。release.yml:79 固定 b076417b。.cargo/config.toml 只有 xtask 别名。ui-egui 的 build.rs 只读 locales 和 ../../contributors。",
+     "evidence": [
+      "Cargo.toml:142-188",
+      "crates/engine/build.rs:1-61",
+      "crates/ui-egui/src/theme.rs:294-297",
+      "crates/ui-egui/build.rs:25-34,111-121",
+      ".github/workflows/release.yml:79",
+      ".cargo/config.toml",
+      "apps/lightcraft/Cargo.toml (default=[\"denoise\"], engine features [\"sam\"])"
+     ]
+    },
+    {
+     "id": "separate_app:C12",
+     "status": "corrected",
+     "note": "结论正确：只能走 git 或 path 依赖，没有 LFS，字体是实际文件。归属有误：ui-egui 里出 crate 目录的 include 是 app-icon PNG（lib.rs:13）、docs/whats-new.md（dialogs.rs:53）和 Inter 字体（theme.rs:305-306 等）；assets/camera-profiles 是 crates/engine 的 camera_profiles.rs 引入的，不在 ui-egui。另外，craft-ui 本身是只有 git、没有 version 的依赖，单凭这一点 crates.io 也发布不了。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:13",
+      "crates/ui-egui/src/dialogs.rs:53",
+      "crates/ui-egui/src/theme.rs:305-306",
+      "crates/engine/src/camera_profiles.rs (20 处 ../../.. include)",
+      "Cargo.toml:13",
+      "ls -la assets/fonts (411640 字节 ttf)；find . -name .gitattributes 无结果"
+     ]
+    },
+    {
+     "id": "separate_app:C13",
+     "status": "corrected",
+     "note": "我用 shallow-since=2026-09-20 的 blobless bare clone 重算，也从 2026-10-11 起算。first-parent 222 次，一致。非合并提交 1987，不是 1904。ui-egui 855（原文 825），panels 418（400），docking.rs 16，frame.rs 16，state.rs 65（68），lib.rs 139（142），engine 568（553），engine/src/lib.rs 63（70），apps/lightcraft/src 90（93），这些都在 ±5% 以内。根 Cargo.toml 只有 58 个非合并提交，不是 99。原 lc-history clone 有 212 个 shallow 截断点，first-parent 链停在 03c88c16（10-25），用它算出的数字只是下限。docking.rs 和 frame.rs 合计 +970/−271，与原文一致：frame.rs 是 10-26 由重构 26760e44 新建的，docking.rs 在 10-10 就已存在。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/verify/lc.git: git log --first-parent --since=2026-10-11 HEAD | wc -l = 222; --no-merges = 1987; -- Cargo.toml = 58",
+      "同一 clone: git diff --shortstat 0dd6593d HEAD -- docking.rs frame.rs = +970/−271",
+      "同一 clone: git log --diff-filter=A -- crates/ui-egui/src/app/frame.rs → 26760e44 2026-10-26"
+     ]
+    },
+    {
+     "id": "separate_app:C14",
+     "status": "corrected",
+     "note": "tag 数量不对：ls-remote 显示 22 个 tag（v0.1.0 到 v0.20.0，含 v0.1.1、v0.2.1、v0.18.1，没有 v0.3.0），时间为 2026-10-02 到 11-09，平均约每 1.7 天一个。v0.20.0 是 f6b57b0b 加上只改 Cargo.toml/Cargo.lock 的 'Release 0.20.0' 提交，属实。v0.18.0→v0.20.0 的复核结果：frame.rs +32/−4，docking.rs 无变化，apps/lightcraft/src 10 个文件 +349/−40，根 Cargo.toml +9/−2，均一致。",
+     "evidence": [
+      "git ls-remote --tags https://github.com/storytold/lightcraft (22 tags)",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/lc-history: git show --stat v0.20.0; git diff --shortstat v0.18.0 v0.20.0 -- <paths>"
+     ]
+    },
+    {
+     "id": "separate_app:C15",
+     "status": "confirmed",
+     "note": "VERSION=12，0dd6593d 上是 6。补充：v0.18.0 是 9，v0.19.0 已经是 12，一周内连升 3 级。journal.rs 的说明写着，较新的格式会被原样拒绝（CatalogError::Newer），打开较旧的格式则会立即升级。反过来也有风险：如果从领先于 release 的 main 构建并先打开图库，图库会被升级，官方发布版就打不开了。所以应该跟 release tag，而不是 main。",
+     "evidence": [
+      "crates/catalog/src/journal.rs:70-91",
+      "crates/catalog/src/lib.rs:69-71",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/lc-history: git show v0.18.0/v0.19.0/v0.20.0/0dd6593d:crates/catalog/src/journal.rs → 9/12/12/6"
+     ]
+    },
+    {
+     "id": "separate_app:C16",
+     "status": "confirmed",
+     "note": "锁是 try_lock 实现的 OS 文件锁；program_name 取自 exe 的 file_stem，'lightcraft' 显示为 LightCraft。presets.json 在图库目录里。config_dir 写死 LightCraft/lightcraft，可用 LIGHTCRAFT_CONFIG_DIR 覆盖（覆盖的是整个目录）。模型目录在 config 下。UiState 是 serde(default)，全仓库没有 flatten 或 deny_unknown_fields。",
+     "evidence": [
+      "crates/catalog/src/lock.rs:1-20,88-113",
+      "crates/engine/src/library.rs:7,363-369,470,499",
+      "crates/engine/src/config.rs:36-65,113-139",
+      "apps/lightcraft/src/prefs.rs:19-21,36-41",
+      "crates/ui-egui/src/state.rs:21-23",
+      "crates/ui-egui/src/state/settings.rs:178"
+     ]
+    },
+    {
+     "id": "separate_app:C17",
+     "status": "confirmed",
+     "note": "Runtime::default 和 CheckResultDialog 都用了 crate::UPDATE_APP 与 ui-egui 自己的 CARGO_PKG_VERSION。craft-update 的 suite::LIGHTCRAFT 指向 repo storytold/lightcraft，资源名前缀为 lightcraft。补充：从 main 构建时 CARGO_PKG_VERSION 是 0.18.0，低于已发布的 0.20.0，所以手动“检查更新”一定会提示升级到官方版。Windows 上 main.rs 用的 self_update::finish 也用 UPDATE_APP，好在这段在复制来的外壳里，可以改。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:12-16",
+      "crates/ui-egui/src/dialogs/updates_ui.rs:34,52,77-80,131",
+      "crates/ui-egui/src/menus/ui_commands.rs:260",
+      "apps/lightcraft/src/main.rs:226-230,367",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs: git show 1b34eba4:crates/update/src/suite.rs:11, app.rs:5-26",
+      "Cargo.toml:6 (version 0.18.0 on main)"
+     ]
+    },
+    {
+     "id": "separate_app:C18",
+     "status": "confirmed",
+     "note": "控制协议跑在 UI 线程，超时 60 秒；headless 模式下 ui.* 方法会报错；render_photo 走临时 PNG、解码再编码、base64；MAX_REPLY 为 64 MiB；control 的 ui.render 用的是 render_now。“每帧 4–8MB、几百毫秒”是估算，没有实测，但方向正确。补充：MCP 的 render_photo 默认尺寸是 1024，不是 1600。",
+     "evidence": [
+      "docs/control-protocol.md:3-20",
+      "docs/mcp.md:9-21",
+      "crates/mcp/src/headless.rs:141-158",
+      "crates/mcp/src/tools.rs:500-566",
+      "crates/mcp/src/backend.rs:10",
+      "crates/ui-egui/src/control.rs:511-536"
+     ]
+    },
+    {
+     "id": "separate_app:C19",
+     "status": "corrected",
+     "note": "#1217（open，标签 ui，6 条评论，10-12 创建）、ui-parity.md:25、#303、#2338 都属实。“没有搜到外部 UI 嵌入相关 issue”这一缺失判断不成立：#2062「Possible UI Add-On or standalone software for Lightroom Classic Users?」和 #1787「LightCraft Classic (official)」都以 duplicate 关闭，说明 #1217 是维护者认可的规范追踪 issue，而且一直没有被拒绝关闭。相关的还有 #2342 竖排胶片条、#2343、#3177 独立的 Folder/Album 面板，以及 #2344（opt-in 的 Lightroom-style canvas，默认保持 Photoshop 式）。后者说明上游接受“可选开关”这种模式。评论内容仍然读不到：仓库 API 返回 403。",
+     "evidence": [
+      "gh api search/issues q='repo:storytold/lightcraft is:issue \"UI Add-On\"' → #2062 closed duplicate",
+      "gh search q='is:issue \"LightCraft Classic\"' → #1787 closed duplicate",
+      "gh search q='is:issue layout' → #2342, #2343, #3177",
+      "gh search q='is:pr filmstrip crop overlay' → #2344 opt-in",
+      "docs/ui-parity.md:25"
+     ]
+    },
+    {
+     "id": "separate_app:C20",
+     "status": "confirmed",
+     "note": "PR #3414 状态 open，创建于 10-30。HEAD 的 Cargo.toml 第 201、203、204 行仍是 egui_system_font_provider、egui_demo_lib、egui_inspection。",
+     "evidence": [
+      "gh search 'is:pr unused egui patches' → #3414 open 2026-10-30",
+      "Cargo.toml:200-204"
+     ]
+    },
+    {
+     "id": "separate_app:C21",
+     "status": "corrected",
+     "note": "代码是 MIT OR Apache-2.0，ArtCraft 标识是商标，这两点正确。需修正两处。(1) 应用图标（assets/app-icon/*）明确是 MIT/Apache 许可，不是商标，所以“必须换图标”没有法律依据（为区分起见可以换）；NOTICE 也没有把 LightCraft 名称列为商标。(2) 漏掉了：ui-egui 的界面文字里写死了 ArtCraft 名称，包括 links.rs 的 Discord 和官网链接、顶栏的“Join the ArtCraft community on Discord”、About 对话框“ArtCraft — more creative apps”和菜单项。LICENSE-brand.txt 的“Forks and modified versions”条款要求发布的修改版去掉 ArtCraft Marks（含名称），所以如果要公开发布，补丁还得改这些字符串。只自用、不分发时，这些都不适用。",
+     "evidence": [
+      "NOTICE:1-8",
+      "docs/brand/LICENSE-brand.txt ('Forks and modified versions')",
+      "assets/app-icon/LICENSE.txt (MIT/Apache)",
+      "crates/ui-egui/src/links.rs:3-23",
+      "crates/ui-egui/src/panels/topbar.rs:185",
+      "crates/ui-egui/src/dialogs.rs:2052-2066",
+      "crates/ui-egui/src/app/frame.rs:347-353"
+     ]
+    },
+    {
+     "id": "separate_app:C22",
+     "status": "confirmed",
+     "note": "lightcraft 目录下没有 target，nproc=4。我这边也没有编译，原因相同。",
+     "evidence": [
+      "ls /home/user/storytold/lightcraft/target → 不存在",
+      "nproc = 4"
+     ]
+    },
+    {
+     "id": "separate_app:option:A. 零代码：在官方 LightCraft 里用现有停靠系统重排",
+     "status": "confirmed",
+     "note": "可行，测试已覆盖。三点小修正。(1) “叠放（Stack）”实际是同列下方新建一个 group，不是 Node::Stack。(2) ui.dock 命令需要用 --control 启动程序或 lightcraft-cli snapshot --script；日常用拖拽即可。(3) 键位编辑器只能重绑已有命令：F6/F7/F8 已有，但没有隐藏顶栏的命令，LrC 的 F5 和底栏开关模拟不了。“约六成 LrC 观感”是主观判断。工作量 0.5–1 人日合理。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:792-808",
+      "crates/ui-egui/tests/it/docking_workflows.rs:138-153",
+      "crates/ui-egui/src/menus/ui_commands.rs:83-85,107,134",
+      "crates/ui-egui/src/shortcuts.rs:221-224"
+     ]
+    },
+    {
+     "id": "separate_app:option:B. 独立二进制，原样依赖上游 tag 的 ui-egui（不打任何补丁）",
+     "status": "corrected",
+     "note": "“重排内部布局做不到”正确。但“做不出不同的布局、完全不可行”说得太绝对。panels 在 egui 0.37 fork 里以 Ui 为作用域：frame.rs 和 docking.rs 都把 Panel 和 CentralPanel 画在传入的 ui 里，而 Web 宿主在 app.ui() 前后本来就有自己的逻辑。所以外部宿主可以把 app.ui() 放进子区域调用，在外围加通栏的模块切换条，或者自绘的通栏胶片条（Renderer.textures、app.ui.filmstrip 都是 pub）。这样不改上游代码就能拿到一部分 LrC 观感。限制有三：顶栏、右侧工具条和视图内胶片条去不掉；宿主控件要在 app.ui() 之后再画才受模态屏障保护；macOS 整合标题栏要另行处理。这条路需要原型验证。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:471-478",
+      "crates/ui-egui/src/panels/topbar.rs:37-40 (Panel::top(..).show(ui,..))",
+      "crates/ui-egui/src/docking.rs:425-444 (子 Ui 内的 Panel::bottom + CentralPanel)",
+      "apps/lightcraft-web/src/web.rs:900-905",
+      "crates/ui-egui/src/render.rs:288 (pub textures)",
+      "crates/ui-egui/src/state.rs:61 (pub filmstrip)"
+     ]
+    },
+    {
+     "id": "separate_app:option:C. 独立二进制 + 最小“布局接缝”补丁（自维护 lightcraft fork 分支，按 tag 变基）【推荐】",
+     "status": "corrected",
+     "note": "方向可行，但补丁范围和维护成本都被低估。(1) 补丁不只碰 frame.rs 和 lib.rs。要做全局胶片条，就得让 detail.rs:137-144 和 compare.rs:190-199 跳过视图内胶片条，否则只能滥用 F6 的 app.ui.filmstrip 标志。这两个文件 30 天内分别有 98 和 30 个非合并提交。(2) 自己用 craft_ui::docking 时，rev 必须与上游完全一致；纵向根 Split 下不能放 Dock（见 C7）。(3) 维护估算“变基 0.5–2 小时”只是平均情况。窗口期内出现过把 lib.rs 拆成 app.rs 和 app/frame.rs 的重构（10-26），也拆过 apps/lightcraft 的 main.rs；遇到这种情况，补丁和复制来的外壳都要重做，需要 0.5–2 人日。(4) 复制 3.8k 行外壳并非必要：fork 整个仓库，把布局代码放进新文件，只留一个小接缝，冲突面一样小，还不用同步外壳。(5) 如果只是用户自用、只在一个平台上，三平台打包签名和更新通道那 1–2 人周可以省掉。按发布级要求算，初始 5–8 人周属实；自用版大约 3–5 人周。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail.rs:137-144",
+      "crates/ui-egui/src/panels/compare.rs:188-199",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/verify/lc.git: detail.rs nm=98, compare.rs nm=30 since 10-11; frame.rs created 26760e44 2026-10-26",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs: model.rs validate (c5a1cbf:602-650)"
+     ]
+    },
+    {
+     "id": "separate_app:option:D. 把接缝补丁做成上游 PR（C 的升级版，可再加“桌面外壳库化”）",
+     "status": "confirmed",
+     "note": "风险描述属实：#2580「Round 3 integration plan (440 open PRs)」，ui-parity 写着“by design”，同类的 #3158 关闭未合并。也有正面信号：#1217 是重复 issue 的归并目标，至今 open；#2338、#2344 等 opt-in 方案的 PR 也在排队。“日历时间 1–4 周”无法验证，看排队情况，偏乐观。",
+     "evidence": [
+      "gh search → #2580 open 'Round 3 integration plan (440 open PRs)'",
+      "gh search → #3158 closed merged_at=null",
+      "gh search → #2062/#1787 closed duplicate",
+      "docs/ui-parity.md:25"
+     ]
+    },
+    {
+     "id": "separate_app:option:E. 直接 fork 整个 lightcraft，在 ui-egui 原地改布局（对照方案）",
+     "status": "corrected",
+     "note": "低估了这个方案。只要新布局写在 ui-egui 的新文件里，比如 layout_classic.rs 加 Panel 定义，再在 frame.rs:471-478 留一个接缝，冲突面就和 C 一样小；同时 patch、profile、features、Cargo.lock、外壳全部天然继承，省掉 C 里复制并同步 3.8k 行外壳的工作（30 天内外壳改了 +4765/−1539）。exe 名、APP_ID、ui.json 文件名只需在 apps/lightcraft 里改几行（main.rs:74、prefs.rs:40）。对自用场景，这比 C 更合适。“改 Panel 枚举后 ui.json 不兼容”属实：上游读到未知变体会丢弃布局，且本次运行不保存设置。",
+     "evidence": [
+      "apps/lightcraft/src/main.rs:74 (APP_ID)",
+      "apps/lightcraft/src/prefs.rs:36-41,57-68,89-95",
+      "crates/ui-egui/src/app/frame.rs:471-478"
+     ]
+    },
+    {
+     "id": "separate_app:option:F. 进程外 UI：独立 UI 进程通过控制协议或 MCP 驱动无头引擎",
+     "status": "confirmed",
+     "note": "性能和功能上的限制都有代码依据（临时 PNG 加 base64、headless 不支持 ui.*、图库锁）。3–6+ 人月是量级估计，合理。",
+     "evidence": [
+      "crates/mcp/src/tools.rs:542-565",
+      "crates/mcp/src/headless.rs:153-155",
+      "crates/catalog/src/lock.rs:1-20"
+     ]
+    },
+    {
+     "id": "separate_app:option:G. 只复用 engine，从零写新的 UI crate（利用 L5 可替换的设计）",
+     "status": "confirmed",
+     "note": "ui-egui 非纯测试文件约 67.6k 行，含测试 116k 行，重写 6–12+ 人月的量级合理。architecture.md 把 ui-egui 标成 swappable。",
+     "evidence": [
+      "find crates/ui-egui/src -name '*.rs' → 116358 行；非测试文件 67609 行",
+      "docs/architecture.md (L5 row)"
+     ]
+    },
+    {
+     "id": "ui_arch:C1",
+     "status": "confirmed",
+     "note": "桌面和 Web 都调用 app.ui(ui)；ui() 依次执行 ui_pass、draw_window、finish_ui_pass。",
+     "evidence": [
+      "apps/lightcraft/src/main.rs:183",
+      "apps/lightcraft-web/src/web.rs:903",
+      "crates/ui-egui/src/app.rs:673-683"
+     ]
+    },
+    {
+     "id": "ui_arch:C2",
+     "status": "confirmed",
+     "note": "顺序、全屏分支和 Tokens 尺寸（42/48/48/142）全部核对无误；横幅是 Panel::top(\"library-problem-banner\")。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:444-501",
+      "crates/ui-egui/src/panels/topbar.rs:37",
+      "crates/ui-egui/src/panels/strip.rs:17-23",
+      "crates/ui-egui/src/panels/library_problem.rs:1324-1330",
+      "crates/ui-egui/src/theme.rs:167-173"
+     ]
+    },
+    {
+     "id": "ui_arch:C3",
+     "status": "confirmed",
+     "note": "四个面板的分派、widget id 的注册，以及画布推迟到面板之后绘制，都已核对。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:12-19,394-445"
+     ]
+    },
+    {
+     "id": "ui_arch:C4",
+     "status": "confirmed",
+     "note": "在画布子 Ui 里，先画 bottombar（Panel::bottom），再执行 compare::prepare，然后在 CentralPanel 里按视图分派。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:425-444",
+      "crates/ui-egui/src/panels/bottombar.rs:22-27"
+     ]
+    },
+    {
+     "id": "ui_arch:C5",
+     "status": "confirmed",
+     "note": "right::show 有 10 个分支（另加 None）；直方图只在 Edit 模式且 app.ui.histogram 为真时画。非测试文件中 ui.right 共 60 处，其中 menus/run.rs 29、detail.rs 8、docking.rs 7、strip.rs 5、shortcuts.rs 4、right.rs 3。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right.rs:62-95",
+      "grep 'ui\\.right\\b' 非测试文件 = 60"
+     ]
+    },
+    {
+     "id": "ui_arch:C6",
+     "status": "confirmed",
+     "note": "Detail 和 Compare 系列各自在自己的矩形底部预留 film_h；landmarks 测试断言网格视图没有 Filmstrip；文档写明 photo view 和 filmstrip 不分开。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail.rs:134-144",
+      "crates/ui-egui/src/panels/compare.rs:188-199",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:58-77",
+      "crates/ui-egui/tests/it/landmarks.rs:57-62",
+      "docs/control-protocol.md:406"
+     ]
+    },
+    {
+     "id": "ui_arch:C7",
+     "status": "confirmed",
+     "note": "属实，行号略有偏差：section 调用实际在 edit.rs:155、182、259、294、322、378；section 辅助函数是 pub(super)。",
+     "evidence": [
+      "crates/ui-egui/src/panels/edit.rs:155,182,259,294,322,378",
+      "crates/ui-egui/src/panels/edit/sliders.rs:183",
+      "crates/ui-egui/src/state.rs:75-80"
+     ]
+    },
+    {
+     "id": "ui_arch:C8",
+     "status": "confirmed",
+     "note": "Navigator 是覆盖层（filmstrip.rs:8，pub(super)），直方图绘制函数是 pub(crate)（edit.rs:32）。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:8-44",
+      "crates/ui-egui/src/panels/edit/histogram.rs:51",
+      "crates/ui-egui/src/panels/edit.rs:32"
+     ]
+    },
+    {
+     "id": "ui_arch:C9",
+     "status": "confirmed",
+     "note": "67,609 行复核一致（155 个非测试文件）。strip.rs 非测试 88 行，bottombar.rs 非测试 358 行，docking.rs 非测试约 550 行，draw_window 在 397-514。注意：非测试文件里仍有内联的 cfg(test)，67.6k 是上限。",
+     "evidence": [
+      "find crates/ui-egui/src ... | xargs cat | wc -l = 67609",
+      "crates/ui-egui/src/panels/strip.rs:89",
+      "crates/ui-egui/src/panels/bottombar.rs:359",
+      "crates/ui-egui/src/docking.rs:551"
+     ]
+    },
+    {
+     "id": "ui_arch:C10",
+     "status": "confirmed",
+     "note": "Canvas 的权限、validate、宽度上下限（200/268/480、250/270/520、Presets 250–520、画布 360）、拖放测试的三种落点，以及 iconic 首字母回退，全部核对无误。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:71-74,136-159,358-385,539-547",
+      "crates/ui-egui/src/state/view.rs:362-368",
+      "crates/ui-egui/tests/it/docking_workflows.rs:138-153",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs: git show c5a1cbf:crates/ui/src/docking/render/iconic.rs:239-245"
+     ]
+    },
+    {
+     "id": "ui_arch:C11",
+     "status": "confirmed",
+     "note": "属实，行号有误：craft-ui features=[\"serde\"] 在 Cargo.toml:13，不在 :15。run() 会把 command 强制改成 ui.dock，Action 里也没有锁定相关的变体，所以锁定只能通过 JSON。reset 会隐藏 Library 和 Presets。Side 只有 Start 和 End，而纵向 Split 下不能放 Dock，见 separate_app:C7。lightcraft 的 crates 和 apps 里没有 window.workspace 或 native-windows。",
+     "evidence": [
+      "Cargo.toml:13",
+      "crates/ui-egui/src/docking.rs:215-230,319-330,396",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs: c5a1cbf command.rs:23-150, mod.rs:11-12, Cargo.toml [features]",
+      "grep 'window\\.workspace|native-windows' crates apps → 无"
+     ]
+    },
+    {
+     "id": "ui_arch:C12",
+     "status": "confirmed",
+     "note": "Workspace VERSION=2，字段是 version/layout/hidden/saved/locked。decode_saved_ui 解析失败或校验失败时会删掉 docking 并给出提示，keep_file=true 时本次运行不保存。Web 端同样执行 drop_outdated。",
+     "evidence": [
+      "crates/ui-egui/src/state.rs:29-33",
+      "apps/lightcraft/src/prefs.rs:36-120",
+      "crates/engine/src/config.rs:36-65",
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/ui/craft-libs: c5a1cbf workspace.rs:11-55",
+      "apps/lightcraft-web/src/web.rs:598-602"
+     ]
+    },
+    {
+     "id": "ui_arch:C13",
+     "status": "confirmed",
+     "note": "ui.set 走 deep_merge：对象递归合并，其他值直接替换。外部标记的 enum 节点合并后会出现两个键，所以先发 {docking:null} 的建议是对的。lightcraft-cli snapshot 支持 --script。",
+     "evidence": [
+      "crates/ui-egui/src/control.rs:394-431",
+      "crates/develop/src/presets.rs:146-160",
+      "apps/lightcraft-cli/src/main.rs:7,572",
+      "docs/control-protocol.md:404-421"
+     ]
+    },
+    {
+     "id": "ui_arch:C14",
+     "status": "confirmed",
+     "note": "属实。补充一点：没有隐藏顶栏或底栏的命令，所以 LrC 的 F5 那类开关做不到。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:792-808",
+      "crates/ui-egui/src/sidebar.rs:1-6",
+      "crates/ui-egui/src/menus/ui_commands.rs:83-85,182-184",
+      "crates/ui-egui/src/app/frame.rs:475"
+     ]
+    },
+    {
+     "id": "ui_arch:C15",
+     "status": "confirmed",
+     "note": "prefs.rs:62-68 遇到 Err(_) 会把 recovered 设为 true，从而移除 docking；load_prefs_at 返回 keep=true。全仓库没有 deny_unknown_fields。",
+     "evidence": [
+      "apps/lightcraft/src/prefs.rs:57-95",
+      "grep deny_unknown_fields crates/ui-egui/src → 无"
+     ]
+    },
+    {
+     "id": "ui_arch:C16",
+     "status": "confirmed",
+     "note": "各 issue/PR 的状态全部核对一致。可补充 #2062：关于给 LrC 用户做 UI 插件或独立软件的请求，以 duplicate 关闭，说明 #1217 是归并目标。",
+     "evidence": [
+      "gh search: #1217 open ui 6 comments; #1787 closed duplicate; #2187 open; #3158 closed merged_at=null; #3227 open; #3820 open; #2062 closed duplicate",
+      "docs/ui-parity.md:25",
+      "docs/roadmap.md:79"
+     ]
+    },
+    {
+     "id": "ui_arch:C17",
+     "status": "corrected",
+     "note": "我抓取 pull/3158/head（6c7396da）后，git diff --stat 4956a554 6c7396da 的结果是 10 个文件 +345/−25，比原文多出 docs/parity-checklist.md。业务代码约 154 行（frame 7、edit 3、right 20、strip 121、view 3），测试约 204 行，量级与原文一致。必须补充的背景：#3158 叠在 #3155（dense rows）之上，后者光 widgets.rs 就改了约 460 行，整条分支 59 个文件 +1592/−283。单看 #3158 自身的 diff 来校准，会低估所需的周边改动。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/verify/lc.git: git diff --stat 4956a554 refs/pr/3158 (10 files, +345/−25)",
+      "同一 clone: git diff --stat $(git merge-base refs/pr/3158 HEAD) refs/pr/3158 (59 files, +1592/−283)",
+      "同一 clone: git log 2987aeef..refs/pr/3158 (LR-UI-DENSE-ROWS #3155 merges)"
+     ]
+    },
+    {
+     "id": "ui_arch:C18",
+     "status": "corrected",
+     "note": "1314 个、1968 个 #[test]，没有 snapshots 目录，都属实。kittest 开了 snapshot feature，但没有任何调用。证据行号有误：panels/strip.rs 全文只有 111 行，按钮位置测试在 strip.rs:89-111，不在 :261-276。其余引用（landmarks.rs:40-62、panels.rs 的拖动宽度测试）核对无误。",
+     "evidence": [
+      "grep -rn '#\\[test\\]' src/tests src/headless/tests.rs tests | wc -l = 1314",
+      "crates/ui-egui/src/panels/strip.rs:89-111 (wc -l = 111)",
+      "crates/ui-egui/tests/it/landmarks.rs:40-62",
+      "crates/ui-egui/Cargo.toml:40"
+     ]
+    },
+    {
+     "id": "ui_arch:C19",
+     "status": "confirmed",
+     "note": "从 10-12 起算，我在更深的 clone 里得到 frame.rs 16、topbar 16、docking 15、detail 79、compare 26、edit 34、state 54、strip 2、ui_commands 3，全部一致。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/verify/lc.git: git log --no-merges --since=2026-10-12 HEAD -- <file> | wc -l"
+     ]
+    },
+    {
+     "id": "ui_arch:C20",
+     "status": "confirmed",
+     "note": "可见性已核对。补充一点：shortcuts::handle、library_problem::show、notices::show、各个 poll 和 drag_feedback 都是 pub；拿不到的是两个 prepare/shield 屏障、finish_ui_pass、next_widgets 和 updates_ui::show(pub(crate))。另外 widgets::announce_region 也是 pub(crate)，外部布局无法声明 AccessKit 地标。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:252,397",
+      "crates/ui-egui/src/panels/notices.rs:409,506,513",
+      "crates/ui-egui/src/lib.rs:285",
+      "crates/ui-egui/src/widgets.rs:1258 (pub(crate) announce_region)",
+      "crates/ui-egui/src/shortcuts.rs:369"
+     ]
+    },
+    {
+     "id": "ui_arch:C21",
+     "status": "confirmed",
+     "note": "view.photoGrid 和 view.detail 只改 app.ui.view，不动面板；Dialog::Print 调用的 print_view::body 是 pub fn。",
+     "evidence": [
+      "crates/ui-egui/src/menus/run.rs:196-206,340-346",
+      "crates/ui-egui/src/dialogs.rs:2159",
+      "crates/ui-egui/src/dialogs/print_view.rs:164"
+     ]
+    },
+    {
+     "id": "ui_arch:C22",
+     "status": "confirmed",
+     "note": "没有 target 目录，机器是 4 核。",
+     "evidence": [
+      "ls /home/user/storytold/lightcraft/target → 不存在"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O1 零代码：只用现有停靠系统和 ui.json 或控制脚本配置",
+     "status": "confirmed",
+     "note": "可行，测试已覆盖；工作量 0.5–1 小时合理。限制写得准确。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:792-808",
+      "docs/control-protocol.md:404-421"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O2 上游友好的小补丁：内置“Classic 面板预设”（不加新 Panel 变体）",
+     "status": "confirmed",
+     "note": "可行：docked()、columns() 和 Placement::Group 都已经有了，3–6 小时、50–80 行业务代码合理；不要求 ui.json 格式变化。小提醒：要在 Window 菜单里出现，还得在 menus 那边有对应条目。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:91-128,319-340",
+      "crates/ui-egui/src/menus/run.rs:149-150",
+      "crates/ui-egui/src/menus/ui_commands.rs:61-62"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O3 可选的“Classic 布局”开关（AppSettings.classic_layout）：工具横排、通栏胶片条、顶栏模块页签",
+     "status": "corrected",
+     "note": "技术路线正确：通栏胶片条在 DockArea 外面用 Panel::bottom 画，这是唯一与 Dock 兼容的方式，见 separate_app:C7。但 20–40 小时偏乐观。(1) #3158 依赖 #3155 的 dense rows，窄面板下的换行、无障碍名称和翻译经过了 31 条评审意见才收敛。(2) 估算没算熟悉代码的时间：ui-egui 共 116k 行，AGENTS.md 要求每个改动都跑 cargo xtask ci（fmt、clippy -D、tests、wasm），4 核机器上一次全量编译就要几十分钟。(3) 通栏胶片条要和 canvas_rect、Lights Out 保留区、裁剪框裁切（#4021）、第二窗口一起回归。(4) 模块页签要和居中的搜索框争宽度（topbar.rs:41-55）。对不熟悉代码库的开发者，更现实的估计是 40–80 小时。",
+     "evidence": [
+      "/tmp/claude-0/-home-user-LightCraft-additional-extensions/334d9aa3-dd9d-5c42-adce-f32450aa0c5d/scratchpad/verify/lc.git: refs/pr/3158 history stacked on #3155",
+      "AGENTS.md:124-125",
+      "crates/ui-egui/src/panels/topbar.rs:41-55",
+      "crates/ui-egui/src/app/frame.rs:300-320 (lights_out keep rect)",
+      "gh search → #4021 open"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O4 拆出新的停靠面板：Histogram、History、Navigator（以及 Snapshots=Versions）",
+     "status": "corrected",
+     "note": "兼容风险描述准确。12–25 小时偏乐观：Navigator 需要从画布拿 image rect 和 zoom，而画布在面板之后才绘制；History 和 Versions 与 app.ui.right 模式互斥，非测试代码里有 60 处引用；每个新面板都要补齐打开、关闭、存取、校验测试，还要写兼容层。估计 25–50 小时更合理。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:394-445",
+      "crates/ui-egui/src/panels/right.rs:24-25,62-95",
+      "apps/lightcraft/src/prefs.rs:57-68"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O5 全新的 Rust UI 前端（重写 ui-egui，或另起一个 crate 直接调用 engine Session）",
+     "status": "confirmed",
+     "note": "500–1500+ 小时的量级合理，与 separate_app 的 F/G 估计一致。",
+     "evidence": [
+      "find crates/ui-egui/src -name '*.rs' → 116358 行"
+     ]
+    }
+   ],
+   "missed": [
+    "craft-libs 的 main 已经不在固定的 rev 上：2026-11-11 时 main=5a93050，c5a1cbf..main 之间 docking 改了 17 个文件 +1519/−75，Group 新增 flyout_width 字段。两个维度对此说法矛盾：一个说 HEAD 就是 c5a1cbf，一个说是 081078b。另外 LightCraft 10-24 到 10-25 之间就把 craft-ui repin 了 6 次。下游如果直接用 craft_ui::docking，每次跟进都得把 rev 与 ui-egui 完全对齐，维护负担比估算的大。",
+    "craft-ui 的 Layout::validate 不允许 Node::Dock 出现在纵向 Split 之下：纵向 Split 的子节点不算贴住左右窗口边。所以 LrC 那种整窗宽的底部胶片条，用 docking 树做不出来；要么画在 DockArea 外面（egui::Panel::bottom），要么放弃左右 Dock 列，改用普通 Split。（证据：craft-libs c5a1cbf crates/ui/src/docking/model.rs:602-650）",
+    "两个维度都漏掉了一个不改代码的中间方案：panels 在 egui 0.37 fork 里以 Ui 为作用域，宿主可以把 app.ui() 放进子区域调用，在外面加通栏的模块切换条，或者自绘胶片条（Renderer.textures、app.ui.filmstrip 都是 pub；Web 宿主本来就在 app.ui() 前后做自己的事）。顶栏、工具条和视图内胶片条去不掉；宿主控件要在 app.ui() 之后画才受模态屏障保护。这条路值得先做个原型。",
+    "推荐方案自相矛盾，需要统一。separate_app 推荐 C：独立二进制、复制 3.8k 行外壳、5–8 人周。ui_arch 实际给出的是在 ui-egui 内加可选开关（O2/O3），只需 20–40 小时。对自用的 LrC 老用户，更合适的是：fork 整个仓库，按 release tag 变基，布局写进 ui-egui 的新文件，只在 frame.rs:471-478 留一个接缝，再加 detail.rs/compare.rs 里的胶片条开关。这样不用复制和同步外壳（30 天改了 +4765/−1539），构建配置也天然一致。",
+    "C 方案的补丁范围被低估了。做全局胶片条，必须改 detail.rs:137-144 和 compare.rs:190-199，否则只能借用 F6 的 app.ui.filmstrip 标志。这两个文件 30 天内有 98 和 30 个非合并提交，是冲突最频繁的地方；C 的 hook_points 只列了 frame.rs 和 lib.rs。",
+    "维护估算没有考虑大重构。frame.rs 和 app.rs 是 2026-10-26 由 26760e44 从 lib.rs 拆出来的；docking 列和 DOCKING_VERSION 是 10-25 才引入的；apps/lightcraft 的 main.rs 也在窗口期内被拆分。碰上这种周，接缝补丁要重写，不是 0.5–2 小时能变基完的。",
+    "catalog 风险是双向的：v0.18.0 是 9，一周后 v0.19.0 就是 12。如果从领先于 release 的 main 构建并先打开图库，图库会被升级，官方发布版随即拒绝打开。所以只能跟 release tag，不能跟 main。",
+    "品牌问题有两点修正。应用图标 assets/app-icon 是 MIT/Apache（见 assets/app-icon/LICENSE.txt），不是商标；需要处理的是 ui-egui 界面文字里写死的 ArtCraft 名称（links.rs、顶栏 Discord 提示、About 对话框、菜单），按 LICENSE-brand.txt 的“Forks and modified versions”，公开发布修改版时要去掉。只自用不分发时，品牌、打包签名和更新通道都不必做，C 的工作量可以减 1–2 人周。",
+    "上游信号比两个维度写的更积极。#1787 和 #2062（LrC 用户想要 UI 插件或独立软件）都以 duplicate 并入 #1217，而 #1217 一直 open；#2338（LrC 键位）、#2344（Lightroom 式画布）都是“opt-in、默认不变”的 PR 写法。这说明“可选的 Classic 布局开关”比“模块切换器替换默认布局”更容易被接受。",
+    "原 lc-history clone 有 212 个 shallow 截断点，first-parent 链停在 10-25，部分 churn 数字只是下限。我在更深的 clone 里复核：非合并提交 1987（不是 1904），根 Cargo.toml 58（不是 99），tag 22 个（不是 20）；量级结论不变。",
+    "LrC 的 F5（隐藏顶部模块栏）和底栏开关，现有键位编辑器模拟不了，因为根本没有对应的命令。零代码方案在快捷键一致性上的上限比描述的低。"
+   ]
+  },
+  "v_arch_upstream": {
+   "verdicts": [
+    {
+     "id": "ui_arch:C1",
+     "status": "confirmed",
+     "note": "桌面版和 Web 版都只调用 LightcraftApp::ui；ui() 依次调用 ui_pass、draw_window、finish_ui_pass，宿主不参与排版。",
+     "evidence": [
+      "apps/lightcraft/src/main.rs:174-183",
+      "apps/lightcraft-web/src/web.rs:897-903",
+      "crates/ui-egui/src/app.rs:673-683"
+     ]
+    },
+    {
+     "id": "ui_arch:C2",
+     "status": "confirmed",
+     "note": "顺序 topbar → banner → strip（Panel::right \"tool_strip\"，exact_size(strip_w=48)）→ CentralPanel → docking::show 属实；全屏分支在 444-470 行。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:444-470",
+      "crates/ui-egui/src/app/frame.rs:473-478",
+      "crates/ui-egui/src/panels/strip.rs:19-20",
+      "crates/ui-egui/src/panels/topbar.rs:37",
+      "crates/ui-egui/src/panels/library_problem.rs:1330",
+      "crates/ui-egui/src/theme.rs:167-173"
+     ]
+    },
+    {
+     "id": "ui_arch:C3",
+     "status": "confirmed",
+     "note": "Panel 只有 4 个变体；Library 和 Tools 的 widget id 按内容注册；Canvas 只建子 Ui，等面板画完后再画（docking.rs:393 的注释说明了悬停预览的顺序）。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:12-19",
+      "crates/ui-egui/src/docking.rs:393-424",
+      "crates/ui-egui/src/docking.rs:425-444"
+     ]
+    },
+    {
+     "id": "ui_arch:C4",
+     "status": "confirmed",
+     "note": "bottombar::show（Panel::bottom \"bottom_bar\"）在 canvas 子 Ui 里先画，之后由 CentralPanel 按 view 分派。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:425-444",
+      "crates/ui-egui/src/panels/bottombar.rs:22-24"
+     ]
+    },
+    {
+     "id": "ui_arch:C5",
+     "status": "confirmed",
+     "note": "right::show 按 app.ui.right 分派到 10 个内容函数，直方图只在 Edit 且 app.ui.histogram 为真时画。在 src/tests/、tests.rs、*_tests.rs 之外的文件里 grep 'ui\\.right\\b' 得到 61 处（含少量内联测试），与“约 60 处”相符。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right.rs:63-66",
+      "crates/ui-egui/src/panels/right.rs:82-94",
+      "crates/ui-egui/src/panels/detail.rs:153,437,1115,1160-1190",
+      "crates/ui-egui/src/shortcuts.rs:702,767",
+      "crates/ui-egui/src/space_hand.rs:32"
+     ]
+    },
+    {
+     "id": "ui_arch:C6",
+     "status": "confirmed",
+     "note": "只有 detail.rs:143 和 compare.rs:197（area_and_filmstrip，被 529/569/633 行调用）会调用 filmstrip；grid.rs 和 people.rs 都没有调用。filmstrip 是 pub(crate)，接收 rect，自己声明 Filmstrip 区域。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail.rs:136-144",
+      "crates/ui-egui/src/panels/compare.rs:190-199",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:58-77",
+      "crates/ui-egui/tests/it/landmarks.rs:57-62"
+     ]
+    },
+    {
+     "id": "ui_arch:C7",
+     "status": "confirmed",
+     "note": "内容正确，只是行号有偏差：各 section 闭包实际在 edit.rs:155（light）、182（color）、259（effects）、294（detail）、322（optics）、378（calibration），不是 151/174。",
+     "evidence": [
+      "crates/ui-egui/src/panels/edit.rs:39",
+      "crates/ui-egui/src/panels/edit.rs:155,182,259,294,322,378",
+      "crates/ui-egui/src/panels/edit/sliders.rs:183-217"
+     ]
+    },
+    {
+     "id": "ui_arch:C8",
+     "status": "confirmed",
+     "note": "Navigator 是 pub(super) 的覆盖层函数，需要 canvas 和 img rect；直方图唯一的生产调用点是 right.rs:65。",
+     "evidence": [
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:6-44",
+      "crates/ui-egui/src/panels/edit.rs:32",
+      "crates/ui-egui/src/panels/edit/histogram.rs:51",
+      "grep 'edit::histogram(' 非测试代码 → 仅 panels/right.rs:65"
+     ]
+    },
+    {
+     "id": "ui_arch:C9",
+     "status": "confirmed",
+     "note": "复核结果：67,609 行（排除 src/tests/、tests.rs、*_tests.rs、tests_*.rs）；docking.rs 的测试从 551 行开始；bottombar.rs 从 359 行、strip.rs 从 89 行开始是测试；topbar.rs 共 289 行；draw_window 在 397-514 行。合计约 1.4k 行成立。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:551",
+      "crates/ui-egui/src/panels/bottombar.rs:359",
+      "crates/ui-egui/src/panels/strip.rs:89",
+      "crates/ui-egui/src/app/frame.rs:397-514",
+      "crates/ui-egui/src/panels/right/crop.rs:71,275,421"
+     ]
+    },
+    {
+     "id": "ui_arch:C10",
+     "status": "corrected",
+     "note": "“照片四边可分割”不准确。LightCraft 设了 new_dock_zones=true、side_edge_zones=false，这种配置下 craft-ui 让画布本体不接受拖放（canvas_sides=NONE），松手后面板会浮动；PR #2839 正文也写着“The photo view's body takes no drop”。拖动时真实的行为是：组的上下三分之一处叠放，靠画布一侧的三分之一处新建列，中间合并为标签；dock 列边缘新建列；只有在还没有 dock 的左右外缘才新建 dock；上下外缘有一条 28pt 的带，落在那里会在两侧 dock 之间、画布列的上方或下方新建一行（Placement::Edge）。要真正分割画布，只能用命令 ui.dock move target=canvas zone=left/right/top/bottom。docking.rs:360-361 注释里的“the photo takes drops on all four sides”有误导性。另外，Node::Stack（手风琴）不能靠手势生成，只会在恢复位置时出现，或者由应用直接写进 JSON。其余部分（权限、宽度范围、最小化、图标列首字母）都已确认。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:360-363",
+      "craft-libs@c5a1cbf crates/ui/src/docking/surface.rs:66-91",
+      "craft-libs@c5a1cbf crates/ui/src/docking/surface.rs:250-264",
+      "craft-libs@c5a1cbf crates/ui/src/docking/render/frame.rs:203-247",
+      "craft-libs@c5a1cbf crates/ui/src/docking/model.rs:329-336,1594-1598",
+      "PR #2839 正文（search API）",
+      "crates/ui-egui/tests/it/docking_workflows.rs:135-155",
+      "crates/ui-egui/src/docking.rs:539-547",
+      "craft-libs@c5a1cbf crates/ui/src/docking/render/iconic.rs:239-245"
+     ]
+    },
+    {
+     "id": "ui_arch:C11",
+     "status": "confirmed",
+     "note": "属实。只有 Cargo.toml:13 一处给 craft-ui 加 features（serde），没有任何地方启用 native-windows，craft-window 也不依赖 craft-ui。DockCommand::apply 能处理 Lock，但 LightCraft 的 run() 会强制写入 command=\"ui.dock\"，所以 window.workspace* 命令进不来。证据里的行号应为 Cargo.toml:13，不是 15。",
+     "evidence": [
+      "Cargo.toml:13",
+      "craft-libs@c5a1cbf crates/ui/Cargo.toml:47",
+      "craft-libs@c5a1cbf crates/ui/src/docking/command.rs:133-150,514-516,551-554",
+      "crates/ui-egui/src/docking.rs:215-230,325-330,396",
+      "grep 'window.workspace' crates/ui-egui/src → 无"
+     ]
+    },
+    {
+     "id": "ui_arch:C12",
+     "status": "corrected",
+     "note": "桌面版的描述正确。Web 版不同：它对 ui.json 只做 drop_outdated，然后 serde_json::from_value::<UiState> 失败时整个 UiState 都不用（全部回到默认），并不是只丢 docking。所以 Panel 新增变体后，Web 端损失的是全部 UI 设置。",
+     "evidence": [
+      "apps/lightcraft/src/prefs.rs:56-75,86-95",
+      "apps/lightcraft-web/src/web.rs:598-609",
+      "crates/ui-egui/src/state.rs:21-33",
+      "crates/engine/src/config.rs:51-65",
+      "craft-libs@c5a1cbf crates/ui/src/docking/workspace.rs:11-33,51"
+     ]
+    },
+    {
+     "id": "ui_arch:C13",
+     "status": "confirmed",
+     "note": "ui.set 先 deep_merge 再反序列化，set_widths 里会对 docking 做 validate。Node 的 JSON 是外部标签形式，两个不同形状的布局对象合并后会坏掉，所以先发 {docking:null} 的建议是对的。",
+     "evidence": [
+      "crates/ui-egui/src/control.rs:394-431",
+      "crates/develop/src/presets.rs:146-160",
+      "docs/control-protocol.md:404-421",
+      "apps/lightcraft-cli/src/main.rs:7,47"
+     ]
+    },
+    {
+     "id": "ui_arch:C14",
+     "status": "confirmed",
+     "note": "Presets 放在 Library 下方（Placement::Group below）合法，并且能存取（有测试）；F6/F7/F8 是别名；切换视图只改 app.ui.view，不改面板。注意：Presets 默认是隐藏的，move 之前要先打开它。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:792-808",
+      "crates/ui-egui/src/shortcuts.rs:221-224",
+      "crates/ui-egui/src/sidebar.rs:1-6,13-19",
+      "crates/ui-egui/src/menus/ui_commands.rs:182-184",
+      "crates/ui-egui/src/menus/run.rs:198-201,343-346"
+     ]
+    },
+    {
+     "id": "ui_arch:C15",
+     "status": "confirmed",
+     "note": "桌面版的行为属实：反序列化失败 → 删除 docking → 弹提示 → keep_file=true，本次不写设置。全仓库没有 deny_unknown_fields 和 serde(flatten)。Web 版更严重，见 C12。",
+     "evidence": [
+      "apps/lightcraft/src/prefs.rs:57-68,89-95",
+      "crates/ui-egui/src/state/settings.rs:107-109",
+      "grep deny_unknown_fields crates/ui-egui/src apps → 无"
+     ]
+    },
+    {
+     "id": "ui_arch:C16",
+     "status": "corrected",
+     "note": "各 issue/PR 的状态都已核实（#1217 open/ui/6 条评论；#1787 duplicate；#2187 是 open 的 issue，不是 PR；#3158 closed、merged_at=null、31 条评论；#3227、#3820 open）。需要更正两点。(1) 把 #3158 的关闭当作上游不接受的证据太牵强：用 search API 探测（query 带 3158 并加 in:comments，用 zebra/xylophone 做阴性对照），评论里出现 stale、conflicts、new PR、scope，没有出现 by design、declined；目前也没有接替它的 LR-UI-TOOL-ROW PR。所以关闭更像是因为过期或冲突，原因不明。(2) 403 是本会话的 GitHub 访问策略造成的（返回信息是 'GitHub access to this repository is not enabled for this session. Use add_repo'），并不是仓库本身不可读。",
+     "evidence": [
+      "docs/ui-parity.md:25",
+      "gh search: #3158 \"stale\"/\"conflicts\"/\"new PR\"/\"scope\" in:comments → 命中；\"by design\"/\"declined\"/zebra → 0",
+      "gh search 'is:pr \"LR-UI-TOOL-ROW\"' → 只有 #3158",
+      "gh api repos/storytold/lightcraft/issues/3158/comments → 403 session policy",
+      "docs/roadmap.md:79"
+     ]
+    },
+    {
+     "id": "ui_arch:C17",
+     "status": "corrected",
+     "note": "在 PR 引用上复算 git diff --stat 4956a55 6c7396d，结果是 10 个文件、+345/−25，不是 9 个文件、+338/−20。多出来的是 panels/edit.rs（3 行，只改注释）、src/tests.rs（+1）、shortcuts/tests.rs（+18）、docs/parity-checklist.md（12 行）。业务代码约 150 行（frame 7、right 20、strip 121、view 3、edit 3）和测试约 200 行的结论不变。diff 内容（只在 Tools 不可见时画竖条、strip::row、RIGHT_WIDTH 改为 318）已核实。",
+     "evidence": [
+      "scratchpad/ui/pr-refs: git diff --stat 4956a55 6c7396d",
+      "be754d9 的父提交为 d77c946 和 4956a55（#3155 合入）"
+     ]
+    },
+    {
+     "id": "ui_arch:C18",
+     "status": "confirmed",
+     "note": "1314 和 1968 这两个数复核一致，也确实没有 snapshots 目录或像素对比。有一处证据错误：panels/strip.rs 只有 111 行，不存在 261-276 行；按钮位置的测试是 strip.rs:95-110 的内联测试。另外，摘要里“1314 个测试都假设默认布局”说得太绝对，C18 正文的说法更准确。",
+     "evidence": [
+      "crates/ui-egui/src/panels/strip.rs:95-110",
+      "crates/ui-egui/src/tests/panels.rs:37-80",
+      "crates/ui-egui/tests/it/landmarks.rs:40-62",
+      "crates/ui-egui/tests/it/accessibility.rs:292-312",
+      "crates/ui-egui/src/headless.rs:453-456",
+      "crates/ui-egui/Cargo.toml:40"
+     ]
+    },
+    {
+     "id": "ui_arch:C19",
+     "status": "corrected",
+     "note": "上游大量用 merge 合入，而且克隆是浅的，所以按路径 git log 的计数随参数大幅变化。在本地克隆（历史到 2026-09-30）上，不加 --full-history 得到 topbar 2、docking 1、detail 5、state 54；同一克隆加 --full-history --no-merges（since 2026-10-12 / 近 14 天）得到：frame.rs 19/13，topbar 18/6，docking 17/3，detail.rs 88/8，compare 30/12，edit 36/5，state.rs 57/5，strip 4/3，ui_commands 5/3，right.rs 35/2。定性结论不变：近期最热的是 frame.rs 和 compare.rs，docking.rs 相对安静；detail.rs 和 state.rs 的改动大多发生在 10 月。原文的具体数字不可靠。",
+     "evidence": [
+      "git -C /home/user/storytold/lightcraft log --full-history --no-merges --since=2026-10-12 -- <file>",
+      "同仓库不加 --full-history 的对照结果",
+      "scratchpad/ui/lc-history（浅克隆，212 条 shallow 边界）结果又不同"
+     ]
+    },
+    {
+     "id": "ui_arch:C20",
+     "status": "confirmed",
+     "note": "可见性已核实：ui_pass 和 draw_window 是 pub(super)；notices、library_problem 的 prepare_ui_pass、shield_pass、finish_ui_pass 是 pub(crate)；next_widgets 是私有字段。补充：LightcraftApp::run、ui、session 和 panels::* 的 show 都是 pub，所以宿主可以在 app.ui(ui) 之前或之后加一圈外框（比如模块条），但这部分不在 widget 注册表和模态屏蔽之内，也没法挪动内部区域。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:252,397",
+      "crates/ui-egui/src/panels/notices.rs:409,506,513",
+      "crates/ui-egui/src/panels/library_problem.rs:180,232,250",
+      "crates/ui-egui/src/lib.rs:39,149-154,285",
+      "crates/ui-egui/src/app.rs:199"
+     ]
+    },
+    {
+     "id": "ui_arch:C21",
+     "status": "confirmed",
+     "note": "相关命令都存在：view.detail（D）、panel.edit（E）、view.gridToggle（G）、dialog.print（Cmd+P）、view.slideshow；Print 对话框的主体是 print_view::body。",
+     "evidence": [
+      "crates/ui-egui/src/menus/ui_commands.rs:65,68,143,185-186,212",
+      "crates/ui-egui/src/dialogs.rs:2159"
+     ]
+    },
+    {
+     "id": "ui_arch:C22",
+     "status": "confirmed",
+     "note": "target 目录不存在，机器 4 核；cargo 1.97 可用但没有构建缓存。我这次也没有编译。",
+     "evidence": [
+      "ls /home/user/storytold/lightcraft/target → 不存在",
+      "nproc → 4"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O1 零代码：只用现有停靠系统和 ui.json 或控制脚本配置",
+     "status": "confirmed",
+     "note": "可行。脚本顺序是先 reset、再打开 Library 和 Presets、最后 move below，这是对的，因为 Presets 默认隐藏，隐藏的面板走 Move 会失败。工时合理。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:236-240,323-330,792-808",
+      "craft-libs@c5a1cbf crates/ui/src/docking/command.rs:506-509,533-546"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O2 上游友好的小补丁：内置“Classic 面板预设”（不加新 Panel 变体）",
+     "status": "confirmed",
+     "note": "技术上可行：docked() 有现成写法可照抄，reset 分支在 325-330 行。开放 Lock 也可行，因为 DockCommand::apply 已经能处理 Lock，但需要单独注册一个命令 id，不能塞进 ui.dock。3–6 小时是乐观的下限；加上 PR 模板要求的截图、parity 行、locale 键和测试，4–10 小时更稳妥。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:94-110,114-128,325-344",
+      "craft-libs@c5a1cbf crates/ui/src/docking/command.rs:551-554",
+      ".github/PULL_REQUEST_TEMPLATE.md:27-31,63-65"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O3 可选的“Classic 布局”开关（AppSettings.classic_layout）：工具横排、通栏胶片条、顶栏模块页签",
+     "status": "corrected",
+     "note": "可行性成立，但有三处要更正。(1) dim1 摘要写“合计约 30–60 小时、700–1000 行业务代码”，O3 自己写 20–40 小时、450–650 行，加上 O2 也只有约 23–46 小时、500–730 行，前后矛盾。(2) (b) 方案里的 Panel::bottom 必须在 strip::show（frame.rs:475）之前画，才能横跨整个窗口宽度，否则会缺掉右侧 48pt 工具条下面那段。(3) 不能把 #3158 被关闭当作上游拒绝（见 C16）。另外，翻译目录是 17 个，不是 18 个。",
+     "evidence": [
+      "crates/ui-egui/src/app/frame.rs:473-478",
+      "crates/ui-egui/src/panels/detail.rs:136-144",
+      "crates/ui-egui/src/panels/compare.rs:190-199",
+      "ls crates/ui-egui/locales → 17 个语言 + 17 个 -formats"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O4 拆出新的停靠面板：Histogram、History、Navigator（以及 Snapshots=Versions）",
+     "status": "corrected",
+     "note": "12–25 小时偏低，估计 20–40 小时更现实，原因如下。Workspace<Panel> 是带类型的；fork 要兼容上游，就得在写入 docking 之前剥掉新变体，或者另存一套 workspace，这比 50 行复杂。keywords.rs 的 hold_list_in_place 依赖 Tools 的 right-scroll 临时 id（right.rs:101-103）。History 和 Versions 在 Tools 里有对应模式，涉及 strip 按钮和 Y、Shift+V 快捷键的语义，都要去重。Navigator 只能拿到上一帧的几何信息。内容函数目前是 pub(super)，要提升可见性。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right.rs:24-28,101-103",
+      "crates/ui-egui/src/panels/right/keywords.rs:206",
+      "crates/ui-egui/src/panels/right/history.rs:3,133",
+      "crates/ui-egui/src/docking.rs:12-52,236-273"
+     ]
+    },
+    {
+     "id": "ui_arch:option:O5 全新的 Rust UI 前端（重写 ui-egui，或另起一个 crate 直接调用 engine Session）",
+     "status": "corrected",
+     "note": "结论（不推荐）成立，但 500 小时的下限太低。生产代码 67.6k 行，测试命名文件约 50k 行（另有内联测试），还要做 GPU 纹理桥接、AccessKit 和控制协议，比较现实的是 1,000–3,000 小时，与 upstream_route O6 一致。",
+     "evidence": [
+      "find crates/ui-egui -name '*.rs' -path '*tests*' | xargs cat | wc -l → 49920",
+      "crates/ui-egui/src/render.rs:90-128",
+      "apps/lightcraft/src/main.rs:90-129"
+     ]
+    },
+    {
+     "id": "upstream_route:C1",
+     "status": "confirmed",
+     "note": "文档原文都已核实。",
+     "evidence": [
+      "docs/target-app-parity.md:26-28",
+      "docs/ui-parity.md:25",
+      "docs/parity-checklist.md:781",
+      "crates/ui-egui/Cargo.toml:7",
+      "docs/architecture.md:21"
+     ]
+    },
+    {
+     "id": "upstream_route:C2",
+     "status": "confirmed",
+     "note": "在 crates/ui-egui/src 里搜 window.workspace 没有结果；dialogs/settings 里也搜不到 dock 或 workspace 相关的布局选项；locked 只在 docking.rs:396 透传给 DockArea。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:14-19,71-74,94-106,325-330,396",
+      "crates/ui-egui/src/menus/ui_commands.rs:60-61",
+      "crates/ui-egui/src/menus/run.rs:149-151"
+     ]
+    },
+    {
+     "id": "upstream_route:C3",
+     "status": "confirmed",
+     "note": "属实，有两点细节：Node::Stack 不能靠手势生成，只在恢复位置时出现（model.rs:1594-1598）或由应用写进 JSON；外缘的 Placement::Edge(Top/Bottom) 能在两侧 dock 之间新建一行，但不横跨 dock，所以全宽胶片条确实要画在 DockArea 外面。",
+     "evidence": [
+      "craft-libs@c5a1cbf crates/ui/src/docking/workspace.rs:11-33",
+      "craft-libs@c5a1cbf crates/ui/src/docking/dock_model.rs:23-26",
+      "craft-libs@c5a1cbf crates/ui/src/docking/model.rs:28-50,329-336",
+      "craft-libs@c5a1cbf docs/ui-docking.md:416-454",
+      "Cargo.toml:13"
+     ]
+    },
+    {
+     "id": "upstream_route:C4",
+     "status": "confirmed",
+     "note": "同 ui_arch C5、C6、C8。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right.rs:63-66,82-94",
+      "crates/ui-egui/src/state/view.rs:24-38",
+      "crates/ui-egui/src/panels/detail/filmstrip.rs:6-12,58",
+      "crates/ui-egui/src/app/frame.rs:473-478"
+     ]
+    },
+    {
+     "id": "upstream_route:C5",
+     "status": "confirmed",
+     "note": "history.rs、info.rs、keywords.rs 里 ui.right 或 RightPanel 的计数都是 0；对 ui\\.right\\b|RightPanel:: 的复算得到 118 处、14 个文件，统计口径含少量内联测试。补充：keywords 的滚动保持依赖 right.rs 的全局临时 id。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right/history.rs:3,133",
+      "crates/ui-egui/src/panels/right/info.rs:3",
+      "crates/ui-egui/src/panels/right/keywords.rs:3,206",
+      "crates/ui-egui/src/panels/right.rs:70,101-103"
+     ]
+    },
+    {
+     "id": "upstream_route:C6",
+     "status": "confirmed",
+     "note": "用 search API 逐个核实了各 issue 的状态、标签和关闭原因。",
+     "evidence": [
+      "#1217 open ui 6 条评论 2026-10-12",
+      "#1787/#2062 duplicate 2026-10-19",
+      "#2187 open",
+      "#3600 not_planned [duplicate,priority: low,ui,backlog]",
+      "#2342/#2343 open priority: low"
+     ]
+    },
+    {
+     "id": "upstream_route:C7",
+     "status": "confirmed",
+     "note": "复现成功：加 label:ui 和 in:comments 时，Classic、thanks、support、LrC 能命中 #1217；docking、layout、module(s)、panel(s)、by design、keymap、filmstrip 都不命中（相应的总数都小于 100，不会被分页漏掉）。403 是会话层面的访问策略，可以通过 add_repo 解决。",
+     "evidence": [
+      "gh search 'is:issue label:ui \"<词>\" in:comments' 结果",
+      "gh api .../issues/3158/comments → 'not enabled for this session'"
+     ]
+    },
+    {
+     "id": "upstream_route:C8",
+     "status": "confirmed",
+     "note": "#2338 open；#2580 的 C9 里列有 #2338、#2194、#1554/#1589/#1651，C8 里列有 #2344；classic-keymap.md 的内容已核实。",
+     "evidence": [
+      "scratchpad/ui/issue2580.md:132-135",
+      "git show refs/pr/2338:docs/classic-keymap.md",
+      "docs/ui-parity.md:32,39-41"
+     ]
+    },
+    {
+     "id": "upstream_route:C9",
+     "status": "confirmed",
+     "note": "#1680 存在约 36 分钟后关闭，未合并；head 上有 drizzle、focus stacking 等合入提交；main 上没有 docs/mobile-layout.md。",
+     "evidence": [
+      "git log refs/pr/1680 → 066f612、a422ec1、ec4810b",
+      "#1680 created 05:43:25Z closed 06:19:03Z"
+     ]
+    },
+    {
+     "id": "upstream_route:C10",
+     "status": "confirmed",
+     "note": "规则内容属实，PR 模板的行号有偏移：检查项在 27-31 行，截图在 36-38 行，已保存设置的默认值在 46-48 行，tr()/locales 在 63-64 行。",
+     "evidence": [
+      "AGENTS.md:7,14,20,30,116",
+      ".github/PULL_REQUEST_TEMPLATE.md:1-9,27-31,36-38,46-48,63-65"
+     ]
+    },
+    {
+     "id": "upstream_route:C11",
+     "status": "confirmed",
+     "note": "缺翻译时显示英文，测试不会失败；\"Reset Panel Layout\" 在 17 个语言目录里都有。",
+     "evidence": [
+      "docs/localization.md:14-16,95-96",
+      "grep -l 'Reset Panel Layout' crates/ui-egui/locales/* → 17"
+     ]
+    },
+    {
+     "id": "upstream_route:C12",
+     "status": "confirmed",
+     "note": "复算结果：open PR 834 个；11 月 1 日以来合并 123 个，其中 70 个提到 crates/ui-egui。",
+     "evidence": [
+      "gh search 'is:pr is:open' → 834",
+      "'is:pr is:merged merged:>=2026-11-01' → 123；加 crates/ui-egui → 70"
+     ]
+    },
+    {
+     "id": "upstream_route:C13",
+     "status": "confirmed",
+     "note": "wgpu 30；register_native_texture 和 update_egui_texture_from_wgpu_texture 在 main.rs:103-106；Tex.native 和 ScreenTextures 已核实。",
+     "evidence": [
+      "Cargo.toml:101",
+      "apps/lightcraft/src/main.rs:90-129",
+      "crates/ui-egui/src/render.rs:90-128"
+     ]
+    },
+    {
+     "id": "upstream_route:C14",
+     "status": "corrected",
+     "note": "许可证都已核实（Slint 的表达式里没有任何一个标识符在白名单内）。有两处更正。(1) Slint 的 winit 后端并非无条件依赖 Skia：i-slint-renderer-skia 只在 cfg(all(target_vendor=\"apple\", not(target_os=\"macos\")))（iOS 等）下是必选依赖，桌面平台上是可选的，可以用 femtovg 或 software 渲染器。所以“拉进 C++ Skia”不能作为排除 Slint 的理由，许可证才是硬伤。(2) Dioxus 除了基于 wry 的 dioxus-desktop，还有原生渲染的 dioxus-native 0.7.10（Blitz/vello，不用 webview）；“违反 webview 规则”只针对 dioxus-desktop。iced 依赖 wgpu ^27，vello 0.6 依赖 wgpu ^26，egui_dock 0.21.1 要求 egui ^0.36，egui_tiles 0.18 要求 egui ^0.37，这些都已核实。gpui 没有 Web 目标这一点没有核实。",
+     "evidence": [
+      "crates.io /crates/i-slint-backend-winit/1.18.1/dependencies: skia optional=False 仅 target=cfg(all(target_vendor=\"apple\", not(target_os=\"macos\")))",
+      "crates.io dioxus-native 0.7.10 'Native renderer for Dioxus based on blitz'",
+      "crates.io iced_wgpu 0.14.0 → wgpu ^27.0；vello 0.6.0 → wgpu ^26.0.1；gpui 0.2.2 → metal(macos)、blade-graphics(linux)",
+      "AGENTS.md:34-49"
+     ]
+    },
+    {
+     "id": "upstream_route:C15",
+     "status": "corrected",
+     "note": "294 个文件、118,556 行、非测试 67,609 行、1,968 个测试、194 条 UI 命令，这些都已核实。“测试文件 36,834 行”只统计了 tests/ 和 src/tests/；加上 tests.rs、*_tests.rs、tests_*.rs，测试命名文件约 49.9k 行，还没算内联测试。dialogs 含 dialogs.rs 约 13.9k 行。",
+     "evidence": [
+      "cat tests/ src/tests/ → 36834",
+      "find -path '*tests*' → 49920",
+      "awk UI_COMMANDS → 194"
+     ]
+    },
+    {
+     "id": "upstream_route:C16",
+     "status": "confirmed",
+     "note": "桌面版属实；Web 版在反序列化失败时会丢掉整个 UiState（web.rs:607-609），见 ui_arch C12。",
+     "evidence": [
+      "apps/lightcraft/src/prefs.rs:56-75,86-95",
+      "apps/lightcraft-web/src/web.rs:598-609",
+      "crates/ui-egui/src/state.rs:21-33"
+     ]
+    },
+    {
+     "id": "upstream_route:C17",
+     "status": "confirmed",
+     "note": "属实；Presets 要先打开（默认隐藏）。",
+     "evidence": [
+      "docs/control-protocol.md:406,410",
+      "PR #2839 正文",
+      "crates/ui-egui/src/docking.rs:792-808"
+     ]
+    },
+    {
+     "id": "upstream_route:C18",
+     "status": "confirmed",
+     "note": "gaps.md:177 原文是“Panel docking (UI.9, #869) closes no listed gap”；gap 15、16、28，以及 ROADMAP.md:49、74、158 都已核实。",
+     "evidence": [
+      "docs/gaps.md:32-33,46,177",
+      "ROADMAP.md:49,74,158",
+      "docs/target-app-parity.md:80",
+      "docs/ui-parity.md:39-41"
+     ]
+    },
+    {
+     "id": "upstream_route:C19",
+     "status": "confirmed",
+     "note": "属实，我也没有编译。",
+     "evidence": [
+      "Cargo.toml:3,13-19,190-204"
+     ]
+    },
+    {
+     "id": "upstream_route:option:O1 零代码：用现有 docking 手动拼一个接近 LrC 的布局",
+     "status": "confirmed",
+     "note": "可行。给出的 JSON 只有一条 move；Presets 默认隐藏，必须先执行 panel.presets 或 ui.dock open，否则 Move 会失败。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:236-240",
+      "craft-libs@c5a1cbf crates/ui/src/docking/command.rs:506-509,533-546"
+     ]
+    },
+    {
+     "id": "upstream_route:option:O2 上游 PR A：布局预设“Lightroom（默认）| Lightroom Classic”，只用现有面板，加全宽胶片带",
+     "status": "corrected",
+     "note": "可行，但 400–800 行代码明显高估。预设（照 docked() 写约 15 行）、reset 按预设处理、命令和菜单、UiState 字段合计约 60–120 行；胶片条搬到 frame.rs 并在 detail/compare 里跳过约 40–80 行。业务代码约 120–250 行，测试约 200–400 行，人工约 12–30 小时更合理。另外，target-app-parity.md 里“6–12 分钟一行”指的是 parity 清单的小行，不是代码行，不能拿来算代码量。",
+     "evidence": [
+      "crates/ui-egui/src/docking.rs:94-110,325-330",
+      "crates/ui-egui/src/app/frame.rs:473-478",
+      "docs/target-app-parity.md:254-255"
+     ]
+    },
+    {
+     "id": "upstream_route:option:O3 上游 PR B：把 Histogram、Navigator、History、Snapshots、Info、Keywords 拆成可停靠面板",
+     "status": "confirmed",
+     "note": "可行性和 60–120 人工小时都算合理。风险描述准确：全局 right-scroll id、keywords 的滚动保持、命令跳转、Panel 新变体的降级问题。",
+     "evidence": [
+      "crates/ui-egui/src/panels/right.rs:70,101-103",
+      "crates/ui-egui/src/docking.rs:275-302",
+      "apps/lightcraft/src/prefs.rs:86-93"
+     ]
+    },
+    {
+     "id": "upstream_route:option:O4 上游 PR C：Library/Develop 模块切换器、每模块一套工作区，并入 #2338 Classic 键位",
+     "status": "confirmed",
+     "note": "与 ui-parity.md:25 写明的“by design”直接冲突，属于产品决策；window.workspace 由应用自己实现，craft-ui 的 apply 会拒绝这类命令（NotAllowed），需要 LightCraft 自己写。",
+     "evidence": [
+      "docs/ui-parity.md:25",
+      "craft-libs@c5a1cbf crates/ui/src/docking/command.rs:514-516",
+      "craft-libs@c5a1cbf docs/ui-docking.md:451-454"
+     ]
+    },
+    {
+     "id": "upstream_route:option:O5 下游补丁分支：只维护一组布局层补丁，持续 rebase 上游",
+     "status": "confirmed",
+     "note": "成立。cons 里提到要自己维护自动更新，这一点很关键：UPDATE_APP 指向 storytold/lightcraft 的发布，不改的话，fork 会被自动更新成上游版本，见 missed。",
+     "evidence": [
+      "crates/ui-egui/src/lib.rs:12-16",
+      "craft-libs@c5a1cbf crates/update/src/suite.rs:11",
+      "apps/lightcraft/src/main.rs:228"
+     ]
+    },
+    {
+     "id": "upstream_route:option:O6 用其他 Rust GUI 框架从零重写界面（iced / Slint / gpui / Xilem-Masonry / Makepad / Dioxus）",
+     "status": "corrected",
+     "note": "不推荐的结论成立，但关于 Slint/Skia 和 Dioxus 的理由要按 C14 更正；工时量级合理。",
+     "evidence": [
+      "crates.io i-slint-backend-winit 1.18.1 依赖表",
+      "crates.io dioxus-native 0.7.10"
+     ]
+    },
+    {
+     "id": "upstream_route:option:O7 在 egui 里把 docking 换成 egui_dock / egui_tiles",
+     "status": "confirmed",
+     "note": "egui_dock 0.21.1 要求 egui ^0.36，egui_tiles 0.18 要求 egui ^0.37；LightCraft 用的是 storytold/egui fork 的 0.37.0。不推荐，理由成立。",
+     "evidence": [
+      "crates.io egui_dock 0.21.1 → egui ^0.36；egui_tiles 0.18.0 → egui ^0.37.0",
+      "Cargo.lock: egui 0.37.0 git storytold/egui@6d518fc"
+     ]
+    }
+   ],
+   "missed": [
+    "自建 fork 会被自动更新覆盖：UPDATE_APP（crates/ui-egui/src/lib.rs:12-16）用的是 craft_update::suite::LIGHTCRAFT，它指向 \"storytold/lightcraft\"（craft-libs@c5a1cbf crates/update/src/suite.rs:11），自更新入口在 apps/lightcraft/src/main.rs:228。不改这一项，fork 构建会把上游的发布当作更新并替换掉自身，布局补丁随之丢失。所以 O2-O5 作为 fork 时，要么把更新源指向 fork 自己的发布，要么关闭更新。",
+    "fork 和上游共用同一个配置目录和 ui.json（crates/engine/src/config.rs:51-65 写死了 LightCraft/lightcraft 路径）。两个版本同时安装时，Panel 新变体或新字段会立刻互相影响：上游会丢弃布局、本次不保存设置，并在重写文件时删掉 fork 的字段。可以用 LIGHTCRAFT_CONFIG_DIR 或便携标记把两者隔离。",
+    "Web 版在 UiState 反序列化失败时会放弃全部 UI 设置，不只是 docking（apps/lightcraft-web/src/web.rs:607-609），新增 Panel 变体的代价比桌面版更大。",
+    "按 PR #2839 和 craft-ui surface.rs:87-91、250-257，LightCraft 当前的停靠配置下，画布本体不接受拖放（松手就浮动）；只有窗口上下外缘约 28pt 的带能在两侧 dock 之间新建一行（Placement::Edge）。docking.rs:360-361 的注释（photo takes drops on all four sides）有误导性。手风琴 Node::Stack 不能靠手势生成。",
+    "宿主层可以加外框：LightcraftApp::run、ui、session 和 panels::*::show 都是 pub（app.rs:199，lib.rs:149-154），apps/lightcraft 可以在 self.0.ui(ui) 之前或之后画一个模块条，通过 app.run(\"view.detail\") 等命令切换，不用改 ui-egui。代价是这部分不进 widget 注册表、不受模态屏蔽，也挪不动胶片条和工具条（filmstrip 是 pub(crate)）。这是 O1 和 O3 之间一个更小的 fork 方案。",
+    "#3158 的评论里出现 stale、conflicts、new PR、scope（search 探测，有阴性对照），而且没有接替它的 LR-UI-TOOL-ROW PR。所以它的关闭不能当作上游拒绝工具横排的证据；当初把 Panel docking 引入时，上游也在 gaps.md:177 承认它不对应任何已列缺口。",
+    "Slint 的 Skia 依赖只在 iOS 一类 Apple 非 macOS 目标上是必选的，桌面可以用 femtovg 或 software 渲染器；排除 Slint 的硬理由只有许可证（AGENTS.md:34-49）。Dioxus 还有不走 webview 的 dioxus-native（Blitz）。",
+    "分发 fork 时要注意 NOTICE:6-8：ArtCraft 的名称、字标和 docs/brand/ 里的标识不在 MIT/Apache 授权范围内，适用 docs/brand/LICENSE-brand.txt。自己编译、自己用不受影响。",
+    "上游还有 Map 相关的开放 PR（#797 Map view、#804、#810、#819），#1695 LR-MAP-MODULE 已关闭未合并。模块切换器要包含哪些模块，会受这些 PR 的去向影响。另有 #3978（docking 德语翻译）正在动 docking 字符串，新增 locale 键时可能冲突。",
+    "如果把胶片条做成一个可停靠的 Panel，可以同时满足通栏胶片条和 #2342 竖向胶片条（open）的需求，但会遇到同样的 Panel 变体兼容问题；两份 findings 都没讨论这个方案。",
+    "旧的 panels::resizable_side（panels.rs:67）在生产代码里已经没人调用，只剩 tests/lifecycle_037.rs 在用，但 parity-checklist 的 LR-BEHAV-PANEL-RESIZE 行仍然引用它。改布局时不要在它上面开发。"
+   ]
+  }
+ }
+}
