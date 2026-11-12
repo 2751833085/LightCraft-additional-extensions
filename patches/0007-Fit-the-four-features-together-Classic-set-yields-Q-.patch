@@ -1,7 +1,7 @@
 From 9d7da1832d24a25f7b7ecbaefe7de7e19603a904 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 11 Nov 2026 20:41:44 +0000
-Subject: [PATCH 7/7] Fit the four features together: Classic set yields Q /
+Subject: [PATCH 7/8] Fit the four features together: Classic set yields Q /
  Shift+W to Spot Removal and Masking; tooltips use the active set
 
 ---

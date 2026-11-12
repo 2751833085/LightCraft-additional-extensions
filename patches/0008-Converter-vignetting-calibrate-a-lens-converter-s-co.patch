@@ -1,0 +1,2235 @@
+From 8a6cdb9617b6bd51a4bff20574dd0cf23e1b1da2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 16:42:27 +0000
+Subject: [PATCH 8/8] Converter vignetting: calibrate a lens converter's corner
+ falloff from a flat-field photo
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A lens converter (e.g. the GT-2 tele converter on a GR IIIx, shot without the
+camera's crop) darkens the corners far more than the bare lens's profile knows,
+and the manual Vignetting slider can't follow its steep falloff.
+
+- develop: Optics gains converter_k (radial gain 1 + k0·r² + … + k4·r¹⁰, r over
+  the half diagonal) and converter_amount (0..200, control
+  optics.converterAmount). Both are left out of the stored JSON while unused,
+  so existing settings serialize exactly as before; the merge JSON states them,
+  so presets / copy / sync of Optics carry and clear them. Coefficients from
+  outside are kept finite and bounded.
+- pipeline: Warp applies the converter gain (capped at 4 stops) with the manual
+  and embedded vignetting, independent of the lens-profile switch and off with
+  the optics section; the GPU warp kernel evaluates the same formula
+  (WP_N 65 -> 71).
+- engine: flat_field fits the residual falloff of a flat-field photo
+  (scene-linear, after the lens profile; median per radial bin, black cut-off
+  left out and reported; Householder least squares) and refuses clipped, dark
+  or non-flat photos with a reason. Command optics.fitConverterVignette {id?}.
+- ui: Optics ▸ Converter Vignetting dropdown (None, saved profiles, Create from
+  Selected Flat-Field Photo…, Manage Profiles…) with an Amount slider; the
+  measurement runs in the background and opens a dialog to name the profile;
+  profiles live in the app settings (converterProfiles); app.converterProfiles
+  for scripts. Simplified and Traditional Chinese strings.
+---
+ crates/develop/src/controls.rs                |   1 +
+ crates/develop/src/lib.rs                     |  14 +-
+ crates/develop/src/settings.rs                |  31 ++
+ crates/develop/src/tests_converter.rs         |  79 ++++
+ crates/engine/src/activity.rs                 |   2 +-
+ crates/engine/src/cmd.rs                      |   2 +
+ crates/engine/src/cmd/converter.rs            |  51 +++
+ crates/engine/src/flat_field.rs               | 374 ++++++++++++++++
+ crates/engine/src/lib.rs                      |   1 +
+ crates/engine/src/tests.rs                    |   1 +
+ crates/engine/src/tests/converter_vignette.rs | 102 +++++
+ crates/gpu/src/render.rs                      |  25 +-
+ crates/gpu/src/wgsl/geom.wgsl                 |  19 +-
+ crates/gpu/tests/it/equivalence.rs            |  25 ++
+ crates/pipeline/src/optics.rs                 |  39 +-
+ crates/pipeline/src/optics/tests.rs           |  46 ++
+ crates/ui-egui/locales/zh-hans-formats.json   |   5 +-
+ crates/ui-egui/locales/zh-hans.json           |  26 +-
+ crates/ui-egui/locales/zh-hant-formats.json   |   5 +-
+ crates/ui-egui/locales/zh-hant.json           |  26 +-
+ crates/ui-egui/src/control.rs                 |   1 +
+ crates/ui-egui/src/dialogs.rs                 |  17 +-
+ crates/ui-egui/src/dialogs/confirm.rs         |   1 +
+ crates/ui-egui/src/dialogs/converter.rs       | 417 ++++++++++++++++++
+ crates/ui-egui/src/menus/run.rs               |   3 +
+ crates/ui-egui/src/menus/ui_commands.rs       |   2 +
+ crates/ui-egui/src/panels/edit.rs             |   2 +
+ crates/ui-egui/src/state.rs                   |   6 +-
+ crates/ui-egui/src/state/dialog.rs            |  11 +
+ crates/ui-egui/src/state/settings.rs          |  59 +++
+ crates/ui-egui/src/tests.rs                   |   1 +
+ .../ui-egui/src/tests/converter_vignette.rs   | 263 +++++++++++
+ docs/parity-checklist.md                      |   7 +-
+ 33 files changed, 1646 insertions(+), 18 deletions(-)
+ create mode 100644 crates/develop/src/tests_converter.rs
+ create mode 100644 crates/engine/src/cmd/converter.rs
+ create mode 100644 crates/engine/src/flat_field.rs
+ create mode 100644 crates/engine/src/tests/converter_vignette.rs
+ create mode 100644 crates/ui-egui/src/dialogs/converter.rs
+ create mode 100644 crates/ui-egui/src/tests/converter_vignette.rs
+
+diff --git a/crates/develop/src/controls.rs b/crates/develop/src/controls.rs
+index 9d384f57c..323a8ba4a 100644
+--- a/crates/develop/src/controls.rs
++++ b/crates/develop/src/controls.rs
+@@ -271,6 +271,7 @@ controls! {
+     "optics.vignettingMidpoint" => optics.vignetting_midpoint, "Midpoint", Optics, 0, 100, 50, 1, 0, Plain;
+     "optics.profileDistortion" => optics.profile_distortion, "Profile Distortion", Optics, 0, 200, 100, 1, 0, Plain;
+     "optics.profileVignetting" => optics.profile_vignetting, "Profile Vignetting", Optics, 0, 200, 100, 1, 0, Plain;
++    "optics.converterAmount" => optics.converter_amount, "Amount", Optics, 0, 200, 100, 1, 0, Plain;
+     "optics.defringePurple" => optics.defringe_purple_amount, "Purple Amount", Optics, 0, 20, 0, 1, 0, Gradient { from: "#7a7a7a", to: "#a040d0" };
+     "optics.defringePurpleHueLo" => optics.defringe_purple_hue_lo, "Purple Hue Low", Optics, 0, 90, 30, 1, 0, Gradient { from: "#6040e0", to: "#d040b0" };
+     "optics.defringePurpleHueHi" => optics.defringe_purple_hue_hi, "Purple Hue High", Optics, 10, 100, 70, 1, 0, Gradient { from: "#6040e0", to: "#d040b0" };
+diff --git a/crates/develop/src/lib.rs b/crates/develop/src/lib.rs
+index cb5acab6f..f51dfe4f6 100644
+--- a/crates/develop/src/lib.rs
++++ b/crates/develop/src/lib.rs
+@@ -39,7 +39,8 @@ impl DevelopSettings {
+         serde_json::from_value(v.clone())
+     }
+ 
+-    /// [`Self::to_json`] with Remove Hot Pixels (`detail.nr_outliers`) stated even when off, for JSON that is copied,
++    /// [`Self::to_json`] with Remove Hot Pixels (`detail.nr_outliers`) stated even when off (and the converter
++    /// vignetting, `optics.converter_k` / `converter_amount`, even when none), for JSON that is copied,
+     /// merged, scaled or compared key by key (copy / paste, presets, Auto Sync). The stored JSON leaves it out when
+     /// off, so settings saved before it keep their hash; a merge needs the `false`, or copying Detail would not turn
+     /// the box off and a preset applied at an amount would not find its base value.
+@@ -48,6 +49,11 @@ impl DevelopSettings {
+         if let Some(detail) = v.get_mut("detail").and_then(Value::as_object_mut) {
+             detail.insert("nr_outliers".into(), Value::Bool(self.detail.nr_outliers));
+         }
++        // (left out of the JSON while there is none: a preset or copy of "no converter correction" clears one)
++        if let Some(optics) = v.get_mut("optics").and_then(Value::as_object_mut) {
++            optics.insert("converter_k".into(), serde_json::json!(self.optics.converter_k));
++            optics.insert("converter_amount".into(), serde_json::json!(self.optics.converter_amount));
++        }
+         v
+     }
+ 
+@@ -88,6 +94,10 @@ impl DevelopSettings {
+                 controls::set(self, c.id, v);
+             }
+         }
++        // converter vignetting coefficients from a file or an agent: finite and bounded
++        for k in &mut self.optics.converter_k {
++            *k = if k.is_finite() { k.clamp(-CONVERTER_K_MAX, CONVERTER_K_MAX) } else { 0.0 };
++        }
+         let c = &mut self.curve;
+         for p in [&mut c.master, &mut c.red, &mut c.green, &mut c.blue].into_iter().flatten() {
+             *p = lightcraft_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0));
+@@ -217,6 +227,8 @@ impl DevelopSettings {
+     }
+ }
+ 
++#[cfg(test)]
++mod tests_converter;
+ #[cfg(test)]
+ mod tests_process;
+ 
+diff --git a/crates/develop/src/settings.rs b/crates/develop/src/settings.rs
+index 85bb3b90f..c7de5f703 100644
+--- a/crates/develop/src/settings.rs
++++ b/crates/develop/src/settings.rs
+@@ -693,6 +693,35 @@ pub struct Optics {
+     /// automatic estimate when `remove_ca` is on.
+     pub ca_red: f64,
+     pub ca_blue: f64,
++    /// Converter vignetting: the extra corner falloff of a lens converter (a tele or wide adapter) that
++    /// the bare lens's profile doesn't know about, calibrated from a flat-field photo. A radial gain
++    /// `1 + k0·r² + k1·r⁴ + k2·r⁶ + k3·r⁸ + k4·r¹⁰`, `r` the distance from the centre of the oriented
++    /// source over its half diagonal; all zeros = none. Left out of the JSON while it is none, so
++    /// photos without it are saved exactly as before.
++    #[serde(skip_serializing_if = "no_converter")]
++    pub converter_k: [f64; 5],
++    /// How much of the converter correction applies, 0..200 (100 = as calibrated), like
++    /// `profile_vignetting`. Left out of the JSON at 100.
++    #[serde(skip_serializing_if = "is_hundred")]
++    pub converter_amount: f64,
++}
++
++impl Optics {
++    /// Whether a converter vignetting correction is set (any non-zero coefficient).
++    pub fn has_converter(&self) -> bool {
++        !no_converter(&self.converter_k)
++    }
++}
++
++/// The largest magnitude a converter vignetting coefficient is kept to (settings from a file or an agent).
++pub const CONVERTER_K_MAX: f64 = 1.0e4;
++
++fn no_converter(k: &[f64; 5]) -> bool {
++    k.iter().all(|v| *v == 0.0)
++}
++
++fn is_hundred(v: &f64) -> bool {
++    *v == 100.0
+ }
+ 
+ impl Default for Optics {
+@@ -713,6 +742,8 @@ impl Default for Optics {
+             vignetting_midpoint: 50.0,
+             ca_red: 0.0,
+             ca_blue: 0.0,
++            converter_k: [0.0; 5],
++            converter_amount: 100.0,
+         }
+     }
+ }
+diff --git a/crates/develop/src/tests_converter.rs b/crates/develop/src/tests_converter.rs
+new file mode 100644
+index 000000000..7216a7c98
+--- /dev/null
++++ b/crates/develop/src/tests_converter.rs
+@@ -0,0 +1,79 @@
++//! Converter vignetting (`optics.converter_k`, `optics.converter_amount`): left out of saved settings while
++//! unused, carried by presets, copy and sync, and kept in range when it comes from outside.
++
++use serde_json::{Value, json};
++
++use crate::*;
++
++/// Settings without a converter correction serialize exactly as before the fields existed, so catalogs,
++/// sidecars and preview-cache keys of existing photos don't change, and official LightCraft reads ours.
++#[test]
++fn settings_without_a_converter_are_saved_as_before() {
++    let s = DevelopSettings::default();
++    let text = serde_json::to_string(&s).unwrap();
++    assert!(!text.contains("converter"), "{text}");
++    // an optics object written before the fields existed loads with no correction and is written back unchanged
++    let old = json!({"remove_ca": false, "lens_profile": true, "profile_distortion": 100.0, "profile_vignetting": 80.0,
++        "defringe_purple_amount": 0.0, "defringe_purple_hue_lo": 30.0, "defringe_purple_hue_hi": 70.0,
++        "defringe_green_amount": 0.0, "defringe_green_hue_lo": 40.0, "defringe_green_hue_hi": 60.0, "distortion": 0.0,
++        "vignetting": 10.0, "vignetting_midpoint": 50.0, "ca_red": 0.0, "ca_blue": 0.0});
++    let mut v = s.to_json();
++    v["optics"] = old.clone();
++    let read = DevelopSettings::from_json(&v).unwrap();
++    assert!(!read.optics.has_converter());
++    assert_eq!(read.optics.converter_amount, 100.0);
++    assert_eq!(read.to_json()["optics"], old);
++    assert_eq!(read.to_json(), v);
++}
++
++#[test]
++fn a_converter_correction_round_trips() {
++    let mut s = DevelopSettings::default();
++    s.optics.converter_k = [0.8, -0.2, 0.05, 0.0, 0.0];
++    s.optics.converter_amount = 120.0;
++    let v = s.to_json();
++    assert_eq!(v["optics"]["converter_k"], json!([0.8, -0.2, 0.05, 0.0, 0.0]));
++    assert_eq!(v["optics"]["converter_amount"], json!(120.0));
++    assert_eq!(DevelopSettings::from_json(&v).unwrap(), s);
++    assert_ne!(s.hash64(), DevelopSettings::default().hash64(), "another preview");
++    // only the coefficients: the amount stays at its default and is left out
++    s.optics.converter_amount = 100.0;
++    assert!(s.to_json()["optics"].get("converter_amount").is_none());
++}
++
++/// A preset (or copy / sync) of the Optics group carries the correction, and one made from a photo
++/// without it clears it: the merge JSON states it even when there is none.
++#[test]
++fn optics_presets_carry_and_clear_the_converter() {
++    let mut gt2 = DevelopSettings::default();
++    gt2.optics.converter_k = [1.2, -0.4, 0.1, 0.0, 0.0];
++    gt2.optics.converter_amount = 90.0;
++    let preset = Preset::from_settings("p", "GT-2", "", &gt2, &[SettingsGroup::Optics]);
++    assert_eq!(preset.settings["optics"]["converter_k"], json!([1.2, -0.4, 0.1, 0.0, 0.0]));
++    let applied = preset.apply(&DevelopSettings::default(), 1.0);
++    assert_eq!(applied.optics.converter_k, gt2.optics.converter_k);
++    assert_eq!(applied.optics.converter_amount, 90.0);
++    // a preset without the Optics group leaves the photo's correction alone
++    let light = Preset::from_settings("q", "Light", "", &DevelopSettings::default(), &[SettingsGroup::Light]);
++    assert_eq!(light.apply(&gt2, 1.0).optics.converter_k, gt2.optics.converter_k);
++    // an Optics preset from a photo without one clears it
++    let none = Preset::from_settings("r", "Plain optics", "", &DevelopSettings::default(), &[SettingsGroup::Optics]);
++    assert_eq!(none.settings["optics"]["converter_k"], json!([0.0, 0.0, 0.0, 0.0, 0.0]));
++    let cleared = none.apply(&gt2, 1.0);
++    assert!(!cleared.optics.has_converter());
++    assert_eq!(cleared.optics.converter_amount, 100.0);
++    assert_eq!(extract_groups(&gt2, &[SettingsGroup::Optics])["optics"]["converter_amount"], json!(90.0));
++}
++
++/// Coefficients and amounts from a file or an agent are kept finite and in range.
++#[test]
++fn merged_converter_values_are_kept_in_range() {
++    let s = DevelopSettings::default();
++    let v: Value = serde_json::from_str(r#"{"optics": {"converter_k": [1e300, -1e300, 0.5, 0, 0], "converter_amount": 1e9}}"#).unwrap();
++    let m = s.merged(&v).unwrap();
++    assert_eq!(m.optics.converter_k, [CONVERTER_K_MAX, -CONVERTER_K_MAX, 0.5, 0.0, 0.0]);
++    assert_eq!(m.optics.converter_amount, 200.0);
++    assert_eq!(controls::get(&m, "optics.converterAmount"), Some(200.0));
++    // a malformed coefficient list is refused as a whole, not half applied
++    assert!(s.merged(&json!({"optics": {"converter_k": [1.0, 2.0]}})).is_err());
++}
+diff --git a/crates/engine/src/activity.rs b/crates/engine/src/activity.rs
+index 147d20f3a..defe3ffb6 100644
+--- a/crates/engine/src/activity.rs
++++ b/crates/engine/src/activity.rs
+@@ -73,7 +73,7 @@ impl Unit {
+ pub struct TaskInfo {
+     pub id: u64,
+     /// A stable id: `import`, `export`, `scan`, `previews`, `smartPreviews`, `lightroom`, `merge`, `download`,
+-    /// `faces`, `denoise`, `findMissing`, `applePhotos`, `cache`, `focus`.
++    /// `faces`, `denoise`, `findMissing`, `applePhotos`, `cache`, `focus`, `converter`.
+     pub kind: &'static str,
+     /// English; the frontend translates it.
+     pub label: String,
+diff --git a/crates/engine/src/cmd.rs b/crates/engine/src/cmd.rs
+index d9e346661..98d7cf3ed 100644
+--- a/crates/engine/src/cmd.rs
++++ b/crates/engine/src/cmd.rs
+@@ -9,6 +9,7 @@ mod before;
+ pub(crate) mod browse;
+ mod color;
+ pub(crate) mod convert;
++pub mod converter;
+ mod cull;
+ pub mod curves;
+ pub mod dcp_profiles;
+@@ -160,6 +161,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
+         v.extend(cull::specs());
+         v.extend(convert::specs());
+         v.extend(convert::edit_specs());
++        v.extend(converter::specs());
+         v.extend(merge::specs());
+         v.extend(query::specs());
+         v.extend(xmp::specs());
+diff --git a/crates/engine/src/cmd/converter.rs b/crates/engine/src/cmd/converter.rs
+new file mode 100644
+index 000000000..85f7833cb
+--- /dev/null
++++ b/crates/engine/src/cmd/converter.rs
+@@ -0,0 +1,51 @@
++//! Converter vignetting: measure a flat-field photo (`optics.fitConverterVignette`). The correction itself is a
++//! develop setting (`optics.converter_k`, set with `develop.merge`; `optics.converterAmount` is its slider).
++
++use lightcraft_catalog::PhotoId;
++use serde_json::Value;
++
++use super::{CommandSpec, always, bad, cmd};
++use crate::flat_field::ConverterMeasurement;
++use crate::{Result, Session, media::SourceLevel};
++
++const C: &str = "optics.fitConverterVignette";
++
++/// The photo a call names (`id`), else the active photo.
++fn target(s: &Session, p: &Value) -> Result<PhotoId> {
++    match p.get("id") {
++        None | Some(Value::Null) => s.active().ok_or_else(|| bad(C, "no active photo")),
++        Some(v) => {
++            let id = v.as_u64().map(PhotoId).ok_or_else(|| bad(C, "`id` must be a photo id"))?;
++            s.catalog.photo(id).map(|_| id).ok_or_else(|| bad(C, format!("no such photo: {}", id.0)))
++        }
++    }
++}
++
++/// Measure photo `id` as a flat field: what [`crate::flat_field::fit_photo`] fits, with the camera, lens,
++/// aperture and focal length it was taken with. Doesn't change the photo.
++pub fn measure(s: &mut Session, id: PhotoId) -> Result<ConverterMeasurement> {
++    let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad(C, e))?;
++    let info = s.source_info(id);
++    let d = s.develop_of(id).unwrap_or_default();
++    let fit = crate::flat_field::fit_photo(&src, &info, &d).map_err(|e| bad(C, e))?;
++    let meta = s.catalog.photo(id).map(|p| p.meta.clone()).unwrap_or_default();
++    Ok(ConverterMeasurement { fit, aperture: meta.aperture, focal_length: meta.focal_mm, camera: meta.camera, lens: meta.lens })
++}
++
++pub fn specs() -> Vec<CommandSpec> {
++    vec![cmd!(
++        query "optics.fitConverterVignette",
++        "Measure Converter Vignetting",
++        [],
++        None,
++        "{id?} — measures a flat-field photo (default: the active one) and returns the converter vignetting \
++         correction that flattens it: {k: [5] (optics.converter_k), maxGainStops, validRadius (beyond it the \
++         converter cuts the frame off), rms, aperture, focalLength, camera, lens}. Doesn't change the photo.",
++        always,
++        |s, p| {
++            let id = target(s, p)?;
++            let m = measure(s, id)?;
++            serde_json::to_value(m).map_err(|e| bad(C, e.to_string()))
++        }
++    )]
++}
+diff --git a/crates/engine/src/flat_field.rs b/crates/engine/src/flat_field.rs
+new file mode 100644
+index 000000000..102fde3ac
+--- /dev/null
++++ b/crates/engine/src/flat_field.rs
+@@ -0,0 +1,374 @@
++//! Converter vignetting from a flat-field photo: the extra corner falloff of a lens converter (a tele or
++//! wide adapter on a fixed-lens camera) that the bare lens's profile doesn't know about, measured on a
++//! photo of an evenly lit, featureless surface and fitted as the radial gain polynomial the develop
++//! settings store (`Optics::converter_k`).
++//!
++//! What is measured is the *residual* falloff: the photo in scene-linear light with its own optics
++//! settings (so the bare lens's profile vignetting, when it is on, is already corrected), but with the
++//! converter correction, the manual vignetting, distortion and perspective off, so output pixels sit on
++//! their source positions and the radius is the one the pipeline evaluates the gain at. Then:
++//!
++//! 1. luminance per pixel, in radial bins over `r ∈ [0, 1]` (the distance from the centre over the half
++//!    diagonal), each represented by its median (robust against dust and hot pixels) and its mean radius;
++//! 2. normalised by the median of the centre (`r < 0.1`): the target gain is `t(r) = L0 / L(r)`;
++//! 3. a bin where many pixels are darker than [`CUTOFF`] of the centre is the mechanical cut-off of the
++//!    converter, which no gain recovers: it and everything beyond it are left out, and the largest radius
++//!    still measured is reported (the corners past it should be cropped);
++//! 4. weighted least squares for `t(r) − 1 = k0·r² + … + k4·r¹⁰` (Householder QR in `f64`, the bins
++//!    weighted by their pixel counts, a whisper of ridge so a short valid range can't blow the high powers
++//!    up), targets capped at [`MAX_STOPS`].
++//!
++//! A photo whose centre is clipped or too dark, whose rings aren't uniform (not a flat field) or whose
++//! falloff the polynomial can't follow is refused with a message that says so.
++
++use lightcraft_develop::{Crop, DevelopSettings, Geometry};
++use lightcraft_pipeline::SourceInfo;
++use lightcraft_raster::Rgb32f;
++use serde::{Deserialize, Serialize};
++
++/// The long edge the photo is measured at.
++pub const FIT_LONG: usize = 800;
++/// Radial bins over `0..=1`.
++const BINS: usize = 40;
++/// The centre the falloff is relative to (half-diagonal units).
++const CENTRE_R: f64 = 0.1;
++/// A pixel darker than this share of the centre is cut off (the converter's barrel), not vignetted.
++pub const CUTOFF: f64 = 0.04;
++/// A bin with more than this share of cut-off pixels is past the cut-off.
++const CUTOFF_SHARE: f64 = 0.05;
++/// The largest correction fitted, in stops (the pipeline caps the gain there too).
++pub const MAX_STOPS: f64 = 4.0;
++/// Fewest pixels a bin needs to count.
++const MIN_BIN_PIXELS: usize = 12;
++/// Fewest bins the fit needs (a frame mostly cut off can't be fitted).
++const MIN_BINS: usize = 8;
++/// A centre median at or below this (scene-linear) is too dark to measure.
++const MIN_CENTRE: f64 = 1e-3;
++/// A pixel whose brightest channel reaches this is clipped.
++const CLIP: f32 = 0.985;
++/// The mean spread within the rings (mean absolute deviation from the median, over the median) a flat field
++/// stays under.
++const MAX_SPREAD: f64 = 0.08;
++/// The largest residual (rms, relative) of the corrected falloff a fit may leave.
++const MAX_RMS: f64 = 0.03;
++
++/// A fitted converter vignetting correction.
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ConverterFit {
++    /// `Optics::converter_k`.
++    pub k: [f64; 5],
++    /// The strongest correction the fit applies within `valid_radius`, in stops.
++    pub max_gain_stops: f64,
++    /// The largest radius (half-diagonal units) measured: beyond it the converter cuts the image off
++    /// (1 = nothing is cut off).
++    pub valid_radius: f64,
++    /// The residual of the corrected falloff (rms over the bins, relative to the centre).
++    pub rms: f64,
++}
++
++/// [`ConverterFit`] with what the photo was taken with, as `optics.fitConverterVignette` returns it.
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ConverterMeasurement {
++    #[serde(flatten)]
++    pub fit: ConverterFit,
++    pub aperture: Option<f32>,
++    pub focal_length: Option<f32>,
++    pub camera: String,
++    pub lens: String,
++}
++
++/// The settings the residual falloff is measured with: the photo's own, without the converter correction,
++/// the manual vignetting, and anything that moves pixels (distortion, CA, perspective, crop).
++pub fn measure_settings(d: &DevelopSettings) -> DevelopSettings {
++    let mut base = d.clone();
++    base.geometry = Geometry::default();
++    base.crop = Crop::default();
++    let o = &mut base.optics;
++    o.converter_k = [0.0; 5];
++    o.vignetting = 0.0;
++    o.distortion = 0.0;
++    o.profile_distortion = 0.0;
++    o.ca_red = 0.0;
++    o.ca_blue = 0.0;
++    o.remove_ca = false;
++    base
++}
++
++/// Measure the residual falloff of `src` (decoded with `info`) under the photo's settings `d` and fit it.
++pub fn fit_photo(src: &Rgb32f, info: &SourceInfo, d: &DevelopSettings) -> Result<ConverterFit, String> {
++    let base = measure_settings(d);
++    let frame = lightcraft_pipeline::frame_for(src, info, &base, false);
++    let (w, h) = frame.fit(FIT_LONG, FIT_LONG);
++    fit_image(&frame.sample(src, w, h))
++}
++
++/// Fit the radial falloff of a scene-linear flat-field image (see the module docs).
++pub fn fit_image(img: &Rgb32f) -> Result<ConverterFit, String> {
++    let (w, h) = (img.width, img.height);
++    if w < 16 || h < 16 || img.data.len() != w.saturating_mul(h) {
++        return Err("The photo is too small to measure.".into());
++    }
++    let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
++    let hd = (w as f64).hypot(h as f64) / 2.0;
++    // per bin: (luminance, radius) of each pixel; the centre's luminance and whether it is clipped
++    let mut bins: Vec<Vec<(f32, f32)>> = vec![Vec::new(); BINS];
++    let (mut centre, mut clipped) = (Vec::new(), 0usize);
++    for (i, p) in img.data.iter().enumerate() {
++        let (x, y) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
++        let r = (x - cx).hypot(y - cy) / hd;
++        let l = lightcraft_color::luminance_2020(*p);
++        if !l.is_finite() || !r.is_finite() {
++            continue;
++        }
++        if r < CENTRE_R {
++            centre.push(l);
++            clipped += usize::from(p.iter().any(|c| *c >= CLIP));
++        }
++        let b = ((r * BINS as f64) as usize).min(BINS - 1);
++        bins[b].push((l, r as f32));
++    }
++    if centre.is_empty() {
++        return Err("The photo is too small to measure.".into());
++    }
++    if clipped * 4 > centre.len() {
++        return Err("The centre of the photo is clipped: take the flat field again about one stop darker.".into());
++    }
++    let l0 = median(&mut centre);
++    if l0 <= MIN_CENTRE {
++        return Err("The photo is too dark to measure: expose the flat field brighter (the centre about one stop below white).".into());
++    }
++    // each bin's target gain, mean radius and weight, out to the cut-off
++    let mut rows: Vec<(f64, f64, f64)> = Vec::new();
++    let (mut spread_sum, mut spread_n) = (0.0, 0.0);
++    let mut valid_radius = 1.0;
++    for (b, bin) in bins.iter_mut().enumerate() {
++        if bin.len() < MIN_BIN_PIXELS {
++            continue;
++        }
++        let dark = bin.iter().filter(|(l, _)| f64::from(*l) < CUTOFF * l0).count();
++        if dark as f64 > CUTOFF_SHARE * bin.len() as f64 {
++            valid_radius = b as f64 / BINS as f64;
++            break;
++        }
++        let r = bin.iter().map(|(_, r)| f64::from(*r)).sum::<f64>() / bin.len() as f64;
++        let mut ls: Vec<f32> = bin.iter().map(|(l, _)| *l).collect();
++        let m = median(&mut ls);
++        if m <= 0.0 {
++            valid_radius = b as f64 / BINS as f64;
++            break;
++        }
++        // (the mean deviation, each pixel's capped: a speck of dust counts little, a scene with detail a lot)
++        spread_sum += ls.iter().map(|l| ((f64::from(*l) - m).abs() / m).min(1.0)).sum::<f64>();
++        spread_n += bin.len() as f64;
++        let t = (l0 / m).clamp(1.0 / 2f64.powf(MAX_STOPS), 2f64.powf(MAX_STOPS));
++        rows.push((r, t, bin.len() as f64));
++    }
++    if rows.len() < MIN_BINS {
++        return Err("Too little of the photo can be measured: the converter cuts off most of the frame.".into());
++    }
++    if spread_n > 0.0 && spread_sum / spread_n > MAX_SPREAD {
++        return Err("The photo isn't a flat field: photograph an evenly lit, featureless surface (a white wall, an overcast sky \
++                    through diffusing paper) out of focus."
++            .into());
++    }
++    let k = least_squares(&rows).ok_or("The falloff could not be fitted.")?;
++    let gain = |r: f64| lightcraft_pipeline::optics::converter_gain(&k, 1.0, r * r);
++    let total: f64 = rows.iter().map(|(_, _, n)| n).sum();
++    let rms = (rows.iter().map(|(r, t, n)| n * (gain(*r) / t - 1.0).powi(2)).sum::<f64>() / total.max(1.0)).sqrt();
++    if !rms.is_finite() || rms > MAX_RMS {
++        return Err("The falloff isn't smooth enough to fit: check that the surface is evenly lit and fills the frame.".into());
++    }
++    let max_gain = (0..=100).map(|i| gain(valid_radius * i as f64 / 100.0)).fold(1.0, f64::max);
++    Ok(ConverterFit { k, max_gain_stops: max_gain.log2().clamp(0.0, MAX_STOPS), valid_radius, rms })
++}
++
++/// The middle value (the mean of the two middle ones for an even count); `values` is reordered.
++fn median(values: &mut [f32]) -> f64 {
++    if values.is_empty() {
++        return 0.0;
++    }
++    values.sort_by(f32::total_cmp);
++    let n = values.len();
++    if n % 2 == 1 { f64::from(values[n / 2]) } else { (f64::from(values[n / 2 - 1]) + f64::from(values[n / 2])) / 2.0 }
++}
++
++/// Weighted least squares for `t − 1 = Σ k_j·r^(2j+2)` over `(r, t, weight)` rows, by Householder QR of the
++/// weighted design matrix (with a small ridge below it). `None` when it is singular.
++fn least_squares(rows: &[(f64, f64, f64)]) -> Option<[f64; 5]> {
++    const N: usize = 5;
++    const RIDGE: f64 = 1e-5;
++    let total: f64 = rows.iter().map(|(_, _, w)| w).sum();
++    if total <= 0.0 {
++        return None;
++    }
++    let mut a: Vec<[f64; N]> = Vec::with_capacity(rows.len() + N);
++    let mut y: Vec<f64> = Vec::with_capacity(rows.len() + N);
++    for (r, t, w) in rows {
++        let s = (w / total).sqrt();
++        let r2 = r * r;
++        let mut row = [0.0; N];
++        let mut p = r2;
++        for v in &mut row {
++            *v = s * p;
++            p *= r2;
++        }
++        a.push(row);
++        y.push(s * (t - 1.0));
++    }
++    for j in 0..N {
++        let mut row = [0.0; N];
++        row[j] = RIDGE;
++        a.push(row);
++        y.push(0.0);
++    }
++    let m = a.len();
++    for j in 0..N {
++        let norm = (j..m).map(|i| a[i][j] * a[i][j]).sum::<f64>().sqrt();
++        if norm < 1e-300 {
++            return None;
++        }
++        let alpha = if a[j][j] > 0.0 { -norm } else { norm };
++        let mut v: Vec<f64> = (j..m).map(|i| a[i][j]).collect();
++        v[0] -= alpha;
++        let vv: f64 = v.iter().map(|x| x * x).sum();
++        if vv < 1e-300 {
++            continue;
++        }
++        for c in j..N {
++            let d: f64 = (j..m).map(|i| v[i - j] * a[i][c]).sum::<f64>() * 2.0 / vv;
++            for i in j..m {
++                a[i][c] -= d * v[i - j];
++            }
++        }
++        let d: f64 = (j..m).map(|i| v[i - j] * y[i]).sum::<f64>() * 2.0 / vv;
++        for i in j..m {
++            y[i] -= d * v[i - j];
++        }
++    }
++    let mut k = [0.0; N];
++    for j in (0..N).rev() {
++        let s: f64 = (j + 1..N).map(|c| a[j][c] * k[c]).sum();
++        if a[j][j].abs() < 1e-300 {
++            return None;
++        }
++        k[j] = (y[j] - s) / a[j][j];
++    }
++    k.iter().all(|v| v.is_finite()).then_some(k)
++}
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used)]
++mod tests {
++    use super::*;
++
++    /// A flat field `w × h` darkened by `1 / gain(r)` with `level` at the centre, black beyond `cut`
++    /// (half-diagonal units), with a little deterministic noise.
++    fn flat(w: usize, h: usize, level: f32, gain: impl Fn(f64) -> f64, cut: f64) -> Rgb32f {
++        let hd = (w as f64).hypot(h as f64) / 2.0;
++        Rgb32f::from_fn(w, h, |x, y| {
++            let r = ((x as f64 + 0.5 - w as f64 / 2.0).hypot(y as f64 + 0.5 - h as f64 / 2.0)) / hd;
++            let seed = ((x * 7919 + y * 104_729) as u32).wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
++            let noise = 1.0 + ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.01;
++            if r > cut { [0.002; 3] } else { [(level as f64 / gain(r)) as f32 * noise; 3] }
++        })
++    }
++
++    fn gt2(r: f64) -> f64 {
++        // steep corner falloff: ~2.6 stops at the corner
++        let r2 = r * r;
++        1.0 + 0.6 * r2 + 1.2 * r2 * r2 + 4.4 * r2 * r2 * r2
++    }
++
++    #[test]
++    fn recovers_a_known_falloff() {
++        let img = flat(900, 600, 0.4, gt2, 2.0);
++        let fit = fit_image(&img).unwrap();
++        for i in 0..=20 {
++            let r = i as f64 / 20.0;
++            let got = lightcraft_pipeline::optics::converter_gain(&fit.k, 1.0, r * r);
++            assert!((got / gt2(r) - 1.0).abs() < 0.01, "r {r}: {got} vs {}", gt2(r));
++        }
++        assert_eq!(fit.valid_radius, 1.0);
++        assert!((fit.max_gain_stops - gt2(1.0).log2()).abs() < 0.03, "{}", fit.max_gain_stops);
++        assert!(fit.rms < 0.005, "{}", fit.rms);
++    }
++
++    #[test]
++    fn a_flat_photo_needs_no_correction() {
++        let fit = fit_image(&flat(600, 900, 0.3, |_| 1.0, 2.0)).unwrap();
++        assert!(fit.max_gain_stops < 0.02, "{fit:?}");
++        assert!(fit.k.iter().all(|k| k.abs() < 0.05), "{fit:?}");
++    }
++
++    /// The converter's barrel cuts the corners off: they are left out, the radius reported, and the
++    /// falloff inside it still recovered.
++    #[test]
++    fn a_black_corner_cut_off_is_left_out_and_reported() {
++        let img = flat(900, 600, 0.4, gt2, 0.88);
++        let fit = fit_image(&img).unwrap();
++        assert!(fit.valid_radius > 0.8 && fit.valid_radius <= 0.88, "{}", fit.valid_radius);
++        for i in 0..=16 {
++            let r = i as f64 / 20.0;
++            let got = lightcraft_pipeline::optics::converter_gain(&fit.k, 1.0, r * r);
++            assert!((got / gt2(r) - 1.0).abs() < 0.01, "r {r}: {got} vs {}", gt2(r));
++        }
++        assert!(fit.max_gain_stops < gt2(1.0).log2(), "only up to the cut-off: {}", fit.max_gain_stops);
++    }
++
++    #[test]
++    fn a_falloff_beyond_four_stops_is_capped() {
++        let img = flat(900, 600, 0.9, |r| 2f64.powf(6.0 * r.powi(4)), 2.0);
++        let fit = fit_image(&img).unwrap_or_else(|e| panic!("{e}"));
++        assert!(fit.max_gain_stops <= MAX_STOPS, "{}", fit.max_gain_stops);
++    }
++
++    #[test]
++    fn unusable_photos_are_refused_with_a_reason() {
++        let clipped = fit_image(&flat(900, 600, 1.0, gt2, 2.0)).unwrap_err();
++        assert!(clipped.contains("clipped"), "{clipped}");
++        let dark = fit_image(&flat(900, 600, 0.0005, gt2, 2.0)).unwrap_err();
++        assert!(dark.contains("too dark"), "{dark}");
++        // a scene with detail: alternating stripes
++        let busy = Rgb32f::from_fn(900, 600, |x, _| if (x / 7) % 2 == 0 { [0.4; 3] } else { [0.1; 3] });
++        let busy = fit_image(&busy).unwrap_err();
++        assert!(busy.contains("isn't a flat field"), "{busy}");
++        // the converter's barrel leaves only the middle
++        let cut = fit_image(&flat(900, 600, 0.4, gt2, 0.15)).unwrap_err();
++        assert!(cut.contains("Too little"), "{cut}");
++        // a falloff that isn't radial (a gradient across the frame): the rings can't be fitted
++        let gradient = Rgb32f::from_fn(900, 600, |x, _| [0.1 + 0.4 * x as f32 / 900.0; 3]);
++        assert!(fit_image(&gradient).is_err());
++        assert!(fit_image(&Rgb32f::new(8, 8)).is_err());
++        // non-finite pixels are skipped, not a panic
++        let mut nan = flat(900, 600, 0.4, gt2, 2.0);
++        nan.data[1000] = [f32::NAN; 3];
++        nan.data[2000] = [f32::INFINITY; 3];
++        assert!(fit_image(&nan).is_ok());
++    }
++
++    /// The measurement turns off what the fit must not see, and keeps the lens profile.
++    #[test]
++    fn the_measurement_keeps_the_profile_and_drops_the_rest() {
++        let mut d = DevelopSettings::default();
++        d.optics.lens_profile = true;
++        d.optics.profile_vignetting = 80.0;
++        d.optics.converter_k = [1.0, 0.0, 0.0, 0.0, 0.0];
++        d.optics.vignetting = 30.0;
++        d.optics.distortion = 20.0;
++        d.geometry.vertical = 10.0;
++        let m = measure_settings(&d);
++        assert!(m.optics.lens_profile && m.optics.profile_vignetting == 80.0);
++        assert!(!m.optics.has_converter() && m.optics.vignetting == 0.0 && m.optics.distortion == 0.0);
++        assert_eq!(m.geometry, Geometry::default());
++    }
++
++    #[test]
++    fn a_flat_photo_through_the_pipeline_measures_its_falloff() {
++        let img = flat(1200, 800, 0.4, gt2, 2.0);
++        let fit = fit_photo(&img, &SourceInfo::default(), &DevelopSettings::default()).unwrap();
++        let got = lightcraft_pipeline::optics::converter_gain(&fit.k, 1.0, 0.81);
++        assert!((got / gt2(0.9) - 1.0).abs() < 0.015, "{got} vs {}", gt2(0.9));
++    }
++}
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 53077f95c..4177fa47b 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -41,6 +41,7 @@ mod faces_index;
+ #[cfg(not(target_arch = "wasm32"))]
+ mod faces_worker;
+ pub mod files;
++pub mod flat_field;
+ #[cfg(not(target_arch = "wasm32"))]
+ mod focus_scan;
+ pub mod fonts;
+diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
+index 6348f09d2..6bbef0f7c 100644
+--- a/crates/engine/src/tests.rs
++++ b/crates/engine/src/tests.rs
+@@ -10,6 +10,7 @@ mod albums_local;
+ mod autosync_wb;
+ mod color;
+ mod constrain_crop;
++mod converter_vignette;
+ mod crop_angle;
+ mod crop_aspect;
+ mod dcp;
+diff --git a/crates/engine/src/tests/converter_vignette.rs b/crates/engine/src/tests/converter_vignette.rs
+new file mode 100644
+index 000000000..4a4fa4b35
+--- /dev/null
++++ b/crates/engine/src/tests/converter_vignette.rs
+@@ -0,0 +1,102 @@
++//! `optics.fitConverterVignette`: a flat-field photo measured through the library, its falloff recovered,
++//! the photo left as it was; and the correction it gives flattens the photo when applied.
++
++use lightcraft_catalog::PhotoId;
++use serde_json::json;
++
++use crate::Session;
++
++/// The converter's falloff the synthetic flat field carries (about 2.3 stops at the corners).
++pub(crate) fn falloff(r: f64) -> f64 {
++    let r2 = r * r;
++    1.0 + 0.5 * r2 + 1.0 * r2 * r2 + 3.4 * r2 * r2 * r2
++}
++
++/// A 16-bit sRGB TIFF of an evenly lit surface through the converter, `level` (linear) at the centre,
++/// with the camera and aperture in its XMP.
++pub(crate) fn write_flat_field(path: &std::path::Path, w: usize, h: usize, level: f64) {
++    use lightcraft_codecs::{EncodeImage, EncodeMeta, Samples, TiffCompression, encode_tiff};
++    let hd = (w as f64).hypot(h as f64) / 2.0;
++    let px: Vec<u16> = (0..w * h)
++        .flat_map(|i| {
++            let (x, y) = ((i % w) as f64 + 0.5 - w as f64 / 2.0, (i / w) as f64 + 0.5 - h as f64 / 2.0);
++            let v = lightcraft_color::transfer::linear_to_srgb((level / falloff(x.hypot(y) / hd)) as f32);
++            let v = (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
++            [v, v, v]
++        })
++        .collect();
++    let xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
++<rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:exif="http://ns.adobe.com/exif/1.0/"
++ tiff:Make="RICOH IMAGING COMPANY, LTD." tiff:Model="RICOH GR IIIx" exif:FNumber="28/10" exif:FocalLength="183/10"/></rdf:RDF></x:xmpmeta>"#;
++    let meta = EncodeMeta { xmp: Some(xmp), ..EncodeMeta::default() };
++    let bytes = encode_tiff(&EncodeImage::new(w as u32, h as u32, 3, Samples::U16(&px)), TiffCompression::Deflate, &meta).unwrap();
++    std::fs::write(path, bytes).unwrap();
++}
++
++fn flat_session(tag: &str) -> (Session, PhotoId, std::path::PathBuf) {
++    let dir = std::env::temp_dir().join(format!("lc-converter-{tag}-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&dir);
++    std::fs::create_dir_all(&dir).unwrap();
++    let path = dir.join("flat.tif");
++    write_flat_field(&path, 1200, 800, 0.35);
++    let mut s = Session::new().with_fs();
++    s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
++    let id = s.catalog.photos().next().map(|p| p.id).unwrap();
++    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
++    (s, id, dir)
++}
++
++#[test]
++fn a_flat_field_photo_gives_its_falloff_and_is_left_unchanged() {
++    let (mut s, id, dir) = flat_session("fit");
++    let before = s.develop_of(id).unwrap();
++    let commits = s.commits();
++    let r = s.execute("optics.fitConverterVignette", &json!({})).unwrap();
++    let k: [f64; 5] = serde_json::from_value(r["k"].clone()).unwrap();
++    for i in 0..=10 {
++        let x = i as f64 / 10.0;
++        let got = lightcraft_pipeline::optics::converter_gain(&k, 1.0, x * x);
++        assert!((got / falloff(x) - 1.0).abs() < 0.015, "r {x}: {got} vs {} ({r})", falloff(x));
++    }
++    assert!((r["maxGainStops"].as_f64().unwrap() - falloff(1.0).log2()).abs() < 0.05, "{r}");
++    assert_eq!(r["validRadius"], json!(1.0));
++    assert!(r["rms"].as_f64().unwrap() < 0.01, "{r}");
++    for key in ["aperture", "focalLength", "camera", "lens"] {
++        assert!(r.get(key).is_some(), "{key}: {r}");
++    }
++    // the same by id, and the photo isn't touched
++    let by_id = s.execute("optics.fitConverterVignette", &json!({"id": id.0})).unwrap();
++    assert_eq!(by_id["k"], r["k"]);
++    assert_eq!(s.develop_of(id).unwrap(), before);
++    assert_eq!(s.commits(), commits, "a measurement is no edit");
++    // a correction already applied is not measured again (the residual stays the converter's)
++    s.execute("develop.merge", &json!({"settings": {"optics": {"converter_k": k}}})).unwrap();
++    let again = s.execute("optics.fitConverterVignette", &json!({})).unwrap();
++    assert_eq!(again["k"], r["k"]);
++    assert!(s.execute("optics.fitConverterVignette", &json!({"id": 999_999})).is_err());
++    assert!(s.execute("optics.fitConverterVignette", &json!({"id": "x"})).is_err());
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// The fitted correction, applied, flattens the photo: the corners come up to the centre, the centre stays.
++#[test]
++fn the_fitted_correction_flattens_the_render() {
++    let (mut s, id, dir) = flat_session("render");
++    let r = s.execute("optics.fitConverterVignette", &json!({})).unwrap();
++    let luma = |s: &mut Session| {
++        let req = lightcraft_pipeline::RenderRequest::fit(300, 300);
++        let src = s.source_now(id, crate::media::SourceLevel::Preview).unwrap();
++        let info = s.source_info(id);
++        let d = s.develop_of(id).unwrap();
++        let img = lightcraft_pipeline::render(&src, &info, &d, &req).image;
++        let at = |x: usize, y: usize| img.data[y * img.width + x][1] as f64;
++        (at(img.width / 2, img.height / 2), at(2, 2))
++    };
++    let (centre, corner) = luma(&mut s);
++    assert!(corner < centre * 0.6, "{corner} vs {centre}");
++    s.execute("develop.merge", &json!({"settings": {"optics": {"converter_k": r["k"]}}})).unwrap();
++    let (c2, k2) = luma(&mut s);
++    assert!((c2 - centre).abs() <= 2.0, "the centre stays: {c2} vs {centre}");
++    assert!((k2 - c2).abs() <= 4.0, "the corner comes up to the centre: {k2} vs {c2}");
++    let _ = std::fs::remove_dir_all(&dir);
++}
+diff --git a/crates/gpu/src/render.rs b/crates/gpu/src/render.rs
+index 4d658c3ca..138722a3b 100644
+--- a/crates/gpu/src/render.rs
++++ b/crates/gpu/src/render.rs
+@@ -487,7 +487,10 @@ fn warp_params(
+     p.extend([f(v.center.x), f(v.center.y), f(v.radius)]);
+     p.push(wp.per_channel() as u32);
+     p.push(wp.has_gain() as u32);
+-    debug_assert_eq!(p.len(), 65);
++    let conv = wp.has_converter_gain();
++    p.push(f(if conv { wp.conv_amount } else { 0.0 }));
++    p.extend(wp.conv_k.map(f));
++    debug_assert_eq!(p.len(), 71);
+     p
+ }
+ 
+@@ -1700,6 +1703,26 @@ mod tests {
+         assert!(RENDERS.load(std::sync::atomic::Ordering::Relaxed) < before + 2, "a finished render no longer counts");
+     }
+ 
++    /// The converter vignetting reaches the warp kernel after the layout's earlier words (`geom.wgsl`:
++    /// 65 amount, 66..71 coefficients), and only when it applies.
++    #[test]
++    fn warp_params_carry_the_converter_vignetting() {
++        let mut s = DevelopSettings::default();
++        s.optics.converter_k = [0.9, -0.3, 0.1, 0.02, -0.01];
++        s.optics.converter_amount = 150.0;
++        let wp = lightcraft_pipeline::optics::Warp::from_settings(900.0, 600.0, &s, None);
++        let p = warp_params(&wp, (900, 600), (450, 300), &lightcraft_geom::Affine::IDENTITY, 1.0, 1.0);
++        assert_eq!(p.len(), 71);
++        let f = |i: usize| f32::from_bits(p[i]);
++        assert_eq!(p[64], 1, "gain on");
++        assert_eq!(f(65), 1.5);
++        assert_eq!([f(66), f(67), f(68), f(69), f(70)], [0.9, -0.3, 0.1, 0.02, -0.01]);
++        s.optics.converter_amount = 0.0;
++        let wp = lightcraft_pipeline::optics::Warp::from_settings(900.0, 600.0, &s, None);
++        let p = warp_params(&wp, (900, 600), (450, 300), &lightcraft_geom::Affine::IDENTITY, 1.0, 1.0);
++        assert_eq!((p[64], f32::from_bits(p[65])), (0, 0.0), "amount 0: no converter gain");
++    }
++
+     #[test]
+     fn coverage_mask_matches_per_pixel_decision() {
+         use lightcraft_develop::{EmbeddedLens, EmbeddedWarp};
+diff --git a/crates/gpu/src/wgsl/geom.wgsl b/crates/gpu/src/wgsl/geom.wgsl
+index e80cfb87e..30d669489 100644
+--- a/crates/gpu/src/wgsl/geom.wgsl
++++ b/crates/gpu/src/wgsl/geom.wgsl
+@@ -73,8 +73,8 @@ fn sample_affine(@builtin(global_invocation_id) g: vec3<u32>) {
+ // 10 sx, 11 sy, 12 W, 13 H, 14 persp?, 15..24 persp_inv, 24 k1, 25..28 ca, 28 lens_dist,
+ // 29 warp?, 30..48 warp planes (3 × 6), 48 warp centre x, 49 y, 50 warp radius, 51 vig_stops,
+ // 52 vig_power, 53 lens_vig, 54 vignette?, 55..60 vignette k, 60 vignette centre x, 61 y,
+-// 62 vignette radius, 63 per-channel?, 64 gain?
+-const WP_N: u32 = 65u;
++// 62 vignette radius, 63 per-channel?, 64 gain?, 65 converter amount (0 = none), 66..71 converter k
++const WP_N: u32 = 71u;
+ 
+ fn centre() -> vec2<f32> {
+     return vec2<f32>(pf(12u) / 2.0, pf(13u) / 2.0);
+@@ -158,6 +158,21 @@ fn warp_gain(s: vec2<f32>) -> f32 {
+         }
+         g *= 1.0 + (vg - 1.0) * lv;
+     }
++    // converter vignetting (`lightcraft_pipeline::optics::converter_gain`)
++    let ca = pf(65u);
++    if (ca != 0.0) {
++        let hd = max(sqrt(w * w + h * h) / 2.0, 1e-9);
++        let r = min(length(s - centre()) / hd, 1.0);
++        let r2 = r * r;
++        var poly = 1.0;
++        var rp = r2;
++        for (var k = 0u; k < 5u; k++) {
++            poly += pf(66u + k) * rp;
++            rp *= r2;
++        }
++        poly = clamp(poly, 1.0 / 16.0, 16.0);
++        g *= max(1.0 + (poly - 1.0) * ca, 0.0);
++    }
+     return g;
+ }
+ 
+diff --git a/crates/gpu/tests/it/equivalence.rs b/crates/gpu/tests/it/equivalence.rs
+index 427afe424..4fd113d45 100644
+--- a/crates/gpu/tests/it/equivalence.rs
++++ b/crates/gpu/tests/it/equivalence.rs
+@@ -724,6 +724,31 @@ fn embedded_lens_perspective_edges_match() {
+     check("embedded lens rotated", &src, &info, &s, &RenderRequest::fit(700, 700));
+ }
+ 
++/// Converter vignetting (a flat-field calibrated radial gain) on its own, with the manual vignetting and an
++/// embedded lens vignette, rotated, at an amount.
++#[test]
++fn converter_vignetting_matches() {
++    if !gpu() {
++        return;
++    }
++    use lightcraft_develop::{EmbeddedLens, EmbeddedVignette};
++    let src = scene(2, 900, 600);
++    let lens = EmbeddedLens {
++        vignette: Some(EmbeddedVignette { k: [0.3, -0.05, 0.0, 0.0, 0.0], center: Point::new(0.5, 0.5), radius: 0.6 }),
++        ..Default::default()
++    };
++    let info = SourceInfo { raw: true, lens: Some(lens), ..Default::default() };
++    let mut s = DevelopSettings::default();
++    s.optics.converter_k = [1.1, -0.6, 0.4, -0.1, 0.02];
++    check("converter vignetting", &src, &info, &s, &RenderRequest::fit(700, 700));
++    s.optics.vignetting = 40.0;
++    s.optics.lens_profile = true;
++    s.optics.converter_amount = 160.0;
++    check("converter + manual + profile vignetting", &src, &info, &s, &RenderRequest::fit(700, 700));
++    s.orientation = Orientation::Rotate90;
++    check("converter vignetting rotated", &src, &info, &s, &RenderRequest::fit(500, 500));
++}
++
+ #[test]
+ fn cached_renders_match_uncached() {
+     if !gpu() {
+diff --git a/crates/pipeline/src/optics.rs b/crates/pipeline/src/optics.rs
+index 883be6730..2839f985f 100644
+--- a/crates/pipeline/src/optics.rs
++++ b/crates/pipeline/src/optics.rs
+@@ -30,6 +30,22 @@ const DISTORTION_K: f64 = 0.2;
+ const VIGNETTE_STOPS: f64 = 1.5;
+ /// Manual CA ±100 → radial scale difference of a colour plane.
+ const CA_SCALE: f64 = 0.003;
++/// The largest converter vignetting gain the polynomial may give (4 stops), whatever its coefficients.
++pub const CONVERTER_MAX_GAIN: f64 = 16.0;
++
++/// The converter vignetting gain at squared radius `r2` (half-diagonal units, at most 1): the polynomial
++/// `1 + k0·r² + … + k4·r¹⁰` kept within `1/16 ..= 16`, then applied at `amount` (1 = as calibrated) and never
++/// below zero. The GPU's `geom.wgsl` (`warp_gain`) evaluates the same formula.
++pub fn converter_gain(k: &[f64; 5], amount: f64, r2: f64) -> f64 {
++    let mut poly = 1.0;
++    let mut rp = r2;
++    for c in k {
++        poly += c * rp;
++        rp *= r2;
++    }
++    let poly = poly.clamp(1.0 / CONVERTER_MAX_GAIN, CONVERTER_MAX_GAIN);
++    (1.0 + (poly - 1.0) * amount).max(0.0)
++}
+ 
+ /// The inverse map transformed → source, in pixels of the (user-)oriented source image `w × h`.
+ #[derive(Clone, Debug, PartialEq)]
+@@ -51,6 +67,10 @@ pub struct Warp {
+     pub lens: Option<EmbeddedLens>,
+     pub lens_dist: f64,
+     pub lens_vig: f64,
++    /// Converter vignetting ([`lightcraft_develop::Optics::converter_k`]): gain `1 + Σ k_i·r^(2i+2)` at source
++    /// radius r (half-diagonal units), applied at strength `conv_amount` (1 = as calibrated; 0 = off).
++    pub conv_k: [f64; 5],
++    pub conv_amount: f64,
+ }
+ 
+ impl Warp {
+@@ -67,6 +87,8 @@ impl Warp {
+             lens: None,
+             lens_dist: 0.0,
+             lens_vig: 0.0,
++            conv_k: [0.0; 5],
++            conv_amount: 0.0,
+         }
+     }
+ 
+@@ -81,6 +103,11 @@ impl Warp {
+         wp.vig_stops = VIGNETTE_STOPS * o.vignetting / 100.0;
+         wp.vig_power = 1.0 + 6.0 * (o.vignetting_midpoint / 100.0).clamp(0.0, 1.0);
+         wp.ca = [CA_SCALE * o.ca_red / 100.0, 0.0, CA_SCALE * o.ca_blue / 100.0];
++        // the converter's own falloff, whether or not the lens profile is on (it is not the lens's)
++        if o.has_converter() && o.converter_k.iter().all(|k| k.is_finite()) {
++            wp.conv_k = o.converter_k;
++            wp.conv_amount = if o.converter_amount.is_finite() { (o.converter_amount / 100.0).clamp(0.0, 2.0) } else { 1.0 };
++        }
+         if o.lens_profile
+             && let Some(l) = lens
+         {
+@@ -123,7 +150,12 @@ impl Warp {
+     }
+ 
+     pub fn has_gain(&self) -> bool {
+-        self.vig_stops != 0.0 || (self.lens_vig != 0.0 && self.lens.is_some_and(|l| l.vignette.is_some()))
++        self.vig_stops != 0.0 || (self.lens_vig != 0.0 && self.lens.is_some_and(|l| l.vignette.is_some())) || self.has_converter_gain()
++    }
++
++    /// Whether the converter vignetting gain applies.
++    pub fn has_converter_gain(&self) -> bool {
++        self.conv_amount != 0.0 && self.conv_k.iter().any(|k| *k != 0.0)
+     }
+ 
+     pub fn is_identity(&self) -> bool {
+@@ -247,6 +279,11 @@ impl Warp {
+         {
+             g *= 1.0 + (embedded_vignette_gain(&v, src, self.w, self.h) - 1.0) * self.lens_vig;
+         }
++        if self.has_converter_gain() {
++            let hd = (self.w.hypot(self.h) / 2.0).max(1e-9);
++            let r = (src.dist(self.centre()) / hd).min(1.0);
++            g *= converter_gain(&self.conv_k, self.conv_amount, r * r);
++        }
+         g as f32
+     }
+ 
+diff --git a/crates/pipeline/src/optics/tests.rs b/crates/pipeline/src/optics/tests.rs
+index a404222e8..c2b9649b9 100644
+--- a/crates/pipeline/src/optics/tests.rs
++++ b/crates/pipeline/src/optics/tests.rs
+@@ -274,6 +274,52 @@ fn manual_vignette_brightens_corners() {
+     assert!(wp.gain(Point::new(0.0, 0.0)) > 2.0);
+ }
+ 
++/// Converter vignetting: the polynomial at the corners, scaled by its amount, on top of the manual
++/// vignetting, independent of the lens-profile toggle, and off with the optics section.
++#[test]
++fn converter_vignette_gain_follows_the_polynomial_and_amount() {
++    let mut s = DevelopSettings::default();
++    s.optics.converter_k = [1.0, 0.5, 0.0, 0.0, 0.25];
++    let wp = Warp::from_settings(300.0, 400.0, &s, None);
++    assert!(wp.has_gain() && !wp.moves_pixels() && !wp.is_identity());
++    assert!((wp.gain(Point::new(150.0, 200.0)) - 1.0).abs() < 1e-6, "the centre is untouched");
++    // a corner is at r = 1: 1 + 1 + 0.5 + 0.25
++    assert!((wp.gain(Point::new(0.0, 0.0)) - 2.75).abs() < 1e-5);
++    // half way along the half diagonal (r² = 0.25)
++    let half = wp.gain(Point::new(75.0, 100.0)) as f64;
++    let want = 1.0 + 0.25 + 0.5 * 0.0625 + 0.25 * 0.25f64.powi(5);
++    assert!((half - want).abs() < 1e-5, "{half} vs {want}");
++    s.optics.converter_amount = 50.0;
++    let wp = Warp::from_settings(300.0, 400.0, &s, None);
++    assert!((wp.gain(Point::new(0.0, 0.0)) - 1.875).abs() < 1e-5);
++    s.optics.converter_amount = 0.0;
++    assert!(Warp::from_settings(300.0, 400.0, &s, None).is_identity(), "amount 0 = off");
++    s.optics.converter_amount = 100.0;
++    s.optics.vignetting = 100.0;
++    let both = Warp::from_settings(300.0, 400.0, &s, None).gain(Point::new(0.0, 0.0));
++    assert!((both - 2.75 * 2f32.powf(1.5)).abs() < 1e-3, "multiplies with the manual vignetting: {both}");
++    s.optics.vignetting = 0.0;
++    s.optics.lens_profile = true;
++    assert!((Warp::from_settings(300.0, 400.0, &s, None).gain(Point::new(0.0, 0.0)) - 2.75).abs() < 1e-5);
++    s.disabled_sections.push("optics".into());
++    assert!(Warp::from_settings(300.0, 400.0, &s, None).is_identity(), "the optics section's eye");
++}
++
++/// Coefficients from a file or an agent never give an unbounded or negative gain.
++#[test]
++fn converter_vignette_gain_is_bounded() {
++    let mut s = DevelopSettings::default();
++    s.optics.converter_k = [1e4, 1e4, 1e4, 1e4, 1e4];
++    s.optics.converter_amount = 200.0;
++    let g = Warp::from_settings(300.0, 200.0, &s, None).gain(Point::new(-50.0, -50.0));
++    assert!((g - 31.0).abs() < 1e-3, "{g}");
++    s.optics.converter_k = [-1e4, 0.0, 0.0, 0.0, 0.0];
++    let g = Warp::from_settings(300.0, 200.0, &s, None).gain(Point::new(0.0, 0.0));
++    assert!(g == 0.0, "{g}");
++    s.optics.converter_k = [f64::NAN, 1.0, 0.0, 0.0, 0.0];
++    assert!(Warp::from_settings(300.0, 200.0, &s, None).is_identity(), "non-finite coefficients are ignored");
++}
++
+ #[test]
+ fn reorient_keeps_centre_mapping() {
+     let lens = EmbeddedLens {
+diff --git a/crates/ui-egui/locales/zh-hans-formats.json b/crates/ui-egui/locales/zh-hans-formats.json
+index 57b05f0e8..1c8abe7a5 100644
+--- a/crates/ui-egui/locales/zh-hans-formats.json
++++ b/crates/ui-egui/locales/zh-hans-formats.json
+@@ -328,5 +328,8 @@
+   "View › Detail View ({keys}).": "视图 › 详细视图 ({keys})。",
+   "File › Export… · File › Print… ({keys}).": "文件 › 导出… · 文件 › 打印… ({keys})。",
+   "{what} failed: {e}": "{what}失败：{e}",
+-  "{what}: not available here": "{what}：此处不可用"
++  "{what}: not available here": "{what}：此处不可用",
++  "up to {stops} stops": "最多 {stops} 档",
++  "The corners are brightened by up to {stops} stops.": "四角最多提亮 {stops} 档。",
++  "The converter cuts the corners off beyond {pct} % of the half diagonal: crop them.": "附加镜遮挡了半对角线 {pct}% 以外的四角：请将其裁掉。"
+ }
+diff --git a/crates/ui-egui/locales/zh-hans.json b/crates/ui-egui/locales/zh-hans.json
+index 294d02c32..05f88edbe 100644
+--- a/crates/ui-egui/locales/zh-hans.json
++++ b/crates/ui-egui/locales/zh-hans.json
+@@ -2537,5 +2537,29 @@
+   "Lightroom Classic gives the commands its keys (E Loupe, D Develop, R Crop…). Your own shortcuts stay as they are.": "Lightroom Classic 方案使用 Lightroom Classic 的按键（E 放大视图、D 修改照片、R 裁剪……）。您自己设置的快捷键保持不变。",
+   "Keyboard Shortcut Set": "键盘快捷键方案",
+   "Rendering before…": "正在渲染修改前…",
+-  "The before view can't be rendered": "无法渲染修改前视图"
++  "The before view can't be rendered": "无法渲染修改前视图",
++  "Converter Vignetting": "附加镜暗角",
++  "Converter": "附加镜",
++  "Create from Selected Flat-Field Photo…": "从所选平场照片创建…",
++  "Manage Profiles…": "管理配置文件…",
++  "New Converter Profile": "新建附加镜配置文件",
++  "Converter Profiles": "附加镜配置文件",
++  "Measure Converter Vignetting": "测量附加镜暗角",
++  "Measuring converter vignetting": "正在测量附加镜暗角",
++  "Measuring the flat-field photo…": "正在测量平场照片…",
++  "Profile name": "配置文件名称",
++  "Saved Profiles": "已保存的配置文件",
++  "No converter profiles yet.": "尚无附加镜配置文件。",
++  "A flat-field photo is already being measured.": "已有一张平场照片正在测量。",
++  "Select the flat-field photo first.": "请先选择平场照片。",
++  "Name the profile.": "请为配置文件命名。",
++  "The profile's coefficients aren't usable.": "该配置文件的系数无法使用。",
++  "A converter profile with this name already exists.": "已存在同名的附加镜配置文件。",
++  "The photo is too small to measure.": "照片太小，无法测量。",
++  "The centre of the photo is clipped: take the flat field again about one stop darker.": "照片中心已过曝：请将曝光降低约一档后重新拍摄平场。",
++  "The photo is too dark to measure: expose the flat field brighter (the centre about one stop below white).": "照片太暗，无法测量：请提高平场的曝光（中心比纯白低约一档）。",
++  "Too little of the photo can be measured: the converter cuts off most of the frame.": "可测量的部分太少：附加镜遮挡了画面的大部分。",
++  "The photo isn't a flat field: photograph an evenly lit, featureless surface (a white wall, an overcast sky through diffusing paper) out of focus.": "这不是平场照片：请在失焦状态下拍摄一个照明均匀、没有纹理的表面（白墙，或隔着柔光纸的阴天天空）。",
++  "The falloff isn't smooth enough to fit: check that the surface is evenly lit and fills the frame.": "暗角变化不够平滑，无法拟合：请确认表面照明均匀并充满画面。",
++  "The falloff could not be fitted.": "无法拟合暗角。"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant-formats.json b/crates/ui-egui/locales/zh-hant-formats.json
+index 280058f18..17585d862 100644
+--- a/crates/ui-egui/locales/zh-hant-formats.json
++++ b/crates/ui-egui/locales/zh-hant-formats.json
+@@ -328,5 +328,8 @@
+   "View › Detail View ({keys}).": "檢視 › 詳細檢視 ({keys})。",
+   "File › Export… · File › Print… ({keys}).": "檔案 › 匯出… · 檔案 › 列印… ({keys})。",
+   "{what} failed: {e}": "{what}失敗：{e}",
+-  "{what}: not available here": "{what}：此處無法使用"
++  "{what}: not available here": "{what}：此處無法使用",
++  "up to {stops} stops": "最多 {stops} 級",
++  "The corners are brightened by up to {stops} stops.": "四角最多提亮 {stops} 級。",
++  "The converter cuts the corners off beyond {pct} % of the half diagonal: crop them.": "附加鏡遮住了半對角線 {pct}% 以外的四角：請將其裁掉。"
+ }
+diff --git a/crates/ui-egui/locales/zh-hant.json b/crates/ui-egui/locales/zh-hant.json
+index f489c9365..2f14a6497 100644
+--- a/crates/ui-egui/locales/zh-hant.json
++++ b/crates/ui-egui/locales/zh-hant.json
+@@ -2498,5 +2498,29 @@
+   "Lightroom Classic gives the commands its keys (E Loupe, D Develop, R Crop…). Your own shortcuts stay as they are.": "Lightroom Classic 方案使用 Lightroom Classic 的按鍵（E 放大檢視、D 修改相片、R 裁切……）。您自己設定的快速鍵保持不變。",
+   "Keyboard Shortcut Set": "鍵盤快速鍵方案",
+   "Rendering before…": "正在算繪編輯前…",
+-  "The before view can't be rendered": "無法算繪編輯前檢視"
++  "The before view can't be rendered": "無法算繪編輯前檢視",
++  "Converter Vignetting": "附加鏡暗角",
++  "Converter": "附加鏡",
++  "Create from Selected Flat-Field Photo…": "從所選平場照片建立…",
++  "Manage Profiles…": "管理描述檔…",
++  "New Converter Profile": "新增附加鏡描述檔",
++  "Converter Profiles": "附加鏡描述檔",
++  "Measure Converter Vignetting": "測量附加鏡暗角",
++  "Measuring converter vignetting": "正在測量附加鏡暗角",
++  "Measuring the flat-field photo…": "正在測量平場照片…",
++  "Profile name": "描述檔名稱",
++  "Saved Profiles": "已儲存的描述檔",
++  "No converter profiles yet.": "尚無附加鏡描述檔。",
++  "A flat-field photo is already being measured.": "已有一張平場照片正在測量。",
++  "Select the flat-field photo first.": "請先選取平場照片。",
++  "Name the profile.": "請為描述檔命名。",
++  "The profile's coefficients aren't usable.": "此描述檔的係數無法使用。",
++  "A converter profile with this name already exists.": "已有同名的附加鏡描述檔。",
++  "The photo is too small to measure.": "照片太小，無法測量。",
++  "The centre of the photo is clipped: take the flat field again about one stop darker.": "照片中央已過曝：請將曝光降低約一級後重新拍攝平場。",
++  "The photo is too dark to measure: expose the flat field brighter (the centre about one stop below white).": "照片太暗，無法測量：請提高平場的曝光（中央比純白低約一級）。",
++  "Too little of the photo can be measured: the converter cuts off most of the frame.": "可測量的部分太少：附加鏡遮住了畫面的大部分。",
++  "The photo isn't a flat field: photograph an evenly lit, featureless surface (a white wall, an overcast sky through diffusing paper) out of focus.": "這不是平場照片：請在失焦狀態下拍攝照明均勻、沒有紋理的表面（白牆，或隔著柔光紙的陰天天空）。",
++  "The falloff isn't smooth enough to fit: check that the surface is evenly lit and fills the frame.": "暗角變化不夠平滑，無法擬合：請確認表面照明均勻並填滿畫面。",
++  "The falloff could not be fitted.": "無法擬合暗角。"
+ }
+diff --git a/crates/ui-egui/src/control.rs b/crates/ui-egui/src/control.rs
+index da1b97f55..7353f19d9 100644
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -452,6 +452,7 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context, req: &ControlRequest
+                             | crate::state::Dialog::SaveEffect { .. }
+                             | crate::state::Dialog::CaptureTime { .. }
+                             | crate::state::Dialog::LensDatabase { .. }
++                            | crate::state::Dialog::ConverterProfile { .. }
+                             | crate::state::Dialog::TextPrompt { .. }
+                     ))
+                     || (r.is_ok() && crate::panels::dialogs::keeps_open(app, &d))
+diff --git a/crates/ui-egui/src/dialogs.rs b/crates/ui-egui/src/dialogs.rs
+index a9b36396c..97d46b7a4 100644
+--- a/crates/ui-egui/src/dialogs.rs
++++ b/crates/ui-egui/src/dialogs.rs
+@@ -9,6 +9,7 @@ use crate::theme::Tokens;
+ use lightcraft_engine::export::{ExportOptions, Resize};
+ 
+ mod confirm;
++pub mod converter;
+ mod cull;
+ mod export;
+ mod frame;
+@@ -306,6 +307,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+             Dialog::LightroomDestination { .. } => 480.0,
+             Dialog::Welcome { .. } => 460.0,
+             Dialog::LensDatabase { .. } => 440.0,
++            Dialog::ConverterProfile { .. } => 440.0,
+             Dialog::ManageEffects { .. } => 560.0,
+             _ => 380.0,
+         })
+@@ -478,6 +480,8 @@ fn dialog_title(app: &LightcraftApp, dlg: &Dialog) -> String {
+         Dialog::LightroomCatalog { .. } => "Lightroom Classic Catalog",
+         Dialog::LightroomDestination { .. } => "Import Lightroom Catalog",
+         Dialog::LensDatabase { .. } => "Lens Profiles",
++        Dialog::ConverterProfile { photo: Some(_), .. } => "New Converter Profile",
++        Dialog::ConverterProfile { .. } => "Converter Profiles",
+         Dialog::SaveEffect { .. } => "New Effect Preset",
+         Dialog::ManageEffects { .. } => "Manage Effect Presets",
+         Dialog::DeleteEffects { names } if names.len() == 1 => "Delete Effect Preset",
+@@ -528,7 +532,7 @@ fn cancel_label(dlg: &Dialog, sam: &SamState) -> &'static str {
+     match dlg {
+         Dialog::SamModel { .. } if sam.running || sam.installed || sam.by_hand => "Close",
+         Dialog::SamModel { .. } | Dialog::LensDatabase { .. } => "Not Now",
+-        Dialog::LightroomResult { .. } => "Close",
++        Dialog::LightroomResult { .. } | Dialog::ConverterProfile { fit: None, .. } => "Close",
+         _ => "Cancel",
+     }
+ }
+@@ -606,6 +610,8 @@ fn fixed_ok_label(app: &LightcraftApp, dlg: &Dialog, informational: bool) -> &'s
+         d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
+         Dialog::Welcome { .. } => "",
+         Dialog::LensDatabase { .. } => "Download",
++        Dialog::ConverterProfile { fit: Some(_), .. } => "Save",
++        Dialog::ConverterProfile { .. } => "",
+         Dialog::SynchronizeFolder { .. } if informational => "Close",
+         Dialog::SynchronizeFolder { .. } => "Synchronize",
+         Dialog::RenamePerson { from, to, .. } if person_rename_plan(&app.session.catalog, from, to).needs_merge => "Merge",
+@@ -651,7 +657,8 @@ fn can_confirm(app: &LightcraftApp, dlg: &Dialog, informational: bool) -> bool {
+     );
+     let bad_rules =
+         matches!(dlg, Dialog::SmartRules { id, rules, .. } if !rules.check_for(&app.session.catalog, id.map(lightcraft_catalog::AlbumId)).is_empty());
+-    !rename_blocked && (informational || (!waiting && !bad_rules))
++    let unnamed = matches!(dlg, Dialog::ConverterProfile { name, .. } if name.trim().is_empty());
++    !rename_blocked && (informational || (!waiting && !bad_rules && !unnamed))
+ }
+ 
+ /// The row of buttons under a dialog: Cancel and the confirm; `close` and `confirm` are set when one is clicked.
+@@ -733,6 +740,7 @@ fn confirmed(app: &mut LightcraftApp, ctx: &egui::Context, dlg: &mut Dialog) ->
+                     | Dialog::SaveEffect { .. }
+                     | Dialog::CaptureTime { .. }
+                     | Dialog::LensDatabase { .. }
++                    | Dialog::ConverterProfile { .. }
+             ) =>
+         {
+             app.toast(ctx, e)
+@@ -2153,6 +2161,11 @@ fn dialog_content(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, body_m
+         Dialog::LightroomCatalog { .. } => lightroom_catalog_body(app, ui, t, dlg),
+         d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::body(app, ui, d),
+         Dialog::LensDatabase { .. } => crate::lens_db::offer(ui),
++        Dialog::ConverterProfile { .. } => {
++            if converter::body(app, ui, dlg) {
++                *confirm = true;
++            }
++        }
+         Dialog::RemoveFolder { .. } => remove_folder_body(ui, t, dlg),
+         Dialog::About => about_body(app, ui, t, dlg),
+         Dialog::Shortcuts => crate::panels::keymap::body(app, ui, t),
+diff --git a/crates/ui-egui/src/dialogs/confirm.rs b/crates/ui-egui/src/dialogs/confirm.rs
+index b0d816d25..f8bb7e0d4 100644
+--- a/crates/ui-egui/src/dialogs/confirm.rs
++++ b/crates/ui-egui/src/dialogs/confirm.rs
+@@ -244,6 +244,7 @@ pub fn confirm_dialog(app: &mut LightcraftApp, dlg: &Dialog) -> Result<serde_jso
+         Dialog::SaveEffect { name, group, fields, amount, brush } => {
+             crate::panels::mask_effects::save_confirm(app, name, group, fields, *amount, *brush)
+         }
++        d @ Dialog::ConverterProfile { .. } => super::converter::save(app, d),
+         Dialog::DeleteEffects { names } => app.run("mask.deleteEffect", json!({"names": names})),
+         Dialog::RemoveFolder { path, disk, .. } => app.run("library.removeFolder", json!({"path": path, "disk": disk})),
+         d @ Dialog::SynchronizeFolder { .. } => crate::sync::confirm(app, d),
+diff --git a/crates/ui-egui/src/dialogs/converter.rs b/crates/ui-egui/src/dialogs/converter.rs
+new file mode 100644
+index 000000000..65cbaa3bd
+--- /dev/null
++++ b/crates/ui-egui/src/dialogs/converter.rs
+@@ -0,0 +1,417 @@
++//! Converter vignetting in the Edit panel's Optics section: a lens converter (a tele or wide adapter on a
++//! fixed-lens camera) darkens the corners more than the bare lens's profile knows. The photo's correction is a
++//! develop setting (`optics.converter_k`, strength `optics.converterAmount`); the corrections are measured from
++//! flat-field photos (`optics.fitConverterVignette`, `lightcraft_engine::flat_field`) and kept as named
++//! profiles in the app's settings ([`ConverterProfile`], `ui.json`).
++//!
++//! The row is a dropdown (`combo:converterProfile`): None (`item:converterProfile-none`), each saved profile
++//! (`item:converterProfile-<index>`), Create from Selected Flat-Field Photo… (`item:converterProfile-create`)
++//! and Manage Profiles… (`item:converterProfile-manage`). Choosing a profile sets the active photo's
++//! coefficients in one undo step (Auto Sync, Sync and Copy Settings carry it to other photos, as every Optics
++//! edit). Create measures the active photo in the background and opens the dialog that names the new profile
++//! (`field:converterName`, Save = `button:dialogOk`) and lists the saved ones (`button:converterRename-<i>`,
++//! `field:converterRename`, `button:converterDelete-<i>`). `app.converterProfiles` does the same for scripts.
++
++use lightcraft_catalog::PhotoId;
++use lightcraft_develop::DevelopSettings;
++use lightcraft_engine::media::SourceLevel;
++use serde_json::{Value, json};
++
++use crate::LightcraftApp;
++use crate::state::{ConverterProfile, Dialog};
++use crate::theme::Tokens;
++use crate::widgets::register;
++
++/// The background measurement's row in the activity stack.
++const LABEL: &str = "Measuring converter vignetting";
++
++/// Whether two coefficient sets are the same correction (a profile's and a photo's).
++fn same_k(a: &[f64; 5], b: &[f64; 5]) -> bool {
++    a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-12 * x.abs().max(1.0))
++}
++
++/// What the dropdown shows for coefficients `k`: None, the saved profile with them, or Custom.
++pub(crate) fn current_label(profiles: &[ConverterProfile], k: &[f64; 5]) -> String {
++    if k.iter().all(|v| *v == 0.0) {
++        return crate::i18n::tr("None").to_string();
++    }
++    profiles.iter().find(|p| same_k(&p.k, k)).map_or_else(|| crate::i18n::tr("Custom").to_string(), |p| p.name.clone())
++}
++
++/// An f-number as cameras show it: 2.8, 4, 5.6.
++fn f_number(a: f32) -> String {
++    let s = format!("{a:.1}");
++    s.strip_suffix(".0").map(str::to_string).unwrap_or(s)
++}
++
++/// The name a new profile starts with: the camera model, the converter (named for the cameras whose one is
++/// known), the aperture: "GR IIIx + GT-2 · f/2.8".
++pub(crate) fn default_name(make: &str, camera: &str, aperture: Option<f32>) -> String {
++    let mut model = camera.trim();
++    if !make.trim().is_empty()
++        && let Some(rest) = model.strip_prefix(make.trim())
++    {
++        model = rest.trim();
++    }
++    // "RICOH GR IIIx" from a make of "RICOH IMAGING COMPANY, LTD.": the maker's first word goes too
++    if let Some(word) = make.split_whitespace().next().filter(|w| w.len() > 1)
++        && let Some(head) = model.get(..word.len())
++        && head.eq_ignore_ascii_case(word)
++        && model[word.len()..].starts_with(' ')
++    {
++        model = model[word.len()..].trim();
++    }
++    let converter = if model.contains("GR IIIx") {
++        "GT-2"
++    } else if model.contains("GR III") {
++        "GW-4"
++    } else {
++        crate::i18n::tr("Converter")
++    };
++    let mut name = if model.is_empty() { converter.to_string() } else { format!("{model} + {converter}") };
++    if let Some(a) = aperture.filter(|a| a.is_finite() && *a > 0.0) {
++        name.push_str(&format!(" · f/{}", f_number(a)));
++    }
++    name
++}
++
++/// Set the active photo's converter correction to `k` (zeros: none), as one undo step. A correction chosen
++/// while the amount is 0 comes back at 100.
++pub(crate) fn apply(app: &mut LightcraftApp, k: [f64; 5], label: &str) -> Result<Value, String> {
++    let id = app.session.active().ok_or("no active photo")?;
++    let d = app.session.develop_of(id).unwrap_or_default();
++    let mut optics = json!({"converter_k": k});
++    if k.iter().any(|v| *v != 0.0) && d.optics.converter_amount == 0.0 {
++        optics["converter_amount"] = json!(100.0);
++    }
++    app.run("develop.merge", json!({"settings": {"optics": optics}, "label": label}))
++}
++
++/// The Optics section's Converter Vignetting row (and its Amount slider when a correction is set).
++pub(crate) fn optics_row(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings) {
++    let t = Tokens::get(ui.ctx());
++    let k = d.optics.converter_k;
++    let shown = current_label(&app.ui.settings.converter_profiles, &k);
++    let mut picked: Option<(String, [f64; 5])> = None;
++    let (mut create, mut manage) = (false, false);
++    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 6, bottom: 2 }).show(ui, |ui| {
++        ui.label(egui::RichText::new(crate::i18n::tr("Converter Vignetting")).size(12.0).color(t.text_label));
++        // (the dropdown under its label, the panel's width: a profile's name is often long)
++        let combo = crate::widgets::combo_box("converterProfile").width(ui.available_width()).selected_text(shown).show_ui(ui, |ui| {
++            let none = k.iter().all(|v| *v == 0.0);
++            let r = ui.selectable_label(none, crate::i18n::tr("None"));
++            register(ui, "item:converterProfile-none", r.rect);
++            if r.clicked() && !none {
++                picked = Some(("None".into(), [0.0; 5]));
++            }
++            for (i, p) in app.ui.settings.converter_profiles.iter().enumerate() {
++                let on = same_k(&p.k, &k);
++                let r = ui.selectable_label(on, &p.name);
++                register(ui, format!("item:converterProfile-{i}"), r.rect);
++                if r.clicked() && !on {
++                    picked = Some((p.name.clone(), p.k));
++                }
++            }
++            ui.separator();
++            let r = ui.selectable_label(false, crate::i18n::tr("Create from Selected Flat-Field Photo…"));
++            register(ui, "item:converterProfile-create", r.rect);
++            create |= r.clicked();
++            if !app.ui.settings.converter_profiles.is_empty() {
++                let r = ui.selectable_label(false, crate::i18n::tr("Manage Profiles…"));
++                register(ui, "item:converterProfile-manage", r.rect);
++                manage |= r.clicked();
++            }
++        });
++        crate::widgets::name_combo(&combo.response, crate::i18n::tr("Converter Vignetting"));
++        register(ui, "combo:converterProfile", combo.response.rect);
++    });
++    if let Some((name, k)) = picked
++        && let Err(e) = apply(app, k, &format!("{}: {}", crate::i18n::tr("Converter Vignetting"), crate::i18n::tr(&name)))
++    {
++        app.toast(ui.ctx(), e);
++    }
++    if create && let Err(e) = start_measure(app) {
++        app.toast(ui.ctx(), e);
++    }
++    if manage {
++        app.ui.dialog = Some(Dialog::ConverterProfile { photo: None, fit: None, name: String::new(), error: None, rename: None });
++    }
++    if d.optics.has_converter() {
++        crate::panels::edit::control(app, ui, d, "optics.converterAmount", true);
++    }
++}
++
++/// Create from Selected Flat-Field Photo…: open the dialog for the active photo and measure it in the
++/// background (a raw's decode takes a moment); the dialog shows the result, or why there is none, when it is in.
++pub(crate) fn start_measure(app: &mut LightcraftApp) -> Result<Value, String> {
++    if app.tasks.is_running(LABEL) {
++        return Err(crate::i18n::tr("A flat-field photo is already being measured.").to_string());
++    }
++    let id = app.session.active().ok_or_else(|| crate::i18n::tr("Select the flat-field photo first.").to_string())?;
++    let photo = app.session.catalog.photo(id).ok_or("no such photo")?.clone();
++    let settings = app.session.develop_of(id).unwrap_or_default();
++    let info = app.session.source_info(id);
++    let source = app.session.media.source_ref(&photo, SourceLevel::Preview);
++    let meta = &photo.meta;
++    let base = ConverterProfile {
++        camera: meta.camera.clone(),
++        lens: meta.lens.clone(),
++        aperture: meta.aperture,
++        focal_length: meta.focal_mm,
++        ..Default::default()
++    };
++    let name = default_name(&meta.make, &meta.camera, meta.aperture);
++    app.ui.dialog = Some(Dialog::ConverterProfile { photo: Some(id.0), fit: None, name, error: None, rename: None });
++    crate::tasks::spawn(
++        app,
++        LABEL,
++        Some("converter"),
++        move || {
++            let src = source.load_source()?;
++            let info = src.info_or(info);
++            lightcraft_engine::flat_field::fit_photo(&src.image, &info, &settings)
++        },
++        move |app, _ctx, result| finish(app, id, base, result),
++    )?;
++    Ok(json!({"pending": true, "photo": id.0}))
++}
++
++/// The measurement of `id` is in: the dialog opened for it shows it (a dialog closed meanwhile drops it).
++fn finish(app: &mut LightcraftApp, id: PhotoId, base: ConverterProfile, result: Result<lightcraft_engine::flat_field::ConverterFit, String>) {
++    let Some(Dialog::ConverterProfile { photo: Some(p), fit, error, .. }) = &mut app.ui.dialog else { return };
++    if *p != id.0 || fit.is_some() || error.is_some() {
++        return;
++    }
++    match result {
++        Ok(f) => {
++            *fit = Some(ConverterProfile { k: f.k, max_gain_stops: f.max_gain_stops, valid_radius: f.valid_radius, ..base });
++        }
++        Err(e) => *error = Some(e),
++    }
++}
++
++/// Save a profile: refused without a name, with a name another profile has, or with coefficients that
++/// aren't numbers.
++pub(crate) fn add(app: &mut LightcraftApp, mut profile: ConverterProfile) -> Result<Value, String> {
++    profile.name = profile.name.trim().to_string();
++    if profile.name.is_empty() {
++        return Err(crate::i18n::tr("Name the profile.").to_string());
++    }
++    if !profile.k.iter().all(|k| k.is_finite() && k.abs() <= lightcraft_develop::CONVERTER_K_MAX) {
++        return Err(crate::i18n::tr("The profile's coefficients aren't usable.").to_string());
++    }
++    if app.ui.settings.converter_profiles.iter().any(|p| p.name == profile.name) {
++        return Err(crate::i18n::tr("A converter profile with this name already exists.").to_string());
++    }
++    let index = app.ui.settings.converter_profiles.len();
++    app.ui.settings.converter_profiles.push(profile);
++    Ok(json!({"index": index}))
++}
++
++/// The dialog's Save.
++pub(crate) fn save(app: &mut LightcraftApp, dlg: &Dialog) -> Result<Value, String> {
++    let Dialog::ConverterProfile { fit: Some(fit), name, .. } = dlg else { return Ok(Value::Null) };
++    add(app, ConverterProfile { name: name.clone(), ..fit.clone() })
++}
++
++/// One line about a profile: the correction (with `stops`), the aperture, focal length and lens it was measured at.
++fn summary(p: &ConverterProfile, stops: bool) -> String {
++    let mut parts = Vec::new();
++    if stops {
++        parts.push(crate::i18n::tr_format!("up to {stops} stops", stops = format!("{:.1}", p.max_gain_stops)));
++    }
++    if let Some(a) = p.aperture.filter(|a| a.is_finite() && *a > 0.0) {
++        parts.push(format!("f/{}", f_number(a)));
++    }
++    if let Some(f) = p.focal_length.filter(|f| f.is_finite() && *f > 0.0) {
++        parts.push(format!("{f:.0} mm"));
++    }
++    // (the camera is in the name it starts with; the lens names a body with interchangeable lenses)
++    if !p.lens.is_empty() {
++        parts.push(p.lens.clone());
++    }
++    parts.join(" · ")
++}
++
++/// The dialog's body. True when Return in the name field saves.
++pub(crate) fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, dlg: &mut Dialog) -> bool {
++    let Dialog::ConverterProfile { photo, fit, name, error, rename } = dlg else { return false };
++    let t = Tokens::get(ui.ctx());
++    let mut confirm = false;
++    if let Some(f) = fit {
++        ui.label(egui::RichText::new(crate::i18n::tr("Profile name")).color(t.text_dim));
++        confirm = super::frame::dialog_field(ui, "field:converterName", name, "Profile name");
++        let stops = format!("{:.1}", f.max_gain_stops);
++        ui.label(crate::i18n::tr_format!("The corners are brightened by up to {stops} stops.", stops = stops));
++        if f.valid_radius < 0.999 {
++            let pct = format!("{:.0}", f.valid_radius * 100.0);
++            ui.label(
++                egui::RichText::new(crate::i18n::tr_format!(
++                    "The converter cuts the corners off beyond {pct} % of the half diagonal: crop them.",
++                    pct = pct
++                ))
++                .color(t.caution),
++            );
++        }
++        let measured = summary(f, false);
++        ui.label(egui::RichText::new(measured).size(11.0).color(t.text_dim));
++    } else if let Some(e) = error {
++        let r = ui.label(egui::RichText::new(crate::i18n::tr(e)).color(t.caution));
++        register(ui, "label:converterError", r.rect);
++    } else if photo.is_some() {
++        ui.horizontal(|ui| {
++            crate::progress::spinner(ui, 14.0);
++            ui.label(crate::i18n::tr("Measuring the flat-field photo…"));
++        });
++        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
++    }
++    profiles_list(app, ui, &t, rename, photo.is_some());
++    confirm
++}
++
++/// The saved profiles, each with Rename and Delete.
++fn profiles_list(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, rename: &mut Option<(usize, String)>, measuring: bool) {
++    let profiles = app.ui.settings.converter_profiles.clone();
++    if profiles.is_empty() {
++        if !measuring {
++            ui.label(egui::RichText::new(crate::i18n::tr("No converter profiles yet.")).color(t.text_dim));
++        }
++        return;
++    }
++    if measuring {
++        ui.add_space(6.0);
++        ui.separator();
++    }
++    ui.label(egui::RichText::new(crate::i18n::tr("Saved Profiles")).color(t.text_dim));
++    let mut delete = None;
++    let mut renamed: Option<(usize, String)> = None;
++    for (i, p) in profiles.iter().enumerate() {
++        match rename {
++            Some((j, text)) if *j == i => {
++                let r = crate::text_field::TextField::singleline("field:converterRename", text).width(f32::INFINITY).select_on_focus(true).show(ui);
++                if !r.editing && r.ending.is_none() && ui.memory(|m| m.focused().is_none()) {
++                    r.response.request_focus();
++                }
++                match r.ending {
++                    Some(crate::text_field::Ending::Return) => renamed = Some((i, text.clone())),
++                    Some(_) => *rename = None,
++                    None => {}
++                }
++            }
++            _ => {
++                ui.horizontal(|ui| {
++                    ui.label(&p.name);
++                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
++                        if crate::widgets::text_button(ui, &format!("converterDelete-{i}"), "Delete", false).clicked() {
++                            delete = Some(i);
++                        }
++                        if crate::widgets::text_button(ui, &format!("converterRename-{i}"), "Rename", false).clicked() {
++                            *rename = Some((i, p.name.clone()));
++                        }
++                    });
++                });
++                ui.label(egui::RichText::new(summary(p, true)).size(11.0).color(t.text_dim));
++            }
++        }
++    }
++    if let Some((i, text)) = renamed {
++        match rename_profile(app, i, &text) {
++            Ok(_) => *rename = None,
++            Err(e) => app.toast(ui.ctx(), e),
++        }
++    }
++    if let Some(i) = delete
++        && i < app.ui.settings.converter_profiles.len()
++    {
++        app.ui.settings.converter_profiles.remove(i);
++        *rename = None;
++    }
++}
++
++/// Rename saved profile `i` to `to` (not empty, not another profile's name).
++fn rename_profile(app: &mut LightcraftApp, i: usize, to: &str) -> Result<Value, String> {
++    let to = to.trim();
++    if to.is_empty() {
++        return Err(crate::i18n::tr("Name the profile.").to_string());
++    }
++    let profiles = &mut app.ui.settings.converter_profiles;
++    if profiles.iter().enumerate().any(|(j, p)| j != i && p.name == to) {
++        return Err(crate::i18n::tr("A converter profile with this name already exists.").to_string());
++    }
++    let p = profiles.get_mut(i).ok_or("no such converter profile")?;
++    p.name = to.to_string();
++    Ok(json!({"index": i}))
++}
++
++/// The index of the saved profile `p` names (`name`, or `index`).
++fn find(app: &LightcraftApp, p: &Value) -> Result<usize, String> {
++    let profiles = &app.ui.settings.converter_profiles;
++    if let Some(i) = p.get("index").and_then(Value::as_u64) {
++        return usize::try_from(i).ok().filter(|i| *i < profiles.len()).ok_or_else(|| "no such converter profile".to_string());
++    }
++    let name = p.get("name").and_then(Value::as_str).ok_or("name the profile (`name` or `index`)")?;
++    profiles.iter().position(|q| q.name == name).ok_or_else(|| format!("no converter profile named {name:?}"))
++}
++
++/// `app.converterProfiles {action: list|add|delete|rename|apply|measure, …}`: the saved converter vignetting
++/// profiles. `add {profile: {name, k, camera?, lens?, aperture?, focalLength?, maxGainStops?, validRadius?}}`,
++/// `delete {name | index}`, `rename {name | index, to}`, `apply {name | index}` (no name and no index: none)
++/// sets the active photo's correction, `measure` is Create from Selected Flat-Field Photo….
++pub(crate) fn command(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
++    let list = |app: &LightcraftApp| json!({"profiles": app.ui.settings.converter_profiles});
++    match p.get("action").and_then(Value::as_str).unwrap_or("list") {
++        "list" => Ok(list(app)),
++        "add" => {
++            let profile: ConverterProfile =
++                serde_json::from_value(p.get("profile").cloned().unwrap_or(Value::Null)).map_err(|e| format!("invalid `profile`: {e}"))?;
++            add(app, profile)?;
++            Ok(list(app))
++        }
++        "delete" => {
++            let i = find(app, p)?;
++            app.ui.settings.converter_profiles.remove(i);
++            Ok(list(app))
++        }
++        "rename" => {
++            let i = find(app, p)?;
++            let to = p.get("to").and_then(Value::as_str).ok_or("missing `to`")?.to_string();
++            rename_profile(app, i, &to)?;
++            Ok(list(app))
++        }
++        "apply" => {
++            let (name, k) = if p.get("name").is_none() && p.get("index").is_none() {
++                ("None".to_string(), [0.0; 5])
++            } else {
++                let i = find(app, p)?;
++                let q = &app.ui.settings.converter_profiles[i];
++                (q.name.clone(), q.k)
++            };
++            apply(app, k, &format!("{}: {}", crate::i18n::tr("Converter Vignetting"), crate::i18n::tr(&name)))?;
++            Ok(json!({"applied": name, "k": k}))
++        }
++        "measure" => start_measure(app),
++        other => Err(format!("unknown action {other:?} (list, add, delete, rename, apply, measure)")),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn default_names_say_camera_converter_and_aperture() {
++        assert_eq!(default_name("RICOH IMAGING COMPANY, LTD.", "RICOH IMAGING COMPANY, LTD. RICOH GR IIIx", Some(2.8)), "GR IIIx + GT-2 · f/2.8");
++        assert_eq!(default_name("RICOH IMAGING COMPANY, LTD.", "RICOH IMAGING COMPANY, LTD. RICOH GR III", Some(4.0)), "GR III + GW-4 · f/4");
++        assert_eq!(default_name("FUJIFILM", "FUJIFILM X100V", Some(5.6)), "X100V + Converter · f/5.6");
++        assert_eq!(default_name("", "", None), "Converter");
++        assert_eq!(default_name("", "Cam", Some(f32::NAN)), "Cam + Converter");
++    }
++
++    #[test]
++    fn the_dropdown_names_the_matching_profile() {
++        let profiles = vec![ConverterProfile { name: "A".into(), k: [0.5, 0.1, 0.0, 0.0, 0.0], ..Default::default() }];
++        assert_eq!(current_label(&profiles, &[0.0; 5]), "None");
++        assert_eq!(current_label(&profiles, &[0.5, 0.1, 0.0, 0.0, 0.0]), "A");
++        assert_eq!(current_label(&profiles, &[0.5, 0.2, 0.0, 0.0, 0.0]), "Custom");
++    }
++}
+diff --git a/crates/ui-egui/src/menus/run.rs b/crates/ui-egui/src/menus/run.rs
+index c717e1481..d976a1eff 100644
+--- a/crates/ui-egui/src/menus/run.rs
++++ b/crates/ui-egui/src/menus/run.rs
+@@ -231,6 +231,9 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
+     if let Some(r) = crate::retouch_tools::command(app, &ctx, id, p) {
+         return Some(r);
+     }
++    if id == "app.converterProfiles" {
++        return Some(crate::dialogs::converter::command(app, p));
++    }
+     const PARTS: [fn(&mut LightcraftApp, &egui::Context, &str, &Value) -> Option<Result<Value, String>>; 12] = [
+         ui_commands_1,
+         ui_commands_2,
+diff --git a/crates/ui-egui/src/menus/ui_commands.rs b/crates/ui-egui/src/menus/ui_commands.rs
+index 9fe3921d8..08bea3de0 100644
+--- a/crates/ui-egui/src/menus/ui_commands.rs
++++ b/crates/ui-egui/src/menus/ui_commands.rs
+@@ -73,6 +73,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
+     ("view.person", "Show Person", None, ""),
+     ("view.faceBoxes", "Face Boxes", None, "View"),
+     ("view.focusPoint", "Focus Point", Some("Alt+F"), "View"),
++    // Edit ▸ Optics ▸ Converter Vignetting's profiles, for scripts and tests ({action: list|add|delete|rename|apply|measure})
++    ("app.converterProfiles", "Converter Profiles", None, ""),
+     ("view.zoomToFocus", "Zoom to Focus Point", None, "View"),
+     ("view.reference", "Reference View", Some("Shift+R"), "View"),
+     ("photo.setReference", "Set as Reference Photo", None, ""),
+diff --git a/crates/ui-egui/src/panels/edit.rs b/crates/ui-egui/src/panels/edit.rs
+index c92830c40..263425fb2 100644
+--- a/crates/ui-egui/src/panels/edit.rs
++++ b/crates/ui-egui/src/panels/edit.rs
+@@ -349,6 +349,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+                 control(app, ui, d, c, has_lens);
+             }
+         }
++        // a lens converter's own falloff, calibrated from a flat-field photo
++        crate::dialogs::converter::optics_row(app, ui, d);
+         sub_title(ui, crate::i18n::tr("Manual"));
+         for c in ["optics.distortion", "optics.vignetting"] {
+             control(app, ui, d, c, true);
+diff --git a/crates/ui-egui/src/state.rs b/crates/ui-egui/src/state.rs
+index c2d9810cc..08ded1a3f 100644
+--- a/crates/ui-egui/src/state.rs
++++ b/crates/ui-egui/src/state.rs
+@@ -8,9 +8,9 @@ mod view;
+ 
+ pub use dialog::{Dialog, NameEdit, SyncCounts, default_preset_groups};
+ pub use settings::{
+-    AppSettings, AppearanceMode, DarkTheme, EditFile, EditFormat, EditSpace, GridBadges, HOT_PIXEL_LIMIT_DEFAULT, HOT_PIXEL_LIMITS, KeywordChips,
+-    LOUPE_EDGE_CEILING, LOUPE_EDGE_STEP, LaunchLibrary, LightTheme, LightroomImport, MIN_TEXTURE_SIDE, PHOTOCRAFT, PREVIEW_LIMITS, RECENT_LIBRARIES,
+-    STANDARD_PREVIEW_EDGE, StartupView, WINDOW_FRAME_CEILING,
++    AppSettings, AppearanceMode, ConverterProfile, DarkTheme, EditFile, EditFormat, EditSpace, GridBadges, HOT_PIXEL_LIMIT_DEFAULT, HOT_PIXEL_LIMITS,
++    KeywordChips, LOUPE_EDGE_CEILING, LOUPE_EDGE_STEP, LaunchLibrary, LightTheme, LightroomImport, MIN_TEXTURE_SIDE, PHOTOCRAFT, PREVIEW_LIMITS,
++    RECENT_LIBRARIES, STANDARD_PREVIEW_EDGE, StartupView, WINDOW_FRAME_CEILING,
+ };
+ pub use view::{
+     BRIEF_INFO_SECS, BeforeAfter, BriefInfo, CLICK_ZOOMS, CropOverlay, FOCUS_KEYWORDS_PASSES, InfoOverlay, KeywordingView, LEFT_WIDTH, LayoutImage,
+diff --git a/crates/ui-egui/src/state/dialog.rs b/crates/ui-egui/src/state/dialog.rs
+index 77f80a280..ede4362a5 100644
+--- a/crates/ui-egui/src/state/dialog.rs
++++ b/crates/ui-egui/src/state/dialog.rs
+@@ -288,6 +288,17 @@ pub enum Dialog {
+         /// `Session::library_generation` when the window opened.
+         generation: u64,
+     },
++    /// Edit ▸ Optics ▸ Converter Vignetting (`crate::converter`): a flat-field photo being measured
++    /// (`photo`), the profile it gives once measured (`fit`, saved as `name`) or why it can't be (`error`);
++    /// and the saved profiles, renamed (`rename`: index, new name) or deleted. Without `photo` it only
++    /// manages the saved profiles.
++    ConverterProfile {
++        photo: Option<u64>,
++        fit: Option<crate::state::ConverterProfile>,
++        name: String,
++        error: Option<String>,
++        rename: Option<(usize, String)>,
++    },
+     /// Save the selected mask's sliders as a mask effect preset: which sliders (`FIELDS` names,
+     /// the colour as `color_sat`), whether it carries Amount and the brush settings.
+     SaveEffect {
+diff --git a/crates/ui-egui/src/state/settings.rs b/crates/ui-egui/src/state/settings.rs
+index f81628a3f..b32766cf5 100644
+--- a/crates/ui-egui/src/state/settings.rs
++++ b/crates/ui-egui/src/state/settings.rs
+@@ -217,6 +217,28 @@ pub struct AppSettings {
+     pub print_by_long_edge: bool,
+     /// The long edge a photo prints at, inches (Print module ▸ Photo Size).
+     pub print_long_edge_in: f64,
++    /// Converter vignetting profiles made from flat-field photos (Edit ▸ Optics ▸ Converter Vignetting,
++    /// `app.converterProfiles`). Read entry by entry: one this build can't read is left out, never the rest.
++    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_list")]
++    pub converter_profiles: Vec<ConverterProfile>,
++}
++
++/// A converter vignetting correction measured from a flat-field photo and saved under a name, with what the
++/// flat field was taken with. Choosing it sets a photo's `optics.converter_k` to `k`.
++#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
++#[serde(default, rename_all = "camelCase")]
++pub struct ConverterProfile {
++    pub name: String,
++    /// `Optics::converter_k`.
++    pub k: [f64; 5],
++    pub camera: String,
++    pub lens: String,
++    pub aperture: Option<f32>,
++    pub focal_length: Option<f32>,
++    /// The strongest correction it applies, in stops.
++    pub max_gain_stops: f64,
++    /// The largest radius the flat field was measured to (half-diagonal units; 1 = all of it).
++    pub valid_radius: f64,
+ }
+ 
+ /// Where File ▸ Import Lightroom Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
+@@ -273,6 +295,7 @@ impl Default for AppSettings {
+             lens_database: Default::default(),
+             print_by_long_edge: true,
+             print_long_edge_in: 10.0,
++            converter_profiles: Vec::new(),
+         }
+     }
+ }
+@@ -442,6 +465,17 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::Deserialize
+     Ok(serde_json::from_value(value).unwrap_or_default())
+ }
+ 
++/// A list read entry by entry: an entry that isn't one (a hand-edited file, a newer build's) is left out, and
++/// the rest of the list and of the settings file is still read.
++fn lenient_list<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Vec<T>, D::Error> {
++    let value = serde_json::Value::deserialize(d)?;
++    let items = match value {
++        serde_json::Value::Array(items) => items,
++        _ => Vec::new(),
++    };
++    Ok(items.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
++}
++
+ fn deserialize_favorite_themes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+     let values = Vec::<String>::deserialize(d)?;
+     let mut seen = std::collections::BTreeSet::new();
+@@ -493,6 +527,31 @@ mod loupe_info_tests {
+         assert!(!newer.film_names, "the rest of the settings are still read");
+     }
+ 
++    /// Converter profiles are saved with the app's settings; a file from before them reads none, and an entry
++    /// that isn't one costs only itself.
++    #[test]
++    fn converter_profiles_are_saved_and_read_leniently() {
++        assert!(serde_json::to_value(AppSettings::default()).unwrap().get("converterProfiles").is_none(), "none: left out");
++        let profile =
++            ConverterProfile { name: "GR IIIx + GT-2 · f/2.8".into(), k: [0.5, 1.0, 3.0, 0.0, 0.0], aperture: Some(2.8), ..Default::default() };
++        let settings = AppSettings { converter_profiles: vec![profile.clone()], ..AppSettings::default() };
++        let saved = serde_json::to_value(&settings).unwrap();
++        assert_eq!(saved["converterProfiles"][0]["name"], "GR IIIx + GT-2 · f/2.8");
++        let read: AppSettings = serde_json::from_value(saved).unwrap();
++        assert_eq!(read.converter_profiles, vec![profile.clone()]);
++        let old: AppSettings = serde_json::from_value(serde_json::json!({"filmNames": false})).unwrap();
++        assert!(old.converter_profiles.is_empty());
++        let mixed: AppSettings = serde_json::from_value(serde_json::json!({
++            "filmNames": false,
++            "converterProfiles": [{"name": "GR IIIx + GT-2 · f/2.8", "k": [0.5, 1.0, 3.0, 0.0, 0.0], "aperture": 2.8}, {"k": "nope"}, 7]
++        }))
++        .unwrap();
++        assert_eq!(mixed.converter_profiles, vec![profile]);
++        assert!(!mixed.film_names);
++        let broken: AppSettings = serde_json::from_value(serde_json::json!({"filmNames": false, "converterProfiles": "x"})).unwrap();
++        assert!(broken.converter_profiles.is_empty() && !broken.film_names);
++    }
++
+     /// Show message when loading or rendering photos is on until it is turned off, and is saved
+     /// with the app's settings.
+     #[test]
+diff --git a/crates/ui-egui/src/tests.rs b/crates/ui-egui/src/tests.rs
+index 7a3f7a987..3cf1c56e7 100644
+--- a/crates/ui-egui/src/tests.rs
++++ b/crates/ui-egui/src/tests.rs
+@@ -15,6 +15,7 @@ mod carried_right_click;
+ mod carried_text_field_menu;
+ mod classic_keymap;
+ mod compare;
++mod converter_vignette;
+ mod copy_paste_dialogs;
+ mod crop_rotate;
+ mod crop_tool;
+diff --git a/crates/ui-egui/src/tests/converter_vignette.rs b/crates/ui-egui/src/tests/converter_vignette.rs
+new file mode 100644
+index 000000000..46033a1d2
+--- /dev/null
++++ b/crates/ui-egui/src/tests/converter_vignette.rs
+@@ -0,0 +1,263 @@
++//! Converter vignetting (Edit ▸ Optics ▸ Converter Vignetting): a profile measured from a flat-field photo,
++//! saved, chosen for another photo through the dropdown, its Amount, undo, saved settings, and presets that
++//! carry it (an import preset makes it automatic for a converter shoot).
++
++use std::path::{Path, PathBuf};
++use std::time::Duration;
++
++use lightcraft_catalog::PhotoId;
++use serde_json::{Value, json};
++
++use crate::headless::Headless;
++use crate::state::Dialog;
++use crate::{LightcraftApp, Services};
++
++const T: Duration = Duration::from_secs(120);
++
++/// The converter's falloff the flat field carries (about 2.3 stops at the corners).
++fn falloff(r: f64) -> f64 {
++    let r2 = r * r;
++    1.0 + 0.5 * r2 + 1.0 * r2 * r2 + 3.4 * r2 * r2 * r2
++}
++
++/// A 16-bit sRGB TIFF `w × h`, `level(r)` linear at radius r (half-diagonal units), taken with a GR IIIx at f/2.8.
++fn write_tiff(path: &Path, w: usize, h: usize, level: impl Fn(f64) -> f64) {
++    use lightcraft_codecs::{EncodeImage, EncodeMeta, Samples, TiffCompression, encode_tiff};
++    let hd = (w as f64).hypot(h as f64) / 2.0;
++    let px: Vec<u16> = (0..w * h)
++        .flat_map(|i| {
++            let (x, y) = ((i % w) as f64 + 0.5 - w as f64 / 2.0, (i / w) as f64 + 0.5 - h as f64 / 2.0);
++            let v = lightcraft_color::transfer::linear_to_srgb(level(x.hypot(y) / hd) as f32);
++            let v = (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
++            [v, v, v]
++        })
++        .collect();
++    let xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
++<rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:exif="http://ns.adobe.com/exif/1.0/"
++ tiff:Make="RICOH IMAGING COMPANY, LTD." tiff:Model="RICOH GR IIIx" exif:FNumber="28/10" exif:FocalLength="183/10"/></rdf:RDF></x:xmpmeta>"#;
++    let meta = EncodeMeta { xmp: Some(xmp), ..EncodeMeta::default() };
++    let bytes = encode_tiff(&EncodeImage::new(w as u32, h as u32, 3, Samples::U16(&px)), TiffCompression::Deflate, &meta).unwrap();
++    std::fs::write(path, bytes).unwrap();
++}
++
++fn scratch(tag: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("lc-converter-ui-{tag}-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&dir);
++    std::fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++/// A library with a flat field through the converter (`flat.tif`) and a photo of an evenly lit grey
++/// card (`grey.tif`, no falloff), the Edit panel's Optics section open.
++fn library(tag: &str) -> (Headless, PhotoId, PhotoId, PathBuf) {
++    let dir = scratch(tag);
++    write_tiff(&dir.join("flat.tif"), 1200, 800, |r| 0.35 / falloff(r));
++    write_tiff(&dir.join("grey.tif"), 600, 400, |_| 0.2);
++    let mut session = lightcraft_engine::Session::new().with_fs();
++    let r = session.execute("library.import", &json!({"paths": [dir.join("flat.tif").to_string_lossy(), dir.join("grey.tif").to_string_lossy()]}));
++    assert!(r.is_ok(), "{r:?}");
++    let id = |s: &lightcraft_engine::Session, name: &str| s.catalog.photos().find(|p| p.file_name == name).map(|p| p.id).unwrap();
++    let (flat, grey) = (id(&session, "flat.tif"), id(&session, "grey.tif"));
++    let app = LightcraftApp::new(session, Services { png: None, ..Default::default() });
++    let mut h = Headless::new(app, [1400.0, 1800.0], 1.0);
++    let r = h.request("ui.set", json!({"view": "detail", "right": "edit", "openSections": ["optics"]}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    select(&mut h, flat);
++    (h, flat, grey, dir)
++}
++
++fn exec(h: &mut Headless, command: &str, params: Value) -> Value {
++    let r = h.request("engine.execute", json!({"command": command, "params": params}), T);
++    assert_eq!(r["ok"], true, "{command}: {r}");
++    r["result"].clone()
++}
++
++fn select(h: &mut Headless, id: PhotoId) {
++    exec(h, "library.select", json!({"ids": [id.0]}));
++    h.settle(Duration::from_secs(10));
++}
++
++fn click(h: &mut Headless, id: &str) {
++    let r = h.request("ui.clickWidget", json!({"id": id}), T);
++    assert_eq!(r["ok"], true, "{id}: {r}");
++}
++
++fn develop(h: &Headless, id: PhotoId) -> lightcraft_develop::DevelopSettings {
++    (*h.app.session.develop_of(id).unwrap()).clone()
++}
++
++/// The rendered centre and corner (green, 8-bit) of photo `id` with settings `d`.
++fn centre_and_corner(h: &mut Headless, id: PhotoId, d: &lightcraft_develop::DevelopSettings) -> (f64, f64) {
++    let src = h.app.session.source_now(id, lightcraft_engine::media::SourceLevel::Preview).unwrap();
++    let info = h.app.session.source_info(id);
++    let img = lightcraft_pipeline::render(&src, &info, d, &lightcraft_pipeline::RenderRequest::fit(300, 300)).image;
++    let at = |x: usize, y: usize| img.data[y * img.width + x][1] as f64;
++    (at(img.width / 2, img.height / 2), at(3, 3))
++}
++
++/// Create from Selected Flat-Field Photo… measures the active photo and names the profile; Save keeps it.
++fn create_profile(h: &mut Headless) -> lightcraft_engine::flat_field::ConverterFit {
++    click(h, "combo:converterProfile");
++    click(h, "item:converterProfile-create");
++    assert!(matches!(h.app.ui.dialog, Some(Dialog::ConverterProfile { photo: Some(_), .. })), "{:?}", h.app.ui.dialog);
++    assert!(
++        h.step_until(T, |h| matches!(
++            &h.app.ui.dialog,
++            Some(Dialog::ConverterProfile { fit: Some(_), .. } | Dialog::ConverterProfile { error: Some(_), .. })
++        )),
++        "the measurement came in"
++    );
++    let Some(Dialog::ConverterProfile { fit: Some(fit), name, error: None, .. }) = h.app.ui.dialog.clone() else {
++        panic!("no measurement: {:?}", h.app.ui.dialog)
++    };
++    assert_eq!(name, "GR IIIx + GT-2 · f/2.8", "named from the camera and aperture");
++    assert_eq!(fit.aperture, Some(2.8));
++    h.step();
++    click(h, "button:dialogOk");
++    assert_eq!(h.app.ui.dialog, None, "Save closes the dialog");
++    lightcraft_engine::flat_field::ConverterFit { k: fit.k, max_gain_stops: fit.max_gain_stops, valid_radius: fit.valid_radius, rms: 0.0 }
++}
++
++#[test]
++fn a_flat_field_profile_brightens_the_corners_of_another_photo_and_not_its_centre() {
++    let (mut h, flat, grey, dir) = library("apply");
++    let flat_before = develop(&h, flat);
++    let fit = create_profile(&mut h);
++    assert_eq!(develop(&h, flat), flat_before, "measuring changes nothing");
++    let saved = &h.app.ui.settings.converter_profiles;
++    assert_eq!(saved.len(), 1);
++    assert_eq!(saved[0].name, "GR IIIx + GT-2 · f/2.8");
++    assert_eq!(saved[0].k, fit.k);
++    for i in 0..=10 {
++        let r = i as f64 / 10.0;
++        let g = lightcraft_pipeline::optics::converter_gain(&fit.k, 1.0, r * r);
++        assert!((g / falloff(r) - 1.0).abs() < 0.02, "r {r}: {g} vs {}", falloff(r));
++    }
++    assert!((fit.max_gain_stops - falloff(1.0).log2()).abs() < 0.1, "{}", fit.max_gain_stops);
++
++    // the grey card: choose the profile in the dropdown
++    select(&mut h, grey);
++    let plain = develop(&h, grey);
++    let (centre0, corner0) = centre_and_corner(&mut h, grey, &plain);
++    assert!((centre0 - corner0).abs() <= 2.0, "an even grey card: {centre0} vs {corner0}");
++    let commits = h.app.session.commits();
++    click(&mut h, "combo:converterProfile");
++    click(&mut h, "item:converterProfile-0");
++    let d = develop(&h, grey);
++    assert_eq!(d.optics.converter_k, fit.k);
++    assert_eq!(h.app.session.commits(), commits + 1, "one undo step");
++    h.settle(Duration::from_secs(10));
++    assert!(h.app.widgets.iter().any(|(w, _)| w == "slider:optics.converterAmount"), "the Amount slider shows with a correction");
++    assert_eq!(crate::dialogs::converter::current_label(&h.app.ui.settings.converter_profiles, &d.optics.converter_k), "GR IIIx + GT-2 · f/2.8");
++    let (centre1, corner1) = centre_and_corner(&mut h, grey, &d);
++    assert!((centre1 - centre0).abs() <= 1.0, "the centre stays: {centre1} vs {centre0}");
++    assert!(corner1 > corner0 + 40.0, "the corners are brightened: {corner1} vs {corner0}");
++
++    // Amount 0: as without the correction
++    exec(&mut h, "develop.set", json!({"control": "optics.converterAmount", "value": 0}));
++    let off = develop(&h, grey);
++    assert_eq!(off.optics.converter_amount, 0.0);
++    let (centre2, corner2) = centre_and_corner(&mut h, grey, &off);
++    assert!((centre2 - centre0).abs() <= 1.0 && (corner2 - corner0).abs() <= 1.0, "{centre2}, {corner2} vs {centre0}, {corner0}");
++    // undo goes back to the correction at 100, again to none
++    exec(&mut h, "edit.undo", json!({}));
++    assert_eq!(develop(&h, grey).optics.converter_amount, 100.0);
++    exec(&mut h, "edit.undo", json!({}));
++    assert_eq!(develop(&h, grey), plain, "choosing the profile was one step");
++    // a profile chosen while the amount is 0 comes back at 100
++    exec(&mut h, "develop.set", json!({"control": "optics.converterAmount", "value": 0}));
++    let r = h.request("engine.execute", json!({"command": "app.converterProfiles", "params": {"action": "apply", "index": 0}}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    assert_eq!((develop(&h, grey).optics.converter_k, develop(&h, grey).optics.converter_amount), (fit.k, 100.0));
++    // None takes it off
++    h.settle(Duration::from_secs(10));
++    click(&mut h, "combo:converterProfile");
++    click(&mut h, "item:converterProfile-none");
++    assert!(!develop(&h, grey).optics.has_converter());
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// A photo that isn't a flat field says why in the dialog, and nothing is saved.
++#[test]
++fn a_photo_that_is_not_a_flat_field_is_refused_in_the_dialog() {
++    let services = Services { png: None, ..Default::default() };
++    let mut h = Headless::new(LightcraftApp::new(lightcraft_engine::Session::with_demo(), services), [1400.0, 1800.0], 1.0);
++    let r = h.request("ui.set", json!({"view": "detail", "right": "edit", "openSections": ["optics"]}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    h.settle(Duration::from_secs(10));
++    // (`app.converterProfiles {action: measure}` is the same) the measurement runs in the background, with its row
++    let r = crate::dialogs::converter::command(&mut h.app, &json!({"action": "measure"}));
++    assert_eq!(r.as_ref().map(|r| r["pending"].clone()), Ok(json!(true)), "{r:?}");
++    let rows = h.app.session.activity.list();
++    assert!(rows.iter().any(|t| t.kind == "converter" && t.label == "Measuring converter vignetting"), "{rows:?}");
++    assert!(crate::dialogs::converter::command(&mut h.app, &json!({"action": "measure"})).is_err(), "one at a time");
++    assert!(h.step_until(T, |h| matches!(&h.app.ui.dialog, Some(Dialog::ConverterProfile { error: Some(_), .. }))), "{:?}", h.app.ui.dialog);
++    assert!(h.app.session.activity.list().iter().all(|t| t.kind != "converter"), "the row is gone");
++    h.step();
++    assert!(h.app.widgets.iter().any(|(w, _)| w == "label:converterError"), "the reason is shown");
++    assert!(!h.app.widgets.iter().any(|(w, _)| w == "button:dialogOk"), "nothing to save");
++    click(&mut h, "button:dialogCancel");
++    assert_eq!(h.app.ui.dialog, None);
++    assert!(h.app.ui.settings.converter_profiles.is_empty());
++}
++
++/// Profiles are renamed and deleted in the dialog, and through `app.converterProfiles`.
++#[test]
++fn profiles_are_renamed_and_deleted() {
++    let services = Services { png: None, ..Default::default() };
++    let mut h = Headless::new(LightcraftApp::new(lightcraft_engine::Session::with_demo(), services), [1400.0, 1800.0], 1.0);
++    h.settle(Duration::from_secs(10));
++    let cmd = |h: &mut Headless, params: Value| h.request("engine.execute", json!({"command": "app.converterProfiles", "params": params}), T);
++    for name in ["A", "B"] {
++        let r = cmd(&mut h, json!({"action": "add", "profile": {"name": name, "k": [0.5, 0.0, 0.0, 0.0, 0.0]}}));
++        assert_eq!(r["ok"], true, "{r}");
++    }
++    assert_eq!(cmd(&mut h, json!({"action": "add", "profile": {"name": "A", "k": [1.0, 0.0, 0.0, 0.0, 0.0]}}))["ok"], false, "names are unique");
++    assert_eq!(cmd(&mut h, json!({"action": "add", "profile": {"name": " ", "k": [1.0, 0.0, 0.0, 0.0, 0.0]}}))["ok"], false, "and not empty");
++    let r = cmd(&mut h, json!({"action": "rename", "name": "B", "to": "GT-2 f/4"}));
++    assert_eq!(r["result"]["profiles"][1]["name"], "GT-2 f/4", "{r}");
++    // the dialog's own buttons
++    h.app.ui.dialog = Some(Dialog::ConverterProfile { photo: None, fit: None, name: String::new(), error: None, rename: None });
++    h.settle(Duration::from_secs(10));
++    click(&mut h, "button:converterRename-0");
++    h.step();
++    let r = h.request("ui.text", json!({"text": "GT-2 f/2.8"}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    let r = h.request("ui.key", json!({"key": "Enter"}), T);
++    assert_eq!(r["ok"], true, "{r}");
++    h.step();
++    let names: Vec<String> = h.app.ui.settings.converter_profiles.iter().map(|p| p.name.clone()).collect();
++    assert_eq!(names, ["GT-2 f/2.8", "GT-2 f/4"]);
++    click(&mut h, "button:converterDelete-1");
++    let names: Vec<String> = h.app.ui.settings.converter_profiles.iter().map(|p| p.name.clone()).collect();
++    assert_eq!(names, ["GT-2 f/2.8"]);
++    assert_eq!(cmd(&mut h, json!({"action": "delete", "name": "GT-2 f/2.8"}))["result"]["profiles"], json!([]));
++}
++
++/// Saved settings: a photo without a correction is stored as before (no new keys, the same JSON), and an
++/// Optics preset (here the import preset of Settings ▸ Import) gives photos the correction, so a converter
++/// shoot is corrected on import.
++#[test]
++fn settings_stay_as_they_were_and_presets_carry_the_correction() {
++    let (mut h, _flat, grey, dir) = library("preset");
++    select(&mut h, grey);
++    let stored = serde_json::to_string(&develop(&h, grey)).unwrap();
++    assert!(!stored.contains("converter"), "{stored}");
++    let reread: lightcraft_develop::DevelopSettings = serde_json::from_str(&stored).unwrap();
++    assert_eq!(serde_json::to_string(&reread).unwrap(), stored, "read and written back unchanged");
++
++    let k = [0.5, 1.0, 3.4, 0.0, 0.0];
++    exec(&mut h, "develop.merge", json!({"settings": {"optics": {"converter_k": k, "converter_amount": 80}}}));
++    let pid = exec(&mut h, "preset.create", json!({"name": "GT-2", "groups": ["optics"]}))["id"].as_str().unwrap().to_string();
++    let preset = h.app.session.presets.iter().find(|p| p.id == pid).unwrap().clone();
++    assert_eq!(preset.settings["optics"]["converter_k"], json!(k));
++    // Settings ▸ Import: the preset for non-raw files, then a new shoot comes in corrected
++    exec(&mut h, "library.preferences", json!({"import": {"otherPreset": pid}}));
++    write_tiff(&dir.join("shoot.tif"), 300, 200, |_| 0.2);
++    let r = h.app.session.execute("library.import", &json!({"paths": [dir.join("shoot.tif").to_string_lossy()]}));
++    assert!(r.is_ok(), "{r:?}");
++    let shot = h.app.session.catalog.photos().find(|p| p.file_name == "shoot.tif").map(|p| p.id).unwrap();
++    let d = develop(&h, shot);
++    assert_eq!((d.optics.converter_k, d.optics.converter_amount), (k, 80.0));
++    let _ = std::fs::remove_dir_all(&dir);
++}
+diff --git a/docs/parity-checklist.md b/docs/parity-checklist.md
+index 190015338..9bb626a41 100644
+--- a/docs/parity-checklist.md
++++ b/docs/parity-checklist.md
+@@ -31,7 +31,7 @@ cited here still exists. Formerly docs/parity.md.
+ | C. Views & navigation (VIEW) | 16 | 1 | 1 | 0 | 9/9 (100%) | 4/4 (100%) |
+ | D. Search & filter (FILT) | 11 | 1 | 1 | 0 | 4/4 (100%) | 4/4 (100%) |
+ | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
+-| F. Edit panel — global adjustments (EDIT) | 42 | 5 | 3 | 1 | 25/28 (89%) | 14/15 (93%) |
++| F. Edit panel — global adjustments (EDIT) | 43 | 5 | 3 | 1 | 25/28 (89%) | 14/15 (93%) |
+ | G. Profiles (PROF) | 7 | 1 | 3 | 0 | 3/4 (75%) | 3/3 (100%) |
+ | H. Crop & rotate (CROP) | 10 | 1 | 0 | 1 | 8/8 (100%) | 2/3 (67%) |
+ | I. Remove / healing (REM) | 8 | 1 | 2 | 2 | 4/4 (100%) | 2/3 (67%) |
+@@ -53,9 +53,9 @@ cited here still exists. Formerly docs/parity.md.
+ | Y. Menus | 85 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
+ | Z. Keyboard shortcuts (desktop) | 77 | 5 | 2 | 1 | 49/52 (94%) | 24/26 (92%) |
+ | Lightroom Classic extras | 41 | 26 | 21 | 8 | — | 24/27 (89%) |
+-| **Total** | 419 | 70 | 57 | 35 | 193/203 (95%) | 147/163 (90%) |
++| **Total** | 420 | 70 | 57 | 35 | 193/203 (95%) | 147/163 (90%) |
+ 
+-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **83.2%** of 546 in-scope rows — P0 97.5% of 203 · P1 94.2% of 163 · P2 56.7% of 179.
++Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **83.2%** of 547 in-scope rows — P0 97.5% of 203 · P1 94.2% of 163 · P2 56.9% of 180.
+ <!-- /parity:summary -->
+ 
+ ## Top gaps and shortcut notes
+@@ -218,6 +218,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
+ )
+ | LR-EDIT-OPTICS-DEFRINGE | Defringe | P1 | ✅ | `ctl:optics.defringe*` | no fringe eyedropper |
+ | LR-EDIT-OPTICS-MANUAL | Manual distortion / vignetting | P1 | ✅ | `ctl:optics.distortion`, `ctl:optics.vignetting`, `ctl:optics.vignettingMidpoint` | |
++| LR-EDIT-OPTICS-CONVERTER | Converter vignetting from a flat field (beyond Lightroom) | P2 | ✅ | `ctl:optics.converterAmount`, `cmd:optics.fitConverterVignette`, `cmd:app.converterProfiles`, `crates/engine/src/flat_field.rs`, `crates/pipeline/src/optics.rs`, `crates/ui-egui/src/dialogs/converter.rs`, `crates/ui-egui/src/tests/converter_vignette.rs` | the extra corner falloff of a lens converter (e.g. a tele converter on a fixed-lens camera, which the bare lens's profile doesn't know): Optics ▸ Converter Vignetting ▸ Create from Selected Flat-Field Photo… measures the residual falloff of a flat-field photo (scene-linear, after the lens profile; median per radial bin, a black mechanical cut-off left out and reported) and fits the radial gain `1 + k0·r² + … + k4·r¹⁰` (weighted least squares, at most 4 stops), saved as a named profile in the app's settings; choosing a profile sets the photo's `optics.converter_k` in one undo step, with an Amount (0–200); CPU and GPU render it alike; Optics presets, Copy / Paste and Sync carry it, so an import preset corrects a converter shoot. No camera records the converter, so nothing is detected automatically |
+ | LR-EDIT-GEOM-UPRIGHT | Upright | P1 | ✅ | `cmd:geometry.upright`, `cmd:geometry.guides` | |
+ | LR-EDIT-GEOM-MANUAL | Manual transform | P1 | ✅ | `ctl:geometry.*` | |
+ | LR-EDIT-GEOM-CONSTRAIN | Constrain crop | P1 | ✅ | `crates/ui-egui/src/panels/right.rs` (checkbox → `cmd:develop.merge`), `crates/engine/src/lib.rs` (`fit_constrained_crop`) | Ticking it, or changing Geometry, Upright or lens corrections while it is ticked, shrinks the stored crop about its centre until no blank corner is left, so the Crop tool shows it (it used to apply at render time only, outside the Crop tool: issue #1927; tests in `crates/engine/src/tests/constrain_crop.rs`). A crop drawn by hand is kept as drawn; unticking keeps the tighter crop |
+-- 
+2.43.0
+

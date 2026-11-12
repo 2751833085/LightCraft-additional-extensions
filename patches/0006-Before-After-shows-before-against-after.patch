@@ -1,7 +1,7 @@
 From 047603bc10d613ad195bba8619123664061427db Mon Sep 17 00:00:00 2001
 From: LightCraft additional extensions <noreply@example.invalid>
 Date: Wed, 11 Nov 2026 20:34:01 +0000
-Subject: [PATCH 6/7] Before/After shows before against after
+Subject: [PATCH 6/8] Before/After shows before against after
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

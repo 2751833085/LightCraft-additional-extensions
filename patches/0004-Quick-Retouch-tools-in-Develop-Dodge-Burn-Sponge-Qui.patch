@@ -1,7 +1,7 @@
 From 87a608fb60c41736ca7af0eaef0ceadbabb7bb5b Mon Sep 17 00:00:00 2001
 From: LightCraft additional extensions <noreply@example.invalid>
 Date: Wed, 11 Nov 2026 20:26:08 +0000
-Subject: [PATCH 4/7] Quick Retouch tools in Develop: Dodge, Burn, Sponge,
+Subject: [PATCH 4/8] Quick Retouch tools in Develop: Dodge, Burn, Sponge,
  Quick / Object Selection, Clone Stamp, Quick Mask
 
 Photoshop-style retouch tools built only from existing commands (UI-only; no engine, pipeline or
