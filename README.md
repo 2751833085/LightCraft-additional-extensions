@@ -174,6 +174,7 @@ scripts/build.sh --package  # 另外打成 tar.gz，放在 build/lightcraft/dist
 | `patches/0007-*.patch` | 四个功能之间的衔接（Classic 方案下快速修饰工具让出 Q / ⇧W 等） |
 | `patches/0008-*.patch` | 附加镜暗角：平场校准、配置文件、镜头校正面板、GPU 渲染 |
 | `docs/gt2-converter-vignetting.zh-CN.md` | GR IIIx + GT-2 强制 60mm 的暗角校正：拍平场照、生成配置、批量和导入时应用 |
+| `docs/next-x3i-sfd.zh-CN.md` | **下一步交接**：适马 DP2 Quattro SFD（X3I）支持的方案、代码位置和开发步骤，新会话从这里开始 |
 | `docs/classic-keymap.md` | Lightroom Classic 快捷键方案的完整对照表（英文，随补丁一起进入源码） |
 | `upstream.lock` | 补丁对应的上游发布版和中文字体版本 |
 | `scripts/build.sh` / `scripts/build.ps1` | 获取源码 → 校验版本 → 打补丁 → 获取中文字体 → 编译或打包 |
