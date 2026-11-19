@@ -1,6 +1,6 @@
 # 交接：让 LightCraft 支持适马 DP2 Quattro 的 SFD（X3I）照片
 
-给新会话用的完整上下文。本仓库此前的全部工作已经在 `patches/0001–0008`，用 `scripts/build.sh` 就能还原。
+给新会话用的完整上下文。本仓库此前的全部工作已经在 `patches/0001–0007`，用 `scripts/build.sh` 就能还原。
 
 ## 新会话开场可以直接粘贴这段
 
@@ -78,4 +78,4 @@ git format-patch v0.20.0..HEAD -o <本仓库>/patches   # 先删掉旧的 patche
 
 ## 其他待办（用户说暂时不做）
 
-- GT-2 附加镜暗角（补丁 0008）已完成，等用户拍平场照后用真实文件验证。见 `docs/gt2-converter-vignetting.zh-CN.md`。
+- GT-2 附加镜暗角校正：已完成但**已封存**，不参与构建。补丁、说明和恢复方法在 `archive/gt2-converter-vignetting/`。封存的补丁不在 `patches/` 里，新补丁可以照常从 0008 编号；以后恢复时，把它重新编号排到最后。
